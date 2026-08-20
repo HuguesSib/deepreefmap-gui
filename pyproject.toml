@@ -28,7 +28,7 @@ dependencies = [
   # library-only lineage; the deepreefmap-gui branch is the pre-split monolith this
   # package was extracted from (it still nests the whole app under deepreefmap/gui/), so
   # never pin to it.
-  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@3b3db91b4b1bb1fdb294fc7634af791a9d10786b",
+  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@65703d05197bc218cf7e33075bf09a5ac03a5a9e",
   "PySide6>=6.7,<7",
   # The app also imports vtkmodules.* directly (viewer/picking.py,
   # viewer/widget.py) and relies on the vtk that pyvista hard-pins. Deliberately
