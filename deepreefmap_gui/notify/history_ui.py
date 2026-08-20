@@ -99,7 +99,7 @@ class NotificationHistoryPanel(QWidget):
 
         self._table = QTableWidget(0, len(_COLUMNS))
         configure_table(self._table, _COLUMNS)
-        install_column_sizer(self._table, _COLUMN_SPEC)
+        install_column_sizer(self._table, _COLUMN_SPEC, settings_key="notifications")
         layout.addWidget(self._table, 1)
         outer.addWidget(card, 1)
 

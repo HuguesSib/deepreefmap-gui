@@ -276,6 +276,39 @@ def test_a_small_card_is_reported_as_the_limit() -> None:
     assert "graphics" in verdict.detail
 
 
+def test_each_pool_is_graded_against_itself() -> None:
+    """A laptop with room in memory and none on the card: one pool takes the run
+    and the other refuses it, and neither verdict is allowed to stand for both."""
+    verdict = grade(_profile(total_gb=64, gpu=_small_card()), _shape(1500))
+    memory, graphics = verdict.resources
+
+    assert memory.key == "ram" and graphics.key == "vram"
+    assert memory.level == "ok" and memory.fits
+    assert graphics.level == "block"
+    assert memory.need_bytes < memory.budget_bytes
+    assert graphics.need_bytes > graphics.budget_bytes
+    assert "loger_star" in graphics.message
+
+
+def test_a_machine_without_a_card_still_reports_the_graphics_pool() -> None:
+    """Stated as having no card, rather than left out: a row that is not drawn
+    reads as a row that passed."""
+    graphics = grade(_profile(total_gb=64), _shape(500)).resources[1]
+
+    assert not graphics.available
+    assert graphics.fits  # nothing here can refuse the run
+    assert "No graphics card" in graphics.message
+
+
+def test_unified_memory_says_where_the_graphics_demand_was_counted() -> None:
+    mps = GpuInfo(GPU_MPS, "Apple GPU", None, None)
+    memory, graphics = grade(_profile(total_gb=64, gpu=mps), _shape(500)).resources
+
+    assert "shared with the graphics processor" in memory.label
+    assert not graphics.available
+    assert "graded against the pool above" in graphics.message
+
+
 def test_a_fixed_cost_names_the_backend_that_caused_it() -> None:
     """Advice about the frame rate cannot be taken on a cost decided at zero frames."""
     verdict = grade(_profile(total_gb=256, gpu=_small_card()), _shape(2000))

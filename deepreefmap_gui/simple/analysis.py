@@ -154,7 +154,7 @@ class SimpleAnalysisMixin(MixinBase):
         )
         # Largest cover first, matching how the chart ranks its bars.
         enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
-        install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS)
+        install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS, settings_key="analysis_stats")
         self._analysis_stats_stack = QStackedWidget()
         self._analysis_stats_stack.addWidget(self._analysis_stats_table)
         self._analysis_stats_stack.addWidget(

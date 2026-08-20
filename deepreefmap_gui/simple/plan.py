@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -349,7 +350,7 @@ class SimplePlanMixin(MixinBase):
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         enable_sorting(self._transect_list)
-        install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC)
+        install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
         # The empty state stands in for the list until there is something in it,
         # so a fresh install says how to get started instead of showing a void.
@@ -410,7 +411,17 @@ class SimplePlanMixin(MixinBase):
         grid.setColumnStretch(3, 1)
         grid.addWidget(_field_label("Name"), 0, 0)
         self._tr_name_input = QLineEdit()
-        grid.addWidget(self._tr_name_input, 0, 1, 1, 3)
+        grid.addWidget(self._tr_name_input, 0, 1)
+        # Which reef the line is on. Sites come down from the registry, so with
+        # none pulled the combo holds only "No site" and changes nothing; names
+        # are unique per site, so two reefs can each have a T1.
+        grid.addWidget(_field_label("Site"), 0, 2)
+        self._tr_site_combo = QComboBox()
+        self._tr_site_combo.setToolTip(
+            "The site this transect belongs to, from the registry's site list."
+        )
+        grid.addWidget(self._tr_site_combo, 0, 3)
+        self._refresh_site_choices()
 
         # One box per end takes a coordinate straight off a GPS, pasted or
         # typed, in either "lat lon" or "lat, lon" form. Copying one back out is
@@ -485,6 +496,9 @@ class SimplePlanMixin(MixinBase):
         self._tr_length.editingFinished.connect(self._maybe_autosave)
         self._tr_depth.editingFinished.connect(self._maybe_autosave)
         self._tr_description.editing_finished.connect(self._maybe_autosave)
+        # activated, not currentIndexChanged: only a person's pick commits, so
+        # refilling the combo after a pull cannot save the form by side effect.
+        self._tr_site_combo.activated.connect(lambda _: self._maybe_autosave())
 
         # Map and form on top, the list and what it found beneath: the form
         # belongs beside the map it draws on, and both lower panes are tables
@@ -564,12 +578,39 @@ class SimplePlanMixin(MixinBase):
 
     # --- List handling ---
 
+    def _refresh_site_choices(self) -> None:
+        """Refill the site combo, keeping whatever is picked. Sites arrive by
+        pull, so the choices can grow between visits to this page."""
+        combo = self._tr_site_combo
+        kept = combo.currentData()
+        store = self._try_survey_store()
+        sites = store.list_sites() if store is not None else []
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem("No site", None)
+            for site in sites:
+                combo.addItem(site.name, str(site.id))
+            if kept:
+                combo.setCurrentIndex(max(0, combo.findData(kept)))
+        finally:
+            combo.blockSignals(False)
+
+    def _form_site_id(self) -> uuid.UUID | None:
+        data = self._tr_site_combo.currentData()
+        return uuid.UUID(str(data)) if data else None
+
+    def _set_form_site(self, site_id: uuid.UUID | None) -> None:
+        index = self._tr_site_combo.findData(str(site_id)) if site_id else 0
+        self._tr_site_combo.setCurrentIndex(max(0, index))
+
     def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None:
         store = self._try_survey_store()
         if store is None:
             self._transect_list.clear()
             self._refresh_plan_map()
             return
+        self._refresh_site_choices()
         saved = store.list_transects()
         counts = store.transect_usage_counts()
         self._plan_list_rebuilding = True
@@ -822,6 +863,7 @@ class SimplePlanMixin(MixinBase):
         self._tr_end_coord.setText(f"{transect.end_lat:.6f}, {transect.end_lon:.6f}")
         self._tr_length.setValue(transect.length_m or 0.0)
         self._tr_depth.setValue(transect.depth_m or 0.0)
+        self._set_form_site(transect.site_id)
         self._tr_description.setPlainText(transect.description)
         self._refresh_plan_map()
         # Picking a transect by name is a request to look at it, so the map goes
@@ -916,6 +958,7 @@ class SimplePlanMixin(MixinBase):
                 length_m=self._tr_length.value(),
                 depth_m=self._tr_depth.value(),
                 description=self._tr_description.toPlainText().strip(),
+                site_id=self._form_site_id(),
             )
         except ValueError as exc:
             self._status_label.setText(str(exc))
@@ -927,7 +970,9 @@ class SimplePlanMixin(MixinBase):
                 transect.id = self._transect_form_id
                 store.update_transect(transect)
         except sqlite3.IntegrityError:
-            self._status_label.setText(f"A transect named {transect.name!r} already exists.")
+            self._status_label.setText(
+                f"A transect named {transect.name!r} already exists on that site."
+            )
             return
         self._transect_form_id = transect.id
         self._status_label.setText(f"Saved transect {transect.name}.")

@@ -73,13 +73,16 @@ def refuse_to_hash(monkeypatch):
 def test_a_video_without_a_hash_gets_one_computed_and_stored(store, out_root, tmp_path):
     path, asset = add_clip(store, tmp_path)
 
-    jobs = archive_plan(store, out_root)
+    plan = archive_plan(store, out_root)
 
     expected = hash_video(path)
-    assert [(job.kind, job.content_hash, job.size_bytes) for job in jobs] == [
+    assert [(job.kind, job.content_hash, job.size_bytes) for job in plan.jobs] == [
         ("video", expected, len(CLIP_BYTES))
     ]
-    assert store.get_video(asset.id).hash == expected
+    # The digest is queued, not written: the planner runs on a worker thread,
+    # and the GUI thread owns the store's writes.
+    assert plan.hash_backfills == [(str(asset.id), expected)]
+    assert store.get_video(asset.id).hash is None
 
 
 def test_a_video_uses_the_identity_hash_it_already_carries(
@@ -90,16 +93,20 @@ def test_a_video_uses_the_identity_hash_it_already_carries(
     add_clip(store, tmp_path, content_hash=recorded)
     refuse_to_hash(monkeypatch)
 
-    jobs = archive_plan(store, out_root)
+    plan = archive_plan(store, out_root)
 
-    assert [job.content_hash for job in jobs] == [recorded]
+    assert [job.content_hash for job in plan.jobs] == [recorded]
+    assert plan.hash_backfills == []
 
 
 def test_a_clip_whose_file_is_gone_is_left_out(store, out_root, tmp_path):
     path, _ = add_clip(store, tmp_path)
     path.unlink()
 
-    assert archive_plan(store, out_root) == []
+    plan = archive_plan(store, out_root)
+
+    assert plan.jobs == []
+    assert plan.skipped == [(path.name, "the file is not where the survey last saw it")]
 
 
 # --- planning: run artefacts ------------------------------------------------------
@@ -115,7 +122,7 @@ def test_run_files_are_enumerated_with_their_relpaths(store, out_root):
     (run_dir / ".cache" / "scratch.bin").write_bytes(b"working state")
     (run_dir / ".hidden").write_bytes(b"working state")
 
-    jobs = archive_plan(store, out_root)
+    jobs = archive_plan(store, out_root).jobs
 
     assert {job.relpath for job in jobs} == {
         "run_manifest.json",
@@ -131,14 +138,17 @@ def test_only_succeeded_runs_are_offered(store, out_root):
     _, run_dir = add_succeeded_run(store, out_root, dir_name="run-failed", status="failed")
     (run_dir / "ortho.png").write_bytes(b"png bytes")
 
-    assert archive_plan(store, out_root) == []
+    plan = archive_plan(store, out_root)
+
+    assert plan.jobs == []
+    assert ("run-failed", "the run did not succeed") in plan.skipped
 
 
 def test_an_artefact_is_identified_by_its_own_content(store, out_root):
     _, run_dir = add_succeeded_run(store, out_root)
     (run_dir / "ortho.png").write_bytes(b"png bytes")
 
-    jobs = archive_plan(store, out_root)
+    jobs = archive_plan(store, out_root).jobs
 
     digests = {job.relpath: job.content_hash for job in jobs}
     assert digests["ortho.png"] == hash_video(run_dir / "ortho.png")
@@ -147,11 +157,11 @@ def test_an_artefact_is_identified_by_its_own_content(store, out_root):
 def test_a_rewritten_artefact_gets_a_new_identity(store, out_root):
     _, run_dir = add_succeeded_run(store, out_root)
     (run_dir / "ortho.png").write_bytes(b"png bytes")
-    before = {job.relpath: job.content_hash for job in archive_plan(store, out_root)}
+    before = {job.relpath: job.content_hash for job in archive_plan(store, out_root).jobs}
 
     (run_dir / "ortho.png").write_bytes(b"rewritten later")
 
-    after = {job.relpath: job.content_hash for job in archive_plan(store, out_root)}
+    after = {job.relpath: job.content_hash for job in archive_plan(store, out_root).jobs}
     assert after["ortho.png"] != before["ortho.png"]
 
 
@@ -314,7 +324,7 @@ def test_a_cancelled_queue_stops_between_jobs(tmp_path, monkeypatch):
 
     report = run_archive(client, [job], no_progress, cancel_event=cancelled)
 
-    assert report == ArchiveReport()
+    assert report == ArchiveReport(cancelled=True)
     assert client.initiated == []
 
 
@@ -400,7 +410,7 @@ def test_a_single_clip_plan_carries_that_clip_and_nothing_else(store, out_root, 
     add_succeeded_run(store, out_root)
     (out_root / "run-1" / "ortho.png").write_bytes(b"png")
 
-    jobs = archive.archive_plan_for_video(store, wanted.id)
+    jobs = archive.archive_plan_for_video(store, wanted.id).jobs
 
     assert [job.label for job in jobs] == ["GX010001.MP4"]
     assert jobs[0].kind == archive.KIND_VIDEO
@@ -416,15 +426,15 @@ def test_a_single_run_plan_carries_that_run_and_nothing_else(store, out_root, tm
     other_dir.mkdir()
     (other_dir / "ortho.png").write_bytes(b"png")
 
-    jobs = archive.archive_plan_for_run(store, out_root, run.id)
+    jobs = archive.archive_plan_for_run(store, out_root, run.id).jobs
 
     assert {job.run_id for job in jobs} == {str(run.id)}
     assert [job.relpath for job in jobs] == ["benthic_cover.json"]
 
 
 def test_a_single_item_plan_for_an_unknown_id_is_empty(store, out_root):
-    assert archive.archive_plan_for_video(store, "not-a-real-id") == []
-    assert archive.archive_plan_for_run(store, out_root, "not-a-real-id") == []
+    assert archive.archive_plan_for_video(store, "not-a-real-id").jobs == []
+    assert archive.archive_plan_for_run(store, out_root, "not-a-real-id").jobs == []
 
 
 # --- probing ---
@@ -504,3 +514,43 @@ def test_probe_makes_no_calls_with_nothing_to_ask(store):
     assert (states.videos, states.runs) == ({}, {})
     assert registry.asked_hashes == []
     assert registry.asked_runs == []
+
+
+def test_a_run_with_a_scene_but_no_web_cloud_grows_one_at_archive_time(store, out_root):
+    """Archive time is when the run travels to where the export is viewed, so a
+    run from before the export existed builds one from its scene on the way."""
+    from _factories import make_classes_config, make_scene
+
+    from deepreefmap_gui.io.scene_file import save_scene_file
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME
+
+    run, run_dir = add_succeeded_run(store, out_root)
+    scene = make_scene(class_ids=(1, 5), points_by_class={1: 7, 5: 4})
+    save_scene_file(
+        run_dir / "reef.scene.zarr.zip",
+        manifest={"name": "reef", "mode": "semantic"},
+        classes_config=make_classes_config((1, 5)),
+        mapping_result=scene.mapping,
+        frame_batch=scene.frame_batch,
+        final_cloud_index=scene.cloud_index,
+    )
+
+    plan = archive.archive_plan_for_run(store, out_root, run.id)
+
+    assert (run_dir / WEB_CLOUD_FILENAME).is_file()
+    assert WEB_CLOUD_FILENAME in {job.relpath for job in plan.jobs}
+
+
+def test_a_run_that_was_never_opened_says_how_to_get_its_web_view(store, out_root):
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME
+
+    run, run_dir = add_succeeded_run(store, out_root)
+    (run_dir / "ortho.png").write_bytes(b"png bytes")
+
+    plan = archive.archive_plan_for_run(store, out_root, run.id)
+
+    assert WEB_CLOUD_FILENAME not in {job.relpath for job in plan.jobs}
+    assert (
+        f"run-1/{WEB_CLOUD_FILENAME}",
+        "open the run once to build its web view first",
+    ) in plan.skipped

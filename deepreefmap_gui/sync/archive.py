@@ -140,68 +140,95 @@ class ArchiveReport:
     ``archived`` counts files sent and assembled this pass. Failures carry their
     reason per file because the queue keeps going: re-running resumes
     server-side, so a flaky connection costs a retry rather than the whole batch.
+    ``skipped`` comes from the plan: what was never offered, and why. A queue
+    stopped by its cancel event says so, or "archived 3" reads as "archived all".
     """
 
     archived: int = 0
     already: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    cancelled: bool = False
+
+
+@dataclass
+class ArchivePlan:
+    """What a pass over the survey would send, and what it had to leave out.
+
+    ``skipped`` names every item the plan dropped and why, because a plan that
+    silently shrinks reads as "everything is on the server" once it finishes.
+    ``hash_backfills`` are digests computed here for rows that had none; the
+    caller writes them back on its own thread, so planning never writes to the
+    store from the archive worker while the GUI thread is in the same file.
+    """
+
+    jobs: list[ArchiveJob] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    hash_backfills: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(job.size_bytes for job in self.jobs)
 
 
 # --- planning -----------------------------------------------------------------
 
 
-def archive_plan(store: SurveyStore, out_root: Path) -> list[ArchiveJob]:
+def archive_plan(store: SurveyStore, out_root: Path) -> ArchivePlan:
     """Everything worth archiving: the clips, then each succeeded run's files."""
-    return _video_jobs(store) + _run_jobs(store, out_root)
+    plan = ArchivePlan()
+    for video in store.list_videos():
+        _plan_video(plan, video)
+    for run in store.list_runs():
+        _plan_run(plan, run, out_root)
+    return plan
 
 
-def archive_plan_for_video(store: SurveyStore, video_id: object) -> list[ArchiveJob]:
+def archive_plan_for_video(store: SurveyStore, video_id: object) -> ArchivePlan:
     """One clip's job and nothing else. Empty when its file cannot be read."""
     wanted = str(video_id)
+    plan = ArchivePlan()
     for video in store.list_videos():
         if str(video.id) == wanted:
-            return _jobs_for_video(store, video)
-    return []
+            _plan_video(plan, video)
+    return plan
 
 
-def archive_plan_for_run(store: SurveyStore, out_root: Path, run_id: object) -> list[ArchiveJob]:
+def archive_plan_for_run(store: SurveyStore, out_root: Path, run_id: object) -> ArchivePlan:
     """One run's artefacts and nothing else. Empty unless it succeeded and kept its directory."""
     wanted = str(run_id)
+    plan = ArchivePlan()
     for run in store.list_runs():
         if str(run.id) == wanted:
-            return _jobs_for_run(run, out_root)
-    return []
+            _plan_run(plan, run, out_root)
+    return plan
 
 
-def _video_jobs(store: SurveyStore) -> list[ArchiveJob]:
-    jobs: list[ArchiveJob] = []
-    for video in store.list_videos():
-        jobs.extend(_jobs_for_video(store, video))
-    return jobs
-
-
-def _jobs_for_video(store: SurveyStore, video: VideoAsset) -> list[ArchiveJob]:
+def _plan_video(plan: ArchivePlan, video: VideoAsset) -> None:
     """This clip's job, where its file can still be read.
 
     Identity is the row's own ``hash``, so a blob and its registry row meet on a
-    value both already hold. A row without one is hashed here and written back:
-    imohash samples the file, so this costs nothing even for a 4 GB chapter.
+    value both already hold. A row without one is hashed here and the digest
+    queued for the caller to write back: imohash samples the file, so this
+    costs nothing even for a 4 GB chapter.
     """
     path = Path(video.path)
     try:
         size_bytes = path.stat().st_size
+        readable = path.is_file()
     except OSError:
-        return []
-    if not path.is_file():
-        return []
+        readable = False
+    if not readable:
+        plan.skipped.append((video.file_name, "the file is not where the survey last saw it"))
+        return
     digest = video.hash
     if not digest:
         digest = hash_video(path)
         if not digest:
-            return []
-        video.hash = digest
-        store.update_video(video)
-    return [
+            plan.skipped.append((video.file_name, "the file could not be read to identify it"))
+            return
+        plan.hash_backfills.append((str(video.id), digest))
+    plan.jobs.append(
         ArchiveJob(
             label=video.file_name,
             path=path,
@@ -209,27 +236,50 @@ def _jobs_for_video(store: SurveyStore, video: VideoAsset) -> list[ArchiveJob]:
             size_bytes=size_bytes,
             kind=KIND_VIDEO,
         )
-    ]
+    )
 
 
-def _run_jobs(store: SurveyStore, out_root: Path) -> list[ArchiveJob]:
-    jobs: list[ArchiveJob] = []
-    for run in store.list_runs():
-        jobs.extend(_jobs_for_run(run, out_root))
-    return jobs
-
-
-def _jobs_for_run(run: RunRecord, out_root: Path) -> list[ArchiveJob]:
+def _plan_run(plan: ArchivePlan, run: RunRecord, out_root: Path) -> None:
     if run.status != "succeeded":
-        return []
+        plan.skipped.append((run.run_dir_name, "the run did not succeed"))
+        return
     run_dir = out_root / run.run_dir_name
     if not run_dir.is_dir():
-        return []
-    return _run_dir_jobs(run_dir, run.run_dir_name, str(run.id))
+        plan.skipped.append((run.run_dir_name, "its output directory is gone"))
+        return
+    _backfill_web_cloud(plan, run_dir, run.run_dir_name)
+    _plan_run_dir(plan, run_dir, run.run_dir_name, str(run.id))
 
 
-def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[ArchiveJob]:
-    jobs: list[ArchiveJob] = []
+def _backfill_web_cloud(plan: ArchivePlan, run_dir: Path, run_dir_name: str) -> None:
+    """Build the browser export for a run reconstructed before it existed.
+
+    Written beside the scene here, at archive time, because this is the moment
+    the run travels to where the export is viewed. A run without one arrives in
+    the web console with no cloud to draw, which reads as a broken upload.
+    """
+    from deepreefmap_gui.io.scene_file import find_scene_file
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME, write_web_cloud_from_scene
+
+    label = f"{run_dir_name}/{WEB_CLOUD_FILENAME}"
+    if (run_dir / WEB_CLOUD_FILENAME).exists():
+        return
+    scene = find_scene_file(run_dir)
+    if scene is None:
+        # The scene generates on first open; until then there is nothing to
+        # build the export from, and the run's other files still travel.
+        plan.skipped.append((label, "open the run once to build its web view first"))
+        return
+    try:
+        built = write_web_cloud_from_scene(scene, run_dir / WEB_CLOUD_FILENAME, run_dir=run_dir)
+    except Exception:
+        logger.warning("Could not backfill the web cloud for %s", run_dir, exc_info=True)
+        built = False
+    if not built:
+        plan.skipped.append((label, "the web view could not be built from the saved scene"))
+
+
+def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: str) -> None:
     for path in sorted(run_dir.rglob("*")):
         if not path.is_file():
             continue
@@ -238,17 +288,20 @@ def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[Archive
         if any(part.startswith(".") for part in rel.parts):
             continue
         relpath = rel.as_posix()
+        label = f"{run_dir_name}/{relpath}"
         try:
             stat = path.stat()
         except OSError as exc:
             logger.info("Cannot read %s: %s", path, exc)
+            plan.skipped.append((label, "the file could not be read"))
             continue
         digest = hash_video(path)
         if not digest:
+            plan.skipped.append((label, "the file could not be read to identify it"))
             continue
-        jobs.append(
+        plan.jobs.append(
             ArchiveJob(
-                label=f"{run_dir_name}/{relpath}",
+                label=label,
                 path=path,
                 content_hash=digest,
                 size_bytes=stat.st_size,
@@ -257,7 +310,6 @@ def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[Archive
                 relpath=relpath,
             )
         )
-    return jobs
 
 
 # --- probing --------------------------------------------------------------------
@@ -357,6 +409,7 @@ def run_archive(
     total = len(jobs)
     for done, job in enumerate(jobs):
         if cancel_event is not None and cancel_event.is_set():
+            report.cancelled = True
             break
         progress(f"Archiving {job.label}…", done, total)
         try:

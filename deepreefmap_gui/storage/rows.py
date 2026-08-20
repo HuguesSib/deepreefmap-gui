@@ -186,7 +186,7 @@ class StorageTree(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setItemDelegateForColumn(COL_BAR, MakeUpDelegate(self))
-        install_column_sizer(self, _COLUMN_SPEC)
+        install_column_sizer(self, _COLUMN_SPEC, settings_key="storage")
 
 
 _COLUMN_SPEC = ColumnSpec(

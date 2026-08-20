@@ -130,3 +130,31 @@ def test_bad_magic_is_rejected(tmp_path: Path) -> None:
     path.write_bytes(b"NOTDRMW0" + b"\x00" * 16)
     with pytest.raises(ValueError, match="bad magic"):
         read_web_cloud(path)
+
+
+def test_backfill_from_a_saved_scene(tmp_path: Path) -> None:
+    """A run reconstructed before the export existed can grow one from its
+    scene file alone, with no second pass over the run."""
+    from _factories import make_classes_config, make_scene
+
+    from deepreefmap_gui.io.scene_file import save_scene_file
+    from deepreefmap_gui.io.web_cloud import write_web_cloud_from_scene
+
+    scene = make_scene(class_ids=(1, 5), points_by_class={1: 7, 5: 4})
+    classes = make_classes_config((1, 5))
+    scene_path = tmp_path / "scene_v9.drm"
+    save_scene_file(
+        scene_path,
+        manifest={"name": "reef", "mode": "semantic"},
+        classes_config=classes,
+        mapping_result=scene.mapping,
+        frame_batch=scene.frame_batch,
+        final_cloud_index=scene.cloud_index,
+    )
+    out = tmp_path / WEB_CLOUD_FILENAME
+
+    assert write_web_cloud_from_scene(scene_path, out, run_dir=tmp_path)
+
+    header, views = read_web_cloud(out)
+    assert header["frame_order"] == list(scene.cloud_index.frame_order)
+    assert [c["id"] for c in header["classes"]] == list(scene.cloud_index.class_ids)

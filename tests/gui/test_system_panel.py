@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepreefmap_gui.core.theme import BLOCK, UPDATE
+from deepreefmap_gui.core.theme import BLOCK, SUCCESS, UPDATE
 
 
 def _recorded_runs_text(window) -> str:
@@ -99,10 +99,11 @@ def test_a_memory_risk_shows_the_capacity_readout(window, monkeypatch) -> None:
     assert not window._capacity_advice.isHidden()
     # A whole sentence in a narrow column, so it wraps rather than clipping.
     assert window._capacity_advice.wordWrap()
-    # The pass is named in the units it was set up in.
-    assert "at 5 FPS" in window._capacity_caption.text()
+    # The pass the figures were modelled on is named in the units it was set up in.
+    assert "5 FPS" in window._capacity_caption.text()
+    assert "Modelled on a pass" in window._capacity_caption.text()
     # What the machine can do is stated whether or not the pass fits.
-    assert "can process about" in window._capacity_detail.text()
+    assert "up to about" in window._capacity_detail.text()
     assert window._memory_advisory
 
 
@@ -126,11 +127,11 @@ def test_choosing_a_lighter_method_regrades_the_readout(window, monkeypatch) -> 
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
     _queue_pass(window, seconds=378.0, fps=5)
     window._map_combo.setCurrentText("loger_star")
-    heavy = window._capacity_detail.text()
+    heavy = window._capacity_rows["ram"].message.text()
 
     window._map_combo.setCurrentText("scsfmlearner")
 
-    assert window._capacity_detail.text() != heavy
+    assert window._capacity_rows["ram"].message.text() != heavy
 
 
 def test_swap_is_reported_as_a_cost_in_speed_not_a_warning(window, monkeypatch) -> None:
@@ -148,8 +149,8 @@ def test_swap_is_reported_as_a_cost_in_speed_not_a_warning(window, monkeypatch) 
     _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
 
-    detail = window._capacity_detail.text()
-    assert "runs from swap" in detail and "slower" in detail
+    memory = window._capacity_rows["ram"].message.text()
+    assert "runs from swap" in memory and "slower" in memory
     # No advice line, no advisory on Setup: nothing here needs the user's attention.
     assert window._capacity_advice.isHidden()
     assert window._memory_advisory == ""
@@ -166,15 +167,16 @@ def test_the_bar_carries_what_other_applications_hold(window, monkeypatch) -> No
     _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
 
-    verdict = window._current_fit().verdict
-    pool = verdict.budget_bytes + verdict.held_by_others_bytes
-    held = window._capacity_bar.held_percent()
-    assert held == pytest.approx(100 * verdict.held_by_others_bytes / pool, abs=0.5)
+    ram = window._current_fit().verdict.resources[0]
+    pool = ram.budget_bytes + ram.held_bytes
+    row = window._capacity_rows["ram"]
+    held = row.bar.held_percent()
+    assert held == pytest.approx(100 * ram.held_bytes / pool, abs=0.5)
     assert held > 50  # 6 GB free of 32 GB: the machine is mostly spoken for
-    assert "Other applications" in window._capacity_bar.toolTip()
+    assert "Other applications" in row.bar.toolTip()
     # Every part of the track is named under it, in the order it is painted:
     # what is already taken first, then what a run would add to it.
-    legend = window._capacity_legend.text()
+    legend = row.legend.text()
     assert legend.index("Other applications") < legend.index("Needed")
 
 
@@ -194,10 +196,57 @@ def test_a_machine_with_nothing_else_running_has_no_held_share(window, monkeypat
     _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
 
-    assert window._capacity_bar.held_percent() == 0.0
-    assert "Other applications" not in window._capacity_bar.toolTip()
-    assert "Other applications" not in window._capacity_legend.text()
-    assert "Free" in window._capacity_legend.text()
+    row = window._capacity_rows["ram"]
+    assert row.bar.held_percent() == 0.0
+    assert "Other applications" not in row.bar.toolTip()
+    assert "Other applications" not in row.legend.text()
+    assert "Free" in row.legend.text()
+
+
+def test_memory_and_the_card_are_graded_on_separate_bars(window, monkeypatch) -> None:
+    """A laptop with plenty of memory and a small card: the run fits one pool
+    and not the other, and each says so on its own track. Merging them hid the
+    card that refused the run behind memory that comfortably took it."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(
+        probe, "probe_system",
+        lambda *a, **k: probe.SystemProfile(
+            os_name="Linux", os_release="x", cpu_logical=16, cpu_physical=8,
+            total_ram_bytes=32 * 1024**3, available_ram_bytes=28 * 1024**3,
+            total_swap_bytes=0, free_swap_bytes=0,
+            gpu=probe.GpuInfo(probe.GPU_CUDA, "RTX 3070 Laptop", 8 * 1024**3, 8 * 1024**3),
+            disk_total_bytes=0, disk_free_bytes=0, disk_path="/",
+        ),
+    )
+    _queue_pass(window, seconds=120.0, fps=5)
+    window._map_combo.setCurrentText("loger_star")
+    window._update_memory_profile_warning()
+
+    memory, graphics = window._capacity_rows["ram"], window._capacity_rows["vram"]
+    assert memory.isVisibleTo(window._setup_page)
+    assert graphics.isVisibleTo(window._setup_page)
+    assert "Fits" in memory.message.text()
+    assert SUCCESS in memory.bar.styleSheet()
+    assert "loger_star" in graphics.message.text()
+    assert "more than" in graphics.message.text()
+    assert BLOCK in graphics.bar.styleSheet()
+    assert not memory.icon.pixmap().isNull()
+    assert not graphics.icon.pixmap().isNull()
+
+
+def test_a_machine_without_a_card_still_shows_both_bars(window, monkeypatch) -> None:
+    """The graphics row states there is no card rather than disappearing: a row
+    that vanishes reads as a row that passed."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
+    _queue_pass(window, seconds=120.0, fps=5)
+    window._update_memory_profile_warning()
+
+    graphics = window._capacity_rows["vram"]
+    assert "No graphics card" in graphics.message.text()
+    assert graphics.legend.text() == ""
 
 
 def test_capacity_is_unavailable_until_a_pass_is_queued(window) -> None:

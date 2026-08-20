@@ -1,4 +1,4 @@
-"""The Connect dialog: one pasted code, one device name.
+"""The Connect dialog: one pasted code, nothing else.
 
 The dialog collects and reports; it never enrols. Enrolment is network I/O, so the
 window runs it on a worker thread and drives this through `working()` and
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -24,18 +23,17 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.spinner import BusySpinner
 from deepreefmap_gui.core.theme import ERROR, TEXT_MUTED, WEIGHT_SEMIBOLD
 from deepreefmap_gui.core.widgets import muted_label
-from deepreefmap_gui.server.state import default_device_name
 from deepreefmap_gui.sync.connect_code import CODE_PREFIX, ConnectCodeError, decode_connect_code
 
 TITLE = "Connect to server"
 
 INTRO = "Paste the connect code from the registry's web interface. It enrols this installation, not you."
 
-NAME_LABEL = "Device name"
-NAME_HINT = (
-    "Everything this computer uploads is attributed to this name, and everyone "
-    "in the organisation can see it. It starts as the machine's own name, so "
-    "change it here if that names a person."
+# The device starts under the machine's own name; naming and renaming are web
+# interface actions, so attribution is never mutable from the device it names.
+NAME_NOTE = (
+    "This computer enrols under its own machine name. Rename it in the "
+    "registry's web interface if that names a person."
 )
 
 CONNECT = "Connect"
@@ -49,9 +47,9 @@ UNREADABLE = "That is not a connect code."
 class ConnectDialog(QDialog):
     """Collects a connect code, and reports what the window made of it."""
 
-    # The pasted code and the device name, once. Emitted rather than read off the
-    # dialog so the code lives in the handler's arguments, not in dialog state.
-    submitted = Signal(str, str)
+    # The pasted code, once. Emitted rather than read off the dialog so the code
+    # lives in the handler's arguments, not in dialog state.
+    submitted = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -77,13 +75,9 @@ class ConnectDialog(QDialog):
         self._server.setVisible(False)
         layout.addWidget(self._server)
 
-        layout.addWidget(muted_label(NAME_LABEL))
-        self._name_edit = QLineEdit(default_device_name())
-        self._name_edit.setToolTip(NAME_HINT)
-        layout.addWidget(self._name_edit)
-        hint = muted_label(NAME_HINT)
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        note = muted_label(NAME_NOTE)
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
         self._message = QLabel("")
         self._message.setWordWrap(True)
@@ -111,13 +105,10 @@ class ConnectDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
-        self.resize(480, 380)
+        self.resize(480, 320)
 
     def code(self) -> str:
         return self._code_edit.toPlainText().strip()
-
-    def device_name(self) -> str:
-        return self._name_edit.text().strip()
 
     def working(self, busy: bool) -> None:
         """Lock the fields while the enrolment is in flight."""
@@ -125,7 +116,6 @@ class ConnectDialog(QDialog):
         self._busy_label.setText(CONNECTING if busy else "")
         self._connect_btn.setText(CONNECTING if busy else CONNECT)
         self._code_edit.setReadOnly(busy)
-        self._name_edit.setReadOnly(busy)
         if busy:
             self._connect_btn.setEnabled(False)
             self._message.setVisible(False)
@@ -139,17 +129,12 @@ class ConnectDialog(QDialog):
         self._message.setText(f"{title}. {detail}")
         self._message.setVisible(True)
 
-    def show_note(self, text: str) -> None:
-        self._message.setStyleSheet(f"color: {TEXT_MUTED};")
-        self._message.setText(text)
-        self._message.setVisible(bool(text))
-
     def _on_connect_clicked(self) -> None:
         code = self.code()
         if not code:
             return
         self.working(True)
-        self.submitted.emit(code, self.device_name())
+        self.submitted.emit(code)
 
     def _sync_connect_enabled(self) -> None:
         """Decode what has been typed, name the server, and gate the button on it.

@@ -90,6 +90,10 @@ RUN_PASS_DELETED = "sync.run_pass_deleted"
 HELD_GIVEN_UP = "sync.held_given_up"
 # A row that arrived in a shape no model here can be built from.
 UNREADABLE_ROW = "sync.unreadable_row"
+# The registry said more rows were waiting but would not advance the cursor.
+PULL_STALLED = "sync.pull_stalled"
+# A push response that did not account for every row a section sent.
+PUSH_UNACCOUNTED = "sync.push_unaccounted"
 
 
 class SyncTransport(Protocol):
@@ -142,6 +146,10 @@ class PushReport:
     sections: dict[str, SectionPush] = field(default_factory=dict)
     watermarks: dict[str, str] = field(default_factory=dict)
     cursor: int | None = None
+    # Sections whose watermark was held because the response did not account
+    # for every row they sent. Their rows are re-offered on every sync until
+    # the registry answers for them.
+    unaccounted: tuple[str, ...] = ()
 
     @property
     def sent(self) -> int:
@@ -204,6 +212,9 @@ class PullReport:
     runs_pass_deleted: tuple[uuid.UUID, ...] = ()
     # Rows held long enough to be given up on, or pushed out by HELD_MAX.
     given_up: tuple[uuid.UUID, ...] = ()
+    # The registry said more rows were waiting but would not advance the
+    # cursor, so the pull broke off rather than asking for the same page forever.
+    stalled: bool = False
 
     @property
     def applied(self) -> int:
@@ -217,7 +228,7 @@ class PullReport:
     @property
     def stopped(self) -> bool:
         """Whether the pull ended before the registry had run out of rows."""
-        return bool(self.unknown_sections)
+        return bool(self.unknown_sections) or self.stalled
 
 
 @dataclass
@@ -348,6 +359,7 @@ class SyncEngine:
         omitted: set[str] = set()
         refused: set[str] = set()
         deleted_passes: list[uuid.UUID] = []
+        stalled = False
         held = self._held()
         # True only where the registry said it had nothing left, which is the one
         # outcome that tells a held row nothing is coming for it.
@@ -381,6 +393,7 @@ class SyncEngine:
                 break
             if not moved and page.get("has_more"):
                 logger.warning("Registry reported more rows at cursor %s and did not advance", cursor)
+                stalled = True
                 break
             if not page.get("has_more"):
                 exhausted = True
@@ -401,6 +414,7 @@ class SyncEngine:
             refused_sections=tuple(sorted(refused)),
             runs_pass_deleted=tuple(deleted_passes),
             given_up=tuple(given_up),
+            stalled=stalled,
         )
         self._report_pull_conflicts(report)
         return report
@@ -599,10 +613,12 @@ class SyncEngine:
         response = self._client.push(sections)
         outcomes = _push_outcomes(response)
         advanced: dict[str, str] = {}
+        unaccounted: list[str] = []
         for name, stamp in watermarks.items():
             outcome = outcomes.get(name)
             if outcome is None or not _accounted(outcome, len(sections[name])):
                 logger.warning("Holding the %s watermark: the registry did not account for it", name)
+                unaccounted.append(name)
                 continue
             self._store.set_sync_state(f"{WATERMARK_PREFIX}{name}", stamp)
             advanced[name] = stamp
@@ -613,6 +629,7 @@ class SyncEngine:
             # adopting it as the pull cursor would skip every row another device
             # wrote before it.
             cursor=_page_cursor(response),
+            unaccounted=tuple(unaccounted),
         )
         self._report_push_conflicts(report)
         return report
@@ -693,6 +710,15 @@ class SyncEngine:
                 "was kept, and the sync stopped there rather than passing over it, "
                 "so nothing is lost. Update this app to take the rest.",
             )
+        if report.stalled:
+            self._post(
+                PULL_STALLED,
+                "The registry stopped answering the pull",
+                "It said more rows were waiting but kept answering with the same "
+                "page, so the sync broke off rather than asking forever. "
+                "Everything that arrived was kept. Try again later; a registry "
+                "doing this repeatedly is misbehaving.",
+            )
         if report.refused_sections:
             named = ", ".join(report.refused_sections)
             self._post(
@@ -756,6 +782,16 @@ class SyncEngine:
             )
 
     def _report_push_conflicts(self, report: PushReport) -> None:
+        if report.unaccounted:
+            named = ", ".join(report.unaccounted)
+            self._post(
+                PUSH_UNACCOUNTED,
+                "The registry did not account for everything sent",
+                f"Its answer did not say what happened to every row in {named}, "
+                "so those rows are treated as unsent and go again on the next "
+                "sync. Nothing is lost, but until the registry answers for them "
+                "this repeats; a registry doing it every sync is misbehaving.",
+            )
         downloadable, stranded = report.skipped_by_direction()
         if downloadable:
             self._post(

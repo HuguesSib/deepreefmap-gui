@@ -78,6 +78,20 @@ def test_list_campaigns_puts_the_newest_expedition_first(store):
     assert [c.name for c in store.list_campaigns()] == ["2025_10_eritrea", "2024_04_fiji"]
 
 
+def test_the_default_campaign_is_remembered_until_it_is_withdrawn(store):
+    """A tombstoned campaign answers None: new work must not be attributed to a
+    campaign the registry has removed."""
+    campaign = Campaign(name="2025_10_eritrea")
+    store.add_campaign(campaign)
+    store.set_default_campaign(campaign.id)
+    assert store.default_campaign_id() == campaign.id
+
+    campaign.deleted_at = campaign.updated_at
+    store.update_campaign(campaign)
+
+    assert store.default_campaign_id() is None
+
+
 def test_a_pass_names_a_campaign_and_a_quality(store):
     campaign = Campaign(name="2025_10_eritrea")
     store.add_campaign(campaign)

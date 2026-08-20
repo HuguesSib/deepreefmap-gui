@@ -196,7 +196,7 @@ class RunTable(QTableWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
         enable_sorting(self, COL_CREATED, Qt.SortOrder.DescendingOrder)
-        install_column_sizer(self, _COLUMN_SPEC)
+        install_column_sizer(self, _COLUMN_SPEC, settings_key="runs")
 
     def current_run_dir(self) -> str | None:
         row = self.currentRow()

@@ -90,3 +90,23 @@ def test_a_resolution_preset_outside_the_fixed_set_is_dropped():
     kept, dropped = coerce_settings({"resolution_preset": "Enormous"})
 
     assert kept == {} and [key for key, _ in dropped] == ["resolution_preset"]
+
+
+def test_a_path_published_to_the_registry_never_applies_here() -> None:
+    """The console's editor offers no path fields, but the API stores settings
+    opaquely, so a hand-crafted publish could carry one machine's disk layout."""
+    kept, dropped = coerce_settings(
+        {"loger_model_path": "/home/kim/ckpts/latest.pt", "fps": 5}
+    )
+
+    assert kept == {"fps": 5}
+    assert dropped == [
+        ("loger_model_path", "a path on another machine's disk never applies here")
+    ]
+
+
+def test_a_null_path_field_is_not_worth_reporting() -> None:
+    kept, dropped = coerce_settings({"scs_checkpoint_path": None})
+
+    assert kept == {"scs_checkpoint_path": None}
+    assert dropped == []

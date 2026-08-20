@@ -30,6 +30,8 @@ from deepreefmap_gui.sync.engine import (
     HELD_KEY,
     PASS_WITHOUT_VIDEOS,
     PULL_LIMIT,
+    PULL_STALLED,
+    PUSH_UNACCOUNTED,
     RUN_PASS_DELETED,
     RUN_WITHOUT_PASS,
     SECTION_NOT_UNDERSTOOD,
@@ -272,13 +274,21 @@ def test_a_refused_push_leaves_every_watermark_alone(store, tmp_path):
 
 def test_a_half_answered_section_holds_its_watermark(store, tmp_path):
     seed_pass(store)
-    engine = SyncEngine(store, FakeRegistry(unaccounted=("passes",)), out_root=tmp_path)
+    notifications = NotificationCenter()
+    engine = SyncEngine(
+        store, FakeRegistry(unaccounted=("passes",)), out_root=tmp_path,
+        notifications=notifications,
+    )
 
     report = engine.push()
 
     assert engine.watermark("passes") is None
     assert "passes" not in report.watermarks
     assert engine.watermark("videos") is not None
+    # Held is not the same as fine: a section stuck like this re-sends its rows
+    # on every sync, and only the registry can end that, so the operator hears.
+    assert report.unaccounted == ("passes",)
+    assert PUSH_UNACCOUNTED in {note.fingerprint for note in notifications.active()}
 
 
 def test_a_row_the_registry_already_held_newer_is_reported_not_raised(store, tmp_path):
@@ -451,10 +461,17 @@ def test_a_pull_stops_when_the_cursor_stops_moving(store, tmp_path):
     """A registry claiming more rows at a cursor it will not advance would loop
     forever."""
     registry = FakeRegistry(pages=[page(10, {}, has_more=True), page(10, {}, has_more=True)])
+    notifications = NotificationCenter()
 
-    report = SyncEngine(store, registry, out_root=tmp_path).pull()
+    report = SyncEngine(
+        store, registry, out_root=tmp_path, notifications=notifications
+    ).pull()
 
     assert (report.pages, report.cursor) == (2, 10)
+    # Breaking off is right, and it must not read as a completed sync: the
+    # registry still holds rows this pull never saw.
+    assert report.stalled and report.stopped
+    assert PULL_STALLED in {note.fingerprint for note in notifications.active()}
 
 
 def test_a_tombstone_from_the_registry_removes_the_row_here(store, tmp_path):

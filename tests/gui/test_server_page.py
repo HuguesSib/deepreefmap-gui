@@ -238,20 +238,20 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     secret = "ab" * 32
     pasted = f"drm1.{secret}"
 
-    def fake_connect(code, device_name=""):
+    def fake_connect(code):
         assert code == pasted
-        credentials.save(SERVER_URL, TOKEN)
+        credentials.save(SERVER_URL, TOKEN, device_id="device-1")
         return enrolment_mod.Connected(
             base_url=SERVER_URL,
             device_id="device-1",
-            device_name=device_name,
+            device_name="Dive laptop",
             enrolled_by="Kim Nguyen",
         )
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
     with caplog.at_level("DEBUG"):
-        window._start_enrolment(pasted, "Dive laptop")
+        window._start_enrolment(pasted)
         assert settle(qapp, lambda: window._server_notice.isVisibleTo(window))
 
     message = window._server_notice._message.text()
@@ -270,12 +270,12 @@ def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
     """The dialog can be cancelled mid-enrolment, and the answer still arrives."""
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
-    def fake_connect(code, device_name=""):
+    def fake_connect(code):
         raise client_mod.EnrolmentRejectedError("that code has already been used")
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
-    window._start_enrolment("drm1.whatever", "Dive laptop")
+    window._start_enrolment("drm1.whatever")
 
     assert settle(qapp, lambda: window._server_blocker.isVisibleTo(window))
     assert "already been used" in window._server_blocker._reason.text()
@@ -492,7 +492,24 @@ def test_the_archive_button_says_it_only_sends_on_request(window):
     assert "until this is pressed" in tooltip
 
 
-def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registry, tmp_path):
+@pytest.fixture
+def accept_confirms(monkeypatch):
+    """Answer the whole-survey archive's size question with yes."""
+    from deepreefmap_gui.server import page_ui
+
+    asked: list[str] = []
+
+    def yes(parent, title, text):
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr(page_ui, "confirm", yes)
+    return asked
+
+
+def test_archiving_sends_the_queue_and_reports_what_landed(
+    window, qapp, registry, tmp_path, accept_confirms
+):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -511,6 +528,117 @@ def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registr
     message = window._server_notice._message.text()
     assert message == "Archived 0 file(s), 1 already on the server."
     assert window._server_archive_btn.isEnabled()
+    # The confirmation said what the queue weighs before anything travelled.
+    assert len(accept_confirms) == 1
+    assert "1 file(s)" in accept_confirms[0]
+    assert "MB" in accept_confirms[0]
+
+
+def test_declining_the_size_question_sends_nothing(window, qapp, registry, tmp_path, monkeypatch):
+    from deepreefmap_gui.server import page_ui
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    window._survey_store().upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    made = registry()
+    monkeypatch.setattr(page_ui, "confirm", lambda *a: False)
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_archive_now()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    assert made[0].calls == []
+    assert window._server_archive_btn.isEnabled()
+
+
+def test_what_the_plan_left_out_is_said_with_what_landed(
+    window, qapp, registry, tmp_path, accept_confirms
+):
+    """A clip whose file has moved must not vanish from the summary: "archived
+    the rest" and "archived everything" read the same without it."""
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    store = window._survey_store()
+    store.upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    store.upsert_video(VideoAsset(file_name="GX010002.MP4", path=str(tmp_path / "gone.MP4")))
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._server_archive_btn.click()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    message = window._server_notice._message.text()
+    assert "1 item(s) were left out" in message
+    assert "GX010002.MP4" in message
+
+
+def test_a_cancelled_archive_says_it_stopped(window, qapp, registry, tmp_path, accept_confirms):
+    from deepreefmap_gui.server.page_ui import CANCEL_ARCHIVE
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    window._survey_store().upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._server_archive_btn.click()
+    # The moment the upload worker starts, stopping it is offered; pressing it
+    # marks the queue cancelled before the next job is taken.
+    assert settle(qapp, lambda: window._server_archive_cancel_btn.isVisibleTo(window)
+                  or not window._server_archiving)
+    if window._server_archiving:
+        assert window._server_archive_cancel_btn.text() == CANCEL_ARCHIVE
+        window._on_archive_cancel()
+        assert window._archive_cancel.is_set()
+    assert settle(qapp, lambda: not window._server_archiving)
+    assert not window._server_archive_cancel_btn.isVisibleTo(window)
+
+
+def test_the_hash_computed_while_planning_lands_without_an_edit_stamp(
+    window, qapp, registry, tmp_path, accept_confirms
+):
+    """The digest identifies the file; it does not edit the clip, so the row
+    must not be re-queued for the next metadata push over it."""
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    store = window._survey_store()
+    asset = VideoAsset(file_name=clip.name, path=str(clip))
+    store.upsert_video(asset)
+    before = store.get_video(asset.id).updated_at
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._server_archive_btn.click()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    stored = store.get_video(asset.id)
+    assert stored.hash
+    assert stored.updated_at == before
+
+
+def test_the_first_card_of_the_session_probes_the_archive(window, qapp, registry):
+    """An enrolled machine must not show a blank badge that reads as "not on the
+    server" until its first sync."""
+    enrol_this_device()
+    registry()
+
+    window._maybe_refresh_archive_badges()
+    assert settle(qapp, lambda: not window._archive_badge_scan_running)
+
+    # One attempt per session: a second ask changes nothing until a sync or
+    # archive resets the answer.
+    window._maybe_refresh_archive_badges()
+    assert window._archive_probe_attempted
 
 
 def test_a_session_in_flight_holds_the_archive_back(window, registry):
@@ -525,7 +653,9 @@ def test_a_session_in_flight_holds_the_archive_back(window, registry):
     assert window._server_blocker._reason.text() == SESSION_RUNNING
 
 
-def test_an_archive_that_cannot_reach_the_registry_is_a_retry(window, qapp, registry, tmp_path):
+def test_an_archive_that_cannot_reach_the_registry_is_a_retry(
+    window, qapp, registry, tmp_path, accept_confirms
+):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -574,6 +704,61 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
 
     assert made[0].calls == ["pull", "push"]
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_pulled_sites_and_campaigns_are_listed_by_name(window):
+    """The card names what came down: a diver about to file against a reef wants
+    to see that the reef actually arrived, not a count of rows."""
+    from deepreefmap_gui.survey.models import Campaign, Site
+
+    enrol_this_device()
+    store = window._survey_store()
+    store.add_site(Site(name="Japanese Garden", country="Djibouti"))
+    store.add_campaign(Campaign(name="2026_08_fiji", begin_date="2026-08-01"))
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_reference_card.isVisibleTo(window)
+    rows = _rows(window._server_reference)
+    assert rows["Japanese Garden"] == "Djibouti"
+    assert rows["2026_08_fiji"] == "2026-08-01"
+
+
+def test_the_reference_card_hides_until_something_has_been_pulled(window):
+    enrol_this_device()
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert not window._server_reference_card.isVisibleTo(window)
+
+
+def test_the_badge_does_not_claim_synced_with_no_survey_open(window, qapp, monkeypatch):
+    """Enrolled but no output root: nothing was counted, which is not the same
+    answer as everything having been sent."""
+    enrol_this_device()
+    monkeypatch.setattr(window, "_try_survey_store", lambda: None)
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Connected" in window._sync_badge._label.text())
+    assert "Synced" not in window._sync_badge._label.text()
+    assert "Open an output folder" in window._sync_badge.toolTip()
+
+
+def test_a_transient_blocker_clears_on_the_next_page_refresh(window, registry):
+    """The session-running message describes a moment, not a stored fault, so a
+    repaint after the session must not keep showing it."""
+    enrol_this_device()
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+    window._survey_worker_running = True
+    window._on_sync_now()
+    assert window._server_blocker._reason.text() == SESSION_RUNNING
+
+    window._survey_worker_running = False
+    window._refresh_server_page()
+
+    assert not window._server_blocker.isVisibleTo(window)
 
 
 def test_a_failed_sync_keeps_the_badge_faulted_across_repaints(window, qapp, registry):

@@ -38,19 +38,24 @@ def registry(monkeypatch):
     return asked
 
 
+@pytest.fixture
+def hostname(monkeypatch):
+    monkeypatch.setattr("socket.gethostname", lambda: "reef-laptop")
+    return "reef-laptop"
+
+
 def test_the_address_comes_out_of_the_code_and_nowhere_else(connect_code, registry):
     """Nothing in this repository knows a server address until a code is pasted."""
-    connected = connect(connect_code(url="https://reef.example.org"), "Dive laptop")
+    connected = connect(connect_code(url="https://reef.example.org"))
 
     assert registry["url"] == "https://reef.example.org"
     assert registry["path"] == "/enrol"
     assert connected.base_url == "https://reef.example.org"
     assert connected.device_id == "device-1"
-    assert connected.device_name == "Dive laptop"
 
 
 def test_a_spent_code_leaves_a_credential_behind(connect_code, registry):
-    connected = connect(connect_code(), "Dive laptop")
+    connected = connect(connect_code())
 
     held = credentials.load()
     assert held is not None
@@ -59,11 +64,21 @@ def test_a_spent_code_leaves_a_credential_behind(connect_code, registry):
     assert connected.base_url == "https://reef.example.org"
 
 
-def test_the_registry_is_told_what_this_device_is(connect_code, registry):
-    connect(connect_code(), "Dive laptop")
+def test_the_stored_identity_is_the_registrys_own(connect_code, registry):
+    """The registry keys the device row on the id it minted, so that is the id
+    worth showing: an admin can match it to the web interface's device list."""
+    connect(connect_code())
+
+    held = credentials.load()
+    assert held is not None
+    assert held.device_id == "device-1"
+
+
+def test_the_registry_is_told_what_this_device_is(connect_code, registry, hostname):
+    connect(connect_code())
 
     body = registry["body"]
-    assert body["device_name"] == "Dive laptop"
+    assert body["device_name"] == hostname
     assert body["platform"]
     assert body["gui_version"]
 
@@ -78,45 +93,45 @@ def test_the_name_is_sent_once_and_never_again(connect_code, registry, monkeypat
         return {"device_id": "device-1", "token": TOKEN}
 
     monkeypatch.setattr(client.SyncClient, "_request", record)
-    connect(connect_code(), "Dive laptop")
+    connect(connect_code())
     credentials.load()
 
     assert sent == ["/enrol"]
 
 
 def test_who_onboarded_the_device_is_reported_for_audit(connect_code, registry):
-    connected = connect(connect_code(), "Dive laptop")
+    connected = connect(connect_code())
 
     assert connected.enrolled_by == "Kim Nguyen"
 
 
-def test_an_empty_name_falls_back_to_the_hostname(connect_code, registry, monkeypatch):
-    monkeypatch.setattr("socket.gethostname", lambda: "reef-laptop")
+def test_the_device_enrols_under_the_machines_own_name(connect_code, registry, hostname):
+    """Nothing here collects a name: the device starts as the machine, and any
+    renaming happens in the web interface."""
+    connected = connect(connect_code())
 
-    connected = connect(connect_code(), "   ")
-
-    assert connected.device_name == "reef-laptop"
+    assert connected.device_name == hostname
 
 
 def test_a_plain_http_code_is_refused_before_the_network(connect_code, registry):
     """The dialog's disabled button is UI: the library is where the secret would
     cross the wire, so the refusal has to live here too."""
     with pytest.raises(ConnectCodeError, match="unencrypted"):
-        connect(connect_code(url="http://192.168.1.10:8080"), "Dive laptop")
+        connect(connect_code(url="http://192.168.1.10:8080"))
 
     assert registry == {}
     assert credentials.load() is None
 
 
 def test_a_loopback_code_enrols_over_plain_http(connect_code, registry):
-    connected = connect(connect_code(url="http://localhost:8080"), "Dive laptop")
+    connected = connect(connect_code(url="http://localhost:8080"))
 
     assert connected.base_url == "http://localhost:8080"
 
 
 def test_a_string_that_is_not_a_code_never_reaches_the_network(connect_code, registry):
     with pytest.raises(ConnectCodeError):
-        connect("paste me", "Dive laptop")
+        connect("paste me")
 
     assert registry == {}
     assert credentials.load() is None
@@ -126,7 +141,7 @@ def test_an_enrolment_with_no_token_stores_nothing(connect_code, registry):
     registry["token"] = ""
 
     with pytest.raises(client.SyncError):
-        connect(connect_code(), "Dive laptop")
+        connect(connect_code())
 
     assert credentials.load() is None
 
@@ -139,7 +154,7 @@ def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, r
     would skip every row the next registry wrote below that number, and the next
     registry has said nothing about a contract yet.
     """
-    connect(connect_code(), "Dive laptop")
+    connect(connect_code())
     store.set_sync_state(CURSOR_KEY, "4830")
     store.set_sync_state(LAST_SYNC_KEY, "2026-01-01T00:00:00Z")
     store.set_sync_state(SYNC_ERROR_KEY, "This device is no longer enrolled.")
@@ -160,10 +175,11 @@ def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, r
 
 
 def test_the_device_id_survives_a_disconnection(connect_code, registry, store):
-    """The identity is this installation's, not the registry's: it is minted once."""
-    connect(connect_code(), "Dive laptop")
-    minted = credentials.device_id()
+    """The registry's id for this installation outlives the token: a reconnection
+    to the same registry is the same device, not a new one."""
+    connect(connect_code())
+    held = credentials.device_id()
 
     forget(store)
 
-    assert credentials.device_id() == minted
+    assert credentials.device_id() == held == "device-1"

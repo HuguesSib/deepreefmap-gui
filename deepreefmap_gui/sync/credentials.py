@@ -66,7 +66,12 @@ def token_path() -> Path:
 
 
 def device_id() -> str:
-    """This installation's device UUID, minted once and then permanent."""
+    """This installation's device UUID, minted once and then permanent.
+
+    A fallback for credential files written before the registry's own id was
+    stored at enrolment: the registry keys the device row on the id it minted,
+    so `save` records that one and this is never consulted again.
+    """
     document = _read_device()
     existing = document.get("device_id")
     if isinstance(existing, str) and existing:
@@ -77,10 +82,19 @@ def device_id() -> str:
     return minted
 
 
-def save(base_url: str, token: str) -> str:
-    """Persist the credentials from an enrolment, returning the store used."""
+# The function, before `save`'s parameter shadows the name.
+_local_device_id = device_id
+
+
+def save(base_url: str, token: str, device_id: str = "") -> str:
+    """Persist the credentials from an enrolment, returning the store used.
+
+    `device_id` is the registry's own id for this device, from the enrolment
+    response. It is the id the registry's device list shows, so an admin can
+    match this installation to a row there; a locally minted one cannot be.
+    """
     document = _read_device()
-    document["device_id"] = device_id()
+    document["device_id"] = device_id or _local_device_id()
     document["base_url"] = base_url
     document["token_backend"] = _store_token(token)
     _write_device(document)

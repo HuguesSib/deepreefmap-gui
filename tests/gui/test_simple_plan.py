@@ -691,3 +691,46 @@ def test_draft_row_stays_at_the_foot_under_a_sort(window):
 
     w._transect_list.sortByColumn(0, Qt.SortOrder.AscendingOrder)
     assert row_names(w) == ["Zeta", "Alpha draft"]
+
+
+def test_a_transect_names_its_site_and_the_name_is_unique_per_site(window):
+    """Two reefs can each have a T1; one reef cannot have two."""
+    from deepreefmap_gui.survey.models import Site
+
+    w = window
+    store = w._survey_store()
+    garden, wall = Site(name="Japanese Garden"), Site(name="North Wall")
+    store.add_site(garden)
+    store.add_site(wall)
+    w._refresh_site_choices()
+
+    w._tr_name_input.setText("T1")
+    w._tr_site_combo.setCurrentIndex(w._tr_site_combo.findData(str(garden.id)))
+    type_coord(w, "start", "-17.5 177.1")
+    type_coord(w, "end", "-17.5005, 177.1005")
+    assert store.list_transects()[0].site_id == garden.id
+
+    w._on_transect_new()
+    w._tr_name_input.setText("T1")
+    w._tr_site_combo.setCurrentIndex(w._tr_site_combo.findData(str(wall.id)))
+    type_coord(w, "start", "-17.6 177.2")
+    type_coord(w, "end", "-17.6005, 177.2005")
+
+    saved = store.list_transects()
+    assert len(saved) == 2
+    assert {t.site_id for t in saved} == {garden.id, wall.id}
+
+
+def test_selecting_a_transect_shows_its_site(window):
+    from deepreefmap_gui.survey.models import Site
+
+    w = window
+    store = w._survey_store()
+    site = Site(name="Japanese Garden")
+    store.add_site(site)
+    store.add_transect(make_transect("T1", site_id=site.id))
+    w._refresh_transect_list()
+
+    select_row(w, 0)
+
+    assert w._tr_site_combo.currentData() == str(site.id)

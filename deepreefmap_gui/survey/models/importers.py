@@ -43,6 +43,7 @@ def build_transect(
     length_m: float | None = None,
     depth_m: float | None = None,
     description: str = "",
+    site_id: uuid.UUID | None = None,
 ) -> Transect:
     """Validate and build a transect from typed fields, naming the field at fault.
 
@@ -68,6 +69,7 @@ def build_transect(
         length_m=length_m or None,
         depth_m=depth_m or None,
         description=description,
+        site_id=site_id,
     )
 
 

@@ -415,29 +415,6 @@ def chip_qss(colour: str, *, interactive: bool) -> str:
     )
 
 
-class DirectionChip(QLabel):
-    """Which way a pass was swum, as an arrow and a word in its own colour.
-
-    The arrow is not decoration: neither direction colour clears AA contrast on a
-    selected row, so on one the glyph is all that carries the direction.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setAccessibleName("Direction")
-        self.set_direction("")
-
-    def set_direction(self, direction: str) -> None:
-        text = direction_text(direction)
-        self.setText(text)
-        self.setVisible(bool(text))
-        colour = DIRECTION_COLORS.get((direction or "").strip().lower(), TEXT_MUTED)
-        self.setStyleSheet(chip_qss(colour, interactive=False))
-        self.setToolTip(f"Swum {direction.lower()} along the transect." if text else "")
-
-
 class StatusChip(QLabel):
     """An outcome, in the shape and colour the tables paint it."""
 
@@ -870,11 +847,7 @@ class ColumnSizer(QObject):
             self._applying = False
 
     def _set_hidden(self, column: int, hidden: bool) -> None:
-        view = self._view
-        if isinstance(view, QTreeWidget):
-            view.setColumnHidden(column, hidden)
-        else:
-            view.setColumnHidden(column, hidden)
+        self._view.setColumnHidden(column, hidden)
 
     def _on_section_resized(self, column: int, _old: int, new: int) -> None:
         if self._applying or new <= 0:
@@ -958,7 +931,13 @@ def install_column_sizer(
     Held on the view in ``column_sizer``: PySide6 discards a subclass instance's
     ``__dict__`` while C++ still references it, and the resurrected wrapper's
     ``eventFilter`` then has no state to work from.
+
+    A ``settings_key`` alone is enough to persist dragged widths: the store
+    defaults to the application's own settings, so call sites name the table
+    and nothing else.
     """
+    if settings_key is not None and settings is None:
+        settings = QSettings("ECEO", "deepreefmap")
     sizer = ColumnSizer(view, spec, settings_key=settings_key, settings=settings)
     cast("_SizerHost", view).column_sizer = sizer
     return sizer

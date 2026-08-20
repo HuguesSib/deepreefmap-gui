@@ -11,7 +11,7 @@ from deepreefmap_gui.server.connect_ui import (
     CONNECT,
     CONNECTING,
     INTRO,
-    NAME_HINT,
+    NAME_NOTE,
     SERVER_LABEL,
     UNREADABLE,
     ConnectDialog,
@@ -75,33 +75,22 @@ def test_a_loopback_server_over_plain_http_still_connects(dialog):
     assert dialog._connect_btn.isEnabled()
 
 
-def test_the_device_name_is_filled_in_from_the_machine(qapp, monkeypatch):
-    monkeypatch.setattr("socket.gethostname", lambda: "reef-laptop.local")
-
-    made = ConnectDialog()
-    try:
-        assert made.device_name() == "reef-laptop"
-    finally:
-        made.deleteLater()
-
-
-def test_the_dialog_says_the_name_is_the_attribution(dialog):
-    """The device name is what every upload is attributed to, and the code enrols
-    the installation rather than a person."""
-    assert "attributed" in NAME_HINT
+def test_the_dialog_offers_no_name_to_type(dialog):
+    """The device enrols under the machine's own name; naming lives in the web
+    interface, so the dialog says so rather than collecting one."""
+    assert "machine name" in NAME_NOTE
     assert "not you" in INTRO
-    assert dialog._name_edit.toolTip() == NAME_HINT
+    assert not hasattr(dialog, "_name_edit")
 
 
-def test_pressing_connect_hands_over_the_code_and_the_name(dialog):
-    handed: list[tuple[str, str]] = []
-    dialog.submitted.connect(lambda code, name: handed.append((code, name)))
+def test_pressing_connect_hands_over_the_code(dialog):
+    handed: list[str] = []
+    dialog.submitted.connect(handed.append)
     dialog._code_edit.setPlainText(f"  {CODE}  ")
-    dialog._name_edit.setText("Dive laptop")
 
     dialog._connect_btn.click()
 
-    assert handed == [(CODE, "Dive laptop")]
+    assert handed == [CODE]
 
 
 def test_an_enrolment_in_flight_locks_what_it_is_using(dialog):
@@ -112,7 +101,6 @@ def test_an_enrolment_in_flight_locks_what_it_is_using(dialog):
     assert dialog._connect_btn.text() == CONNECTING
     assert not dialog._connect_btn.isEnabled()
     assert dialog._code_edit.isReadOnly()
-    assert dialog._name_edit.isReadOnly()
     assert dialog._spinner.isVisibleTo(dialog)
 
 

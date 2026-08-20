@@ -209,3 +209,50 @@ def test_filing_a_section_says_it_can_be_undone(store):
     dialog.list.setCurrentRow(1)
     assert EDIT_LATER_NOTE in dialog.note.text()
     assert UNASSIGNED_NOTE not in dialog.note.text()
+
+
+def test_the_campaign_combo_only_exists_once_campaigns_have_been_pulled(store):
+    from deepreefmap_gui.survey.models import Campaign
+
+    without = TransectPickerDialog(None, store)
+    assert without.campaign.count() == 0
+
+    store.add_campaign(Campaign(name="2026_08_fiji"))
+    with_campaigns = TransectPickerDialog(None, store)
+
+    assert [with_campaigns.campaign.itemText(i) for i in range(with_campaigns.campaign.count())] == [
+        "No campaign",
+        "2026_08_fiji",
+    ]
+
+
+def test_the_campaign_picked_is_remembered_as_the_default(store):
+    from deepreefmap_gui.survey.models import Campaign
+
+    campaign = Campaign(name="2026_08_fiji")
+    store.add_campaign(campaign)
+    dialog = TransectPickerDialog(None, store)
+    dialog.campaign.setCurrentIndex(dialog.campaign.findData(str(campaign.id)))
+
+    assert dialog.campaign_choice() == campaign.id
+    assert store.default_campaign_id() == campaign.id
+
+    again = TransectPickerDialog(None, store)
+    assert again.campaign.currentData() == str(campaign.id)
+
+
+def test_a_new_transect_drawn_here_carries_the_picked_site(store):
+    from deepreefmap_gui.survey.models import Site
+
+    site = Site(name="Japanese Garden")
+    store.add_site(site)
+    dialog = TransectPickerDialog(None, store)
+    dialog._start_new_transect()
+    dialog.name_input.setText("T1")
+    dialog.start_input.setText("-17.5, 177.1")
+    dialog.end_input.setText("-17.5005, 177.1005")
+    dialog.site_combo.setCurrentIndex(dialog.site_combo.findData(str(site.id)))
+
+    dialog._save_new_transect()
+
+    assert store.list_transects()[0].site_id == site.id

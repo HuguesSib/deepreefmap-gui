@@ -51,18 +51,19 @@ class Connected:
     enrolled_by: str = ""
 
 
-def connect(pasted: str, device_name: str = "") -> Connected:
+def connect(pasted: str) -> Connected:
     """Trade a pasted connect code for a stored device credential.
 
-    `device_name` is sent here and nowhere else. Renaming a device is a web
-    interface action, so attribution is not mutable by the device it names.
+    The device enrols under the machine's own name, sent here and nowhere else.
+    Naming and renaming are web interface actions, so attribution is never
+    mutable from the device it names.
     """
     code = decode_connect_code(pasted)
     # The dialog already refuses this with its button, but the secret and the
     # token cross the network here, so the refusal cannot live only in the UI.
     if code.insecure_transport:
         raise ConnectCodeError(code.warning or "")
-    name = device_name.strip() or default_device_name()
+    name = default_device_name()
     enrolment = client.enrol(
         code,
         name,
@@ -74,7 +75,7 @@ def connect(pasted: str, device_name: str = "") -> Connected:
         raise client.SyncError(
             "The registry accepted the code but returned no token, so nothing was stored."
         )
-    backend = credentials.save(code.base_url, enrolment.token)
+    backend = credentials.save(code.base_url, enrolment.token, device_id=enrolment.device_id)
     logger.info("Device token stored in the %s", backend)
     logger.info("Enrolled with %s as device %s", code.base_url, enrolment.device_id)
     return Connected(

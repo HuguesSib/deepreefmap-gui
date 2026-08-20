@@ -221,31 +221,6 @@ def test_dragged_widths_are_remembered_by_heading_not_by_position(qapp, tmp_path
 
 # --- direction --------------------------------------------------------------
 
-def test_a_direction_chip_carries_both_the_arrow_and_the_word(qapp) -> None:
-    """Colour is never the only signal: neither direction colour clears AA on a
-    selected row, so the arrow has to be there too."""
-    from deepreefmap_gui.core.widgets import DirectionChip
-
-    chip = DirectionChip()
-    chip.set_direction("forward")
-    assert chip.text() == "→ Forward"
-    assert chip.accessibleName() == "Direction"
-    assert "forward" in chip.toolTip()
-
-    chip.set_direction("reverse")
-    assert chip.text() == "← Reverse"
-
-
-def test_a_chip_told_nothing_shows_nothing_rather_than_raising(qapp) -> None:
-    from deepreefmap_gui.core.widgets import DirectionChip
-
-    chip = DirectionChip()
-    for value in ("", "sideways"):
-        chip.set_direction(value)
-        assert chip.text() == ""
-        assert not chip.isVisibleTo(chip)
-
-
 def test_the_pill_delegate_finds_its_colour_whichever_word_carries_it(qapp) -> None:
     """A status pill's key leads its decoration ("Succeeded ⚠"); a direction's
     trails it ("→ Forward")."""
@@ -253,3 +228,17 @@ def test_the_pill_delegate_finds_its_colour_whichever_word_carries_it(qapp) -> N
 
     assert next((w for w in ["succeeded", "⚠"] if w in STATUS_COLORS), None) == "succeeded"
     assert next((w for w in ["→", "forward"] if w in DIRECTION_COLORS), None) == "forward"
+
+
+def test_a_settings_key_alone_is_enough_to_persist(qapp) -> None:
+    """Call sites name the table and nothing else; the store defaults to the
+    application's own settings."""
+    from PySide6.QtWidgets import QTableWidget
+
+    from deepreefmap_gui.core.widgets import configure_table, install_column_sizer
+
+    table = QTableWidget(0, 5)
+    configure_table(table, ["Name", "Status", "Created", "Kind", "Extra"])
+    sizer = install_column_sizer(table, _spec(), settings_key="probe-default-store")
+
+    assert sizer._settings is not None

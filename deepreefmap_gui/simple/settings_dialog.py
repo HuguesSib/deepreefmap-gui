@@ -87,12 +87,49 @@ class RunSettingsDialog(QDialog):
             self._window._load_standard_into_form if on_reset is None else on_reset
         )
         layout.addWidget(buttons)
-        self.resize(560, 640)
 
         # Per-run values come from the pass table on the Run step, so showing
         # them here would invite edits that go nowhere.
         for widget in per_run:
             widget.setVisible(False)
+        self._size_to_form(layout, scroll, buttons)
+
+    def _size_to_form(
+        self, layout: QVBoxLayout, scroll: QScrollArea, buttons: QDialogButtonBox
+    ) -> None:
+        """Open at the size the form asks for, up to what the screen allows.
+
+        The scroll area is the fallback for a form taller than the display, not
+        the normal way to read it: a settings page that opens already scrolled
+        hides whichever section happens to be last.
+        """
+        form = self._form
+        form.adjustSize()
+        margins = layout.contentsMargins()
+        chrome = (
+            margins.top()
+            + margins.bottom()
+            + layout.spacing()
+            + buttons.sizeHint().height()
+            + 2 * scroll.frameWidth()
+        )
+        hint = form.sizeHint()
+        # Between the width the form was designed at and the width its longest
+        # sentence would like: past that the dialog is wide rather than readable.
+        width = max(560, min(hint.width(), 620))
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            width = min(width, int(available.width() * 0.9))
+        # The wrapped labels are shorter at their natural width than at this one,
+        # so the height is asked for at the width the form will actually get.
+        inner = width - 2 * scroll.frameWidth() - margins.left() - margins.right()
+        form_layout = form.layout()
+        wrapped = form_layout.heightForWidth(inner) if form_layout is not None else -1
+        height = max(hint.height(), wrapped) + chrome
+        if available is not None:
+            height = min(height, int(available.height() * 0.9))
+        self.resize(width, height)
 
     def restore_form(self) -> None:
         """Put the form back in its holder. Safe to call more than once."""

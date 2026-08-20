@@ -664,7 +664,7 @@ class SimpleBatchMixin(MixinBase):
             optional=_PASS_COLUMNS_OPTIONAL,
         )
         self._pass_column_sizer = install_column_sizer(
-            self._survey_pass_table, self._pass_columns
+            self._survey_pass_table, self._pass_columns, settings_key="passes"
         )
         # Footage is imported under Videos and staged from there, so this table
         # takes no drops from outside: a clip dropped here would arrive with no
@@ -916,6 +916,17 @@ class SimpleBatchMixin(MixinBase):
             lines.append(
                 f"Changed for this session only: {describe_keys(organisation)}."
                 f" {org.name} sets these, so they go back to standard next launch."
+            )
+        # What a registry preset named and this build ignored: the value that
+        # was dropped is the one the author meant, so applying the rest without
+        # saying so would misdescribe the batch.
+        if org.degraded:
+            lines.append(org.dropped_summary)
+        withdrawn = getattr(self, "_server_preset_withdrawn", "")
+        if withdrawn:
+            lines.append(
+                f"The selected server preset {withdrawn} is no longer on the "
+                "registry, so the standard settings are in force."
             )
         s = self._collect_run_settings()
         lines.append(

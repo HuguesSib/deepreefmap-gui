@@ -203,6 +203,11 @@ def coerce_settings(
         if field is None:
             dropped.append((key, "this version has no such setting"))
             continue
+        # The console publishes no path fields, but the API stores settings
+        # opaquely, so the refusal has to live where the value would land.
+        if not field.publishable and value is not None:
+            dropped.append((key, "a path on another machine's disk never applies here"))
+            continue
         coerced, problem = _coerce(field, value)
         if problem:
             dropped.append((key, problem))

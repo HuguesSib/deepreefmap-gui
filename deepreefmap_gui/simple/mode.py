@@ -379,6 +379,7 @@ class InterfaceShellMixin(MixinBase):
         must not silently keep stale settings under a name the console deleted,
         so the standard comes back and the label says which settings are live.
         """
+        self._server_preset_withdrawn = ""
         store = self._try_survey_store()
         if store is None:
             return None
@@ -393,6 +394,11 @@ class InterfaceShellMixin(MixinBase):
             return None
         if row is None:
             logger.info("The selected server preset is no longer on the registry")
+            # Kept for the settings label: falling back to the standard is
+            # right, doing it without a word is not.
+            self._server_preset_withdrawn = (
+                f"{wanted.get('name')} (v{wanted.get('version')})"
+            )
             return None
         return registry_preset(row.name, row.version, row.settings)
 

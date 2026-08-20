@@ -112,10 +112,6 @@ class GroupedBarChart(QWidget):
         self._passes = passes
         self.update()
 
-    def set_empty_text(self, text: str) -> None:
-        self._empty_text = text
-        self.update()
-
     # --- geometry, recomputed rather than cached from the last paint ---------
 
     def _plot_rect(self) -> QRectF:

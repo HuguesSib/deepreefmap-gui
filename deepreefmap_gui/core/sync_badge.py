@@ -44,6 +44,13 @@ NOT_CONNECTED = SyncBadgeFace(
     "This laptop is not connected to a registry. Press to connect.",
 )
 SYNCING = SyncBadgeFace("↕ Syncing…", PRIMARY, "Talking to the registry now.")
+# Enrolled, but nothing to grade: without an open survey there are no rows to
+# count, so claiming "Synced" would be a verdict on data never examined.
+NO_SURVEY = SyncBadgeFace(
+    "○ Connected",
+    TEXT_MUTED,
+    "Connected to the registry. Open an output folder to see what is waiting to sync.",
+)
 FAULT = SyncBadgeFace(
     "✕ Sync fault",
     ERROR,

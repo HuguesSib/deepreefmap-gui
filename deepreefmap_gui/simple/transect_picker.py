@@ -168,6 +168,24 @@ class TransectPickerDialog(QDialog):
         direction_row = QFormLayout()
         direction_row.setContentsMargins(0, 0, 0, 0)
         direction_row.addRow("Direction", self.direction)
+        # Only where the registry has sent expeditions to choose from: a survey
+        # that has never synced has no campaigns, and an empty combo would be a
+        # question with no answers.
+        self.campaign = QComboBox()
+        self.campaign.setToolTip(
+            "The expedition this section was recorded on. Remembered as the "
+            "default for the next section."
+        )
+        self._campaigns = self._store.list_campaigns()
+        if self._campaigns:
+            self.campaign.addItem("No campaign", None)
+            for campaign in self._campaigns:
+                self.campaign.addItem(campaign.name, str(campaign.id))
+            default = self._store.default_campaign_id()
+            if default is not None:
+                index = self.campaign.findData(str(default))
+                self.campaign.setCurrentIndex(max(0, index))
+            direction_row.addRow("Campaign", self.campaign)
         side.addLayout(direction_row)
 
         buttons_row = QHBoxLayout()
@@ -221,6 +239,15 @@ class TransectPickerDialog(QDialog):
         form.setContentsMargins(0, 0, 0, 0)
         self.name_input = QLineEdit()
         form.addRow("Name", self.name_input)
+        # Only where the registry has sent sites: names are unique per site, so
+        # a T1 on one reef can coexist with a T1 on another.
+        self.site_combo = QComboBox()
+        self._sites = self._store.list_sites()
+        if self._sites:
+            self.site_combo.addItem("No site", None)
+            for site in self._sites:
+                self.site_combo.addItem(site.name, str(site.id))
+            form.addRow("Site", self.site_combo)
         self.start_input = QLineEdit()
         self.start_input.setPlaceholderText("-17.5005, 177.1005")
         form.addRow("Start point", self.start_input)
@@ -288,12 +315,14 @@ class TransectPickerDialog(QDialog):
         self._refresh_note()
 
     def _save_new_transect(self) -> None:
+        site_data = self.site_combo.currentData()
         try:
             transect = build_transect(
                 self.name_input.text(),
                 self.start_input.text(),
                 self.end_input.text(),
                 length_m=self.length_input.value(),
+                site_id=uuid.UUID(str(site_data)) if site_data else None,
             )
             self._store.add_transect(transect)
         except ValueError as exc:
@@ -301,7 +330,8 @@ class TransectPickerDialog(QDialog):
             return
         except sqlite3.IntegrityError:
             self.error.setText(
-                f"A transect named {self.name_input.text().strip()!r} already exists."
+                f"A transect named {self.name_input.text().strip()!r} already "
+                "exists on that site."
             )
             return
         self._end_new_transect()
@@ -455,3 +485,10 @@ class TransectPickerDialog(QDialog):
         return self.selected_transect_id(), str(
             self.direction.currentData() or PASS_DIRECTIONS[0]
         )
+
+    def campaign_choice(self) -> uuid.UUID | None:
+        """The expedition picked here, remembered as the survey's new default."""
+        data = self.campaign.currentData()
+        chosen = uuid.UUID(str(data)) if data else None
+        self._store.set_default_campaign(chosen)
+        return chosen

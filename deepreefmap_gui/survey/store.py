@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 SURVEY_DB_NAME = "survey.db"
 
+# In the same key-value table as the sync position: a device-local working
+# default, while the attribution it produces lands on the pass rows and syncs.
+DEFAULT_CAMPAIGN_KEY = "survey.default_campaign"
+
 # Left on a run row the process abandoned. Short on purpose: it shows in the run
 # list and the pass status, so it reads as a fact, not a stack trace.
 _INTERRUPTED_REASON = "The app closed before this run finished."
@@ -1010,6 +1014,29 @@ class SurveyStore:
         # Newest expedition first: the one being worked is the one just begun.
         return self._list("campaign", Campaign, "begin_date DESC, name")
 
+    def default_campaign_id(self) -> uuid.UUID | None:
+        """The expedition new sections are filed under, until it is changed.
+
+        A working default rather than a per-section question: a trip files weeks
+        of sections under one campaign, so it is asked once and remembered here,
+        beside the survey it describes. A campaign that has since been withdrawn
+        answers None rather than attributing new work to a tombstone.
+        """
+        stored = self.sync_state(DEFAULT_CAMPAIGN_KEY)
+        if stored is None:
+            return None
+        try:
+            campaign_id = uuid.UUID(stored)
+        except ValueError:
+            return None
+        campaign = self.get_campaign(campaign_id)
+        return campaign_id if campaign is not None and campaign.deleted_at is None else None
+
+    def set_default_campaign(self, campaign_id: uuid.UUID | None) -> None:
+        self.set_sync_state(
+            DEFAULT_CAMPAIGN_KEY, None if campaign_id is None else str(campaign_id)
+        )
+
     # --- Transects ---
 
     def add_transect(self, transect: Transect) -> None:
@@ -1164,6 +1191,18 @@ class SurveyStore:
     def update_video(self, asset: VideoAsset) -> None:
         asset.updated_at = utc_now_iso()
         self._update("video_asset", asset)
+
+    def set_video_hash(self, video_id: object, digest: str) -> None:
+        """Record a digest computed elsewhere, without stamping the row edited.
+
+        Identifying a file changes nothing about the clip, so ``updated_at``
+        stays: bumping it would queue the row for the next push over a value the
+        archive already carries on its own call.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE video_asset SET hash = ? WHERE id = ?", (digest, str(video_id))
+            )
 
     def merge_videos(self, keeper_id: uuid.UUID, loser_ids: list[uuid.UUID]) -> int:
         """Fold duplicate clip rows into one, and repoint what pointed at them.

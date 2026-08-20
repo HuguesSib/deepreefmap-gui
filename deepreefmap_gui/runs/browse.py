@@ -910,6 +910,8 @@ class BrowseMixin(MixinBase):
         if entry is not None:
             self._run_detail.show_entry(entry, self._related_for(entry))
             self._set_data_detail_page(_DETAIL_RUN)
+            # First card of the session asks the registry; the answer repaints it.
+            self._maybe_refresh_archive_badges()
             return
         key = self._data_selected_key
         if self._data_facet == "transects" and key is not None and key[0] == "transect":
@@ -931,6 +933,7 @@ class BrowseMixin(MixinBase):
         if grouped and len(grouped) == 1:
             self._run_detail.show_entry(grouped[0], self._related_for(grouped[0]))
             self._set_data_detail_page(_DETAIL_RUN)
+            self._maybe_refresh_archive_badges()
             return
         # A group of several has no pane of its own, and wants none: selecting it
         # has already filtered the table to exactly those runs, and the pane

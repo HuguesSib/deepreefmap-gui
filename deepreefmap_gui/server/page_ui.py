@@ -69,7 +69,7 @@ from deepreefmap_gui.server.state import (
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.notification import INFO, SURVEY, WARNING
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.archive import ArchiveReport
+from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
 from deepreefmap_gui.sync.engine import SyncEngine
 
@@ -83,6 +83,12 @@ NOT_CONNECTED_HINT = "Paste a connect code to join a registry."
 
 DEVICE_CARD = "This device"
 ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web interface."
+
+REFERENCE_NOTE = (
+    "Sites and campaigns are edited in the web interface. Here they are chosen: "
+    "a transect names its site on the Transects page, and a section names its "
+    "campaign when it is filed."
+)
 ONBOARDED_BY = "Onboarded by"
 
 CONNECT = "Connect to server"
@@ -108,6 +114,8 @@ ARCHIVE_TOOLTIP = (
     "archive. Nothing is sent until this is pressed."
 )
 PLANNING_ARCHIVE = "Working out what to archive…"
+CANCEL_ARCHIVE = "Cancel archive"
+CANCELLING_ARCHIVE = "Finishing the file in flight…"
 # One episode per pass over the queue: re-archiving resumes server-side, so the
 # same fingerprint updating in place is the right shape for a retry.
 ARCHIVE_FAILED = "archive.upload_failed"
@@ -174,9 +182,12 @@ class ServerPageMixin(MixinBase):
     _server_syncing: bool = False
     _server_archiving: bool = False
     _connect_dialog: ConnectDialog | None = None
-    _server_state: ServerState | None = None
     # The client the running sync is using, kept for the version it learned.
     _sync_client: Any | None = None
+    # The archive flow between its two workers: the client the plan was built
+    # for, and the plan awaiting confirmation or upload.
+    _archive_client: Any | None = None
+    _archive_plan_pending: ArchivePlan | None = None
 
     # --- building -----------------------------------------------------------
 
@@ -223,6 +234,17 @@ class ServerPageMixin(MixinBase):
         waiting_layout.addWidget(self._server_waiting)
         body.addWidget(self._server_waiting_card)
 
+        # What the registry has sent down, read-only: sites and campaigns are
+        # authored in the web interface and only chosen here: on the Transects
+        # page and when a section is filed.
+        self._server_reference_card, reference_layout = section_card("From the registry")
+        reference_note = muted_label(REFERENCE_NOTE)
+        reference_note.setWordWrap(True)
+        reference_layout.addWidget(reference_note)
+        self._server_reference = KeyValueList()
+        reference_layout.addWidget(self._server_reference)
+        body.addWidget(self._server_reference_card)
+
         body.addWidget(self._build_server_actions())
         note = muted_label(DISCONNECT_NOTE)
         note.setWordWrap(True)
@@ -248,6 +270,14 @@ class ServerPageMixin(MixinBase):
         row.addWidget(self._server_spinner)
         self._server_progress = muted_label("")
         row.addWidget(self._server_progress, 1)
+
+        # Beside the progress it stops: an upload on a field uplink can be hours
+        # of PUTs, and until this existed nothing could end it early.
+        self._server_archive_cancel_btn = QPushButton(CANCEL_ARCHIVE)
+        self._server_archive_cancel_btn.setProperty("quiet", "true")
+        self._server_archive_cancel_btn.setVisible(False)
+        self._server_archive_cancel_btn.clicked.connect(self._on_archive_cancel)
+        row.addWidget(self._server_archive_cancel_btn)
 
         self._server_connect_btn = QPushButton(CONNECT)
         self._server_connect_btn.setProperty("cta", "true")
@@ -295,7 +325,6 @@ class ServerPageMixin(MixinBase):
         state = read_state(
             self._try_survey_store(), self._server_device_name(), self._server_enrolled_by()
         )
-        self._server_state = state
         connected = state.connected
         self._server_empty.setVisible(not connected)
         self._server_device_card.setVisible(connected)
@@ -316,6 +345,11 @@ class ServerPageMixin(MixinBase):
             # answer after a restart. No action: the message itself says whether
             # a retry or a new code fixes it.
             self._server_blocker.show_blocker(state.sync_fault, "")
+        else:
+            # A refresh repaints the whole page from disk, so a transient
+            # message ("wait for the session to finish") must not outlive the
+            # condition it described.
+            self._server_blocker.clear()
         if connected:
             self._server_device_label.setText(state.device_name or default_device_name())
             self._server_device_facts.set_rows(_device_rows(state))
@@ -326,6 +360,10 @@ class ServerPageMixin(MixinBase):
                     for section, count in state.pending.items()
                 ]
             )
+        reference = _reference_rows(self._try_survey_store()) if connected else []
+        self._server_reference_card.setVisible(bool(reference))
+        if reference:
+            self._server_reference.set_rows(reference)
 
     def _server_device_name(self) -> str:
         stored = self._settings.value(DEVICE_NAME_KEY, "")
@@ -341,6 +379,8 @@ class ServerPageMixin(MixinBase):
         self._server_sync_btn.setEnabled(not busy)
         self._server_archive_btn.setEnabled(not busy)
         self._server_disconnect_btn.setEnabled(not busy)
+        if not busy:
+            self._server_archive_cancel_btn.setVisible(False)
 
     # --- connecting ---------------------------------------------------------
 
@@ -359,13 +399,12 @@ class ServerPageMixin(MixinBase):
         # gets the outcome, on the page instead.
         self._connect_dialog = None
 
-    def _start_enrolment(self, code: str, device_name: str) -> None:
+    def _start_enrolment(self, code: str) -> None:
         """Enrol on a worker thread. The code is never logged and never stored."""
-        name = device_name.strip() or default_device_name()
 
         def worker() -> None:
             try:
-                connected = enrolment_mod.connect(code, name)
+                connected = enrolment_mod.connect(code)
             except Exception as exc:
                 logger.warning("Enrolment failed: %s", exc)
                 payload: tuple[object, object] = (None, describe_failure(exc))
@@ -399,6 +438,9 @@ class ServerPageMixin(MixinBase):
         self._server_blocker.clear()
         self._refresh_server_page()
         self._refresh_sync_badge()
+        # A fresh enrolment is a fresh registry to ask about.
+        self._archive_probe_attempted = False
+        self._maybe_refresh_archive_badges()
         self._server_notice.show_notice(f"Connected to {connected.base_url}.", SYNC_NOW)
 
     # --- syncing ------------------------------------------------------------
@@ -488,11 +530,12 @@ class ServerPageMixin(MixinBase):
         """Offer every clip and finished run to the blob archive, on a worker thread.
 
         On request only: nothing here runs on a timer, so a metered field uplink
-        is never spent without someone pressing for it.
+        is never spent without someone pressing for it. The whole-survey queue
+        confirms with its size first, for the same reason.
         """
         from deepreefmap_gui.sync import archive
 
-        self._archive_with_plan(archive.archive_plan)
+        self._archive_with_plan(archive.archive_plan, confirm_first=True)
 
     def _archive_video(self, video_id: str) -> None:
         """Offer one clip, from its own card. Same worker, a plan of one."""
@@ -512,7 +555,15 @@ class ServerPageMixin(MixinBase):
             lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id))
         )
 
-    def _archive_with_plan(self, plan_builder: Callable[..., list]) -> None:
+    def _archive_with_plan(
+        self, plan_builder: Callable[..., object], *, confirm_first: bool = False
+    ) -> None:
+        """Plan on a worker, then upload on another, with a confirm in between.
+
+        Planning hashes files, so it stays off the GUI thread; but what it found
+        comes back here before anything is sent, so the whole-survey queue can
+        say what it weighs and be declined, and every upload can be cancelled.
+        """
         if self._server_syncing or self._server_archiving:
             return
         # Same guard as a sync: a running batch is still writing into the run
@@ -520,7 +571,7 @@ class ServerPageMixin(MixinBase):
         if self._survey_worker_running:
             self._server_blocker.show_blocker(SESSION_RUNNING)
             return
-        from deepreefmap_gui.sync import archive, credentials
+        from deepreefmap_gui.sync import credentials
         from deepreefmap_gui.sync.client import SyncClient
 
         store = self._try_survey_store()
@@ -539,8 +590,64 @@ class ServerPageMixin(MixinBase):
         client = SyncClient(held.base_url, held.token)
         out_root = store.path.parent
         self._server_archiving = True
+        self._archive_client = client
+        self._archive_confirm_first = confirm_first
+        self._archive_plan_pending = None
         self._server_notice.clear()
         self._set_server_busy(True, PLANNING_ARCHIVE)
+
+        def worker() -> None:
+            try:
+                result: object = plan_builder(store, out_root)
+            except Exception as exc:
+                logger.warning("Archive planning failed: %s", exc)
+                result = describe_failure(exc)
+            try:
+                self._sig_archive_plan.emit(result)
+            except (RuntimeError, TypeError):
+                logger.debug("The window closed before the archive plan was built")
+
+        threading.Thread(target=worker, daemon=True, name="registry-archive-plan").start()
+
+    def _on_archive_plan_ready(self, result: object) -> None:
+        """Back on the GUI thread with the plan: land the digests, ask, upload."""
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+        from deepreefmap_gui.sync import archive
+
+        if isinstance(result, Failure):
+            self._on_archive_done(result)
+            return
+        if not isinstance(result, ArchivePlan) or not self._server_archiving:
+            return
+        store = self._try_survey_store()
+        if store is not None:
+            # Written here rather than by the planner: the planner runs on a
+            # worker thread, and the GUI thread writes this same database.
+            for video_id, digest in result.hash_backfills:
+                store.set_video_hash(video_id, digest)
+        self._archive_plan_pending = result
+        if not result.jobs:
+            self._on_archive_done(ArchiveReport())
+            return
+        if self._archive_confirm_first and not confirm(
+            self,
+            ARCHIVE_NOW,
+            f"Send {len(result.jobs)} file(s), about "
+            f"{format_bytes(result.total_bytes)}, to the registry's archive? "
+            "Files it already holds are skipped without travelling.",
+        ):
+            self._archive_plan_pending = None
+            self._server_archiving = False
+            self._set_server_busy(False)
+            return
+        client = self._archive_client
+        if client is None:
+            return
+        jobs = result.jobs
+        self._archive_cancel = threading.Event()
+        self._server_archive_cancel_btn.setText(CANCEL_ARCHIVE)
+        self._server_archive_cancel_btn.setEnabled(True)
+        self._server_archive_cancel_btn.setVisible(True)
 
         def report(text: str, done: int, total: int) -> None:
             try:
@@ -550,23 +657,47 @@ class ServerPageMixin(MixinBase):
 
         def worker() -> None:
             try:
-                jobs = plan_builder(store, out_root)
-                result: object = archive.run_archive(client, jobs, report)
+                outcome: object = archive.run_archive(
+                    client, jobs, report, cancel_event=self._archive_cancel
+                )
             except Exception as exc:
                 logger.warning("Archive failed: %s", exc)
-                result = describe_failure(exc)
+                outcome = describe_failure(exc)
             try:
-                self._sig_archive_done.emit(result)
+                self._sig_archive_done.emit(outcome)
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive finished")
 
         threading.Thread(target=worker, daemon=True, name="registry-archive").start()
+
+    def _on_archive_cancel(self) -> None:
+        """Stop after the file in flight: its parts resume server-side anyway."""
+        event = getattr(self, "_archive_cancel", None)
+        if event is not None:
+            event.set()
+        self._server_archive_cancel_btn.setEnabled(False)
+        self._server_archive_cancel_btn.setText(CANCELLING_ARCHIVE)
 
     def _on_archive_progress(self, text: str) -> None:
         if self._server_archiving:
             self._set_server_busy(True, text)
 
     # --- what the registry holds, for the badges ------------------------------
+
+    def _maybe_refresh_archive_badges(self) -> None:
+        """Probe once per session on the first paint that could use a badge.
+
+        Without this an enrolled machine showed no archive state until its
+        first sync or archive, which reads exactly like "not on the server".
+        One attempt: offline, retrying on every card click would spend the
+        field uplink on probes; a completed sync or archive asks again anyway.
+        """
+        if getattr(self, "_archive_states", None) is not None:
+            return
+        if getattr(self, "_archive_probe_attempted", False):
+            return
+        self._archive_probe_attempted = True
+        self._refresh_archive_badges()
 
     def _refresh_archive_badges(self) -> None:
         """Ask the registry what it holds of this survey, off the GUI thread.
@@ -629,6 +760,13 @@ class ServerPageMixin(MixinBase):
     def _on_archive_done(self, result: object) -> None:
         self._server_archiving = False
         self._set_server_busy(False)
+        # What the plan left out belongs on the same line as what was sent, or
+        # "Archived 12" reads as "archived everything".
+        plan = getattr(self, "_archive_plan_pending", None)
+        self._archive_plan_pending = None
+        self._archive_client = None
+        if isinstance(result, ArchiveReport) and plan is not None:
+            result.skipped = list(plan.skipped)
         if isinstance(result, Failure):
             self._server_notice.clear()
             self._server_blocker.show_blocker(
@@ -719,6 +857,10 @@ class ServerPageMixin(MixinBase):
                 for name, count in sorted(state.pending.items())
             )
             return sync_badge.waiting_face(state.waiting, breakdown)
+        # No survey open means nothing was counted, which is not the same
+        # answer as everything having been sent.
+        if not state.has_survey:
+            return sync_badge.NO_SURVEY
         age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
         return sync_badge.synced_face(age)
 
@@ -803,6 +945,24 @@ class ServerPageMixin(MixinBase):
         self._refresh_server_page()
 
 
+def _reference_rows(store: SurveyStore | None) -> list[tuple[str, str]]:
+    """The pulled sites and campaigns, one row each, or nothing to hide the card.
+
+    Names, not counts: a diver checking this page wants to see that the reef
+    they are about to file against actually came down.
+    """
+    if store is None:
+        return []
+    rows: list[tuple[str, str]] = []
+    for site in store.list_sites():
+        where = ", ".join(part for part in (site.region, site.country) if part)
+        rows.append((site.name, where or "Site"))
+    for campaign in store.list_campaigns():
+        span = " to ".join(part for part in (campaign.begin_date, campaign.end_date) if part)
+        rows.append((campaign.name, span or "Campaign"))
+    return rows
+
+
 def _device_rows(state: ServerState) -> list[tuple[str, str]]:
     """The installation's own identity. `Onboarded by` is absent unless reported."""
     rows = [("Device id", state.device_id or "Unknown")]
@@ -829,14 +989,24 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
 
 
 def summarise_archive(report: ArchiveReport) -> str:
-    """One line for the notice strip, counting where every file ended up."""
+    """One line for the notice strip, counting where every file ended up.
+
+    Skipped items are named by count with the first reason spelled out: what the
+    plan could not offer is part of where every file ended up.
+    """
     parts = [
         f"Archived {report.archived} file(s)",
         f"{report.already} already on the server",
     ]
     if report.failed:
         parts.append(f"{len(report.failed)} failed")
-    return ", ".join(parts) + "."
+    line = ", ".join(parts) + "."
+    if report.cancelled:
+        line += " Stopped on request; archive again to send the rest."
+    if report.skipped:
+        label, reason = report.skipped[0]
+        line += f" {len(report.skipped)} item(s) were left out ({label}: {reason})."
+    return line
 
 
 def _heartbeat(client: object) -> None:

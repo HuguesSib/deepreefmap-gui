@@ -99,6 +99,9 @@ class ServerState:
     # token is still a readable credential, so `connected` alone would paint
     # a healthy badge over a connection the registry has refused.
     sync_fault: str = ""
+    # Whether a survey database was open to be read. Without one the pending
+    # counts are empty because nothing was counted, not because nothing waits.
+    has_survey: bool = False
 
     @property
     def waiting(self) -> int:
@@ -135,6 +138,7 @@ def read_state(
         last_sync=store.sync_state(LAST_SYNC_KEY) if store is not None else None,
         pending=pending_rows(store) if store is not None else {},
         sync_fault=(store.sync_state(SYNC_ERROR_KEY) or "") if store is not None else "",
+        has_survey=store is not None,
     )
 
 

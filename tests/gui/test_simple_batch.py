@@ -2304,3 +2304,65 @@ def test_a_repainted_settings_button_does_not_read_as_a_dragged_column(
 
     assert table.column_sizer._pinned == {}
     assert table.columnWidth(_COL_SECTION) == before
+
+
+def _publish_server_preset(store, name="Expedition standard", version=1, settings=None):
+    """Land a preset the way a pull would: straight into the store's table."""
+    from deepreefmap_gui.survey.models.server_preset import ServerPreset
+
+    preset = ServerPreset(name=name, version=version, settings=settings or {"fps": 3})
+    store._add("server_preset", preset)
+    return preset
+
+
+def _pin_server_preset(window, name, version):
+    import json as json_mod
+
+    from deepreefmap_gui.simple.mode import SERVER_PRESET_KEY
+
+    window._survey_store().set_sync_state(
+        SERVER_PRESET_KEY, json_mod.dumps({"name": name, "version": version})
+    )
+    window._reload_active_preset()
+    window._survey_preset_label.setText(window._survey_preset_summary())
+
+
+def test_a_degraded_server_preset_is_said_on_the_settings_label(window):
+    """A preset naming settings this build cannot apply is offered and reported,
+    never silently patched: the dropped value is the one the author meant."""
+    store = window._survey_store()
+    _publish_server_preset(
+        store,
+        settings={"fps": 3, "coral_iq": 11, "loger_model_path": "/home/kim/latest.pt"},
+    )
+
+    _pin_server_preset(window, "Expedition standard", 1)
+
+    label = window._survey_preset_label.text()
+    assert "Expedition standard" in label
+    assert "cannot apply" in label
+    assert "coral iq" in label  # describe_key speaks without underscores
+    assert "another machine's disk" in label
+
+
+def test_a_withdrawn_server_preset_falls_back_out_loud(window):
+    store = window._survey_store()
+    _publish_server_preset(store)
+    _pin_server_preset(window, "Expedition standard", 1)
+    assert "no longer on the registry" not in window._survey_preset_label.text()
+
+    # The console withdraws it; the next sync tombstones the row.
+    preset = store.list_server_presets()[0]
+    preset.deleted_at = preset.updated_at
+    store._update("server_preset", preset)
+    _pin_server_preset(window, "Expedition standard", 1)
+
+    label = window._survey_preset_label.text()
+    assert "no longer on the registry" in label
+    assert "standard settings are in force" in label
+
+
+def test_every_table_names_a_column_width_store(window):
+    """Dragged column widths survive a restart on every page with a table."""
+    assert window._pass_column_sizer._settings_key == "passes"
+    assert window._transect_list.column_sizer._settings_key == "transects"

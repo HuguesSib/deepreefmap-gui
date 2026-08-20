@@ -148,6 +148,39 @@ def write_web_cloud(
         fh.write(payload)
 
 
+def write_web_cloud_from_scene(scene_path: Path, out_path: Path, *, run_dir: Path) -> bool:
+    """Backfill the browser export from a run's scene file.
+
+    The writer normally runs inside `write_scene_file`, so a run reconstructed
+    before the export existed has a scene and no drmw: archived, it is blind in
+    the web console's viewer. The scene holds the same index the writer would
+    have been handed, so this rebuilds the export without re-reading the run.
+    Returns False when the scene cannot be loaded (stale fingerprint included).
+    """
+    from deepreefmap_gui.io.scene_file import load_scene_file
+
+    scene = load_scene_file(scene_path, run_dir=run_dir)
+    if scene is None:
+        return False
+    fci = scene.final_cloud_index
+    # The scene does not say whether the mapper produced confidence; an index
+    # built without it carries constant fill, so the header flag is read off
+    # the arrays it describes.
+    has_confidence = any(
+        arr.size > 1 and float(arr.min()) != float(arr.max())
+        for arr in fci.conf_by_class.values()
+    )
+    write_web_cloud(
+        out_path,
+        fci,
+        fci.frame_order,
+        scene.classes_config.id_to_name,
+        scene.classes_config.id_to_color,
+        has_confidence=has_confidence,
+    )
+    return True
+
+
 def read_web_cloud(path: Path) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     """Read a 'drmw' file back into its header dict and named numpy views.
 

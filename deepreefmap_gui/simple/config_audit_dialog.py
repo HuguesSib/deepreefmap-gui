@@ -77,7 +77,7 @@ class ConfigAuditDialog(QDialog):
     def _build_table(self, rows: list[ConfigAuditRow]) -> QTableWidget:
         table = QTableWidget(len(rows), 3)
         configure_table(table, ["Run", "Settings", "Difference"])
-        install_column_sizer(table, _COLUMN_SPEC)
+        install_column_sizer(table, _COLUMN_SPEC, settings_key="config_audit")
         for index, row in enumerate(rows):
             for column, text in (
                 (_COL_RUN, row.display_name),

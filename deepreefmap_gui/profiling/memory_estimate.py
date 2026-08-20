@@ -28,6 +28,12 @@ memory is answered by closing it.
 
 A Linux RAM exhaustion is an uncatchable OOM kill, so this advises before a long
 run rather than crash into it.
+
+The overall verdict names whichever pool is tighter, but `Verdict.resources`
+grades both separately and always returns both, including on a machine where one
+of them does not exist. They are separate hardware with separate answers -- a
+laptop can have memory to spare and a card that cannot take the run at all -- and
+a reader shown one figure cannot tell which of the two they are looking at.
 """
 
 from __future__ import annotations
@@ -184,6 +190,34 @@ class Budget:
 
 
 @dataclass(frozen=True)
+class ResourceFit:
+    """One pool graded on its own: what it holds, what the run wants of it.
+
+    The two pools are separate hardware and a run is held to both, so each is
+    reported on its own track with its own verdict. Folding them into one figure
+    hid a card that could not take the run behind memory that comfortably could.
+    """
+
+    key: str  # "ram" | "vram"
+    label: str
+    level: str  # "ok" | "warn" | "block" | "none"
+    message: str
+    need_bytes: int = 0
+    budget_bytes: int = 0
+    held_bytes: int = 0
+    swap_need_bytes: int = 0
+
+    @property
+    def available(self) -> bool:
+        """Whether there is a pool here to measure at all."""
+        return self.level != "none"
+
+    @property
+    def fits(self) -> bool:
+        return self.level in ("ok", "none")
+
+
+@dataclass(frozen=True)
 class Verdict:
     level: str  # "ok" | "warn" | "block"
     cost: Cost
@@ -249,6 +283,16 @@ class Verdict:
         if self.limit.startswith("vram"):
             return "graphics memory"
         return "memory and swap" if self.budget.swap_bytes else "memory"
+
+    @property
+    def resources(self) -> tuple[ResourceFit, ResourceFit]:
+        """Both pools, memory first, each graded against itself.
+
+        Always both, whatever decided the overall verdict: a run is held to the
+        card and to the memory at once, and a reader who is shown only the
+        tighter of the two cannot tell which one they are looking at.
+        """
+        return (_ram_resource(self), _vram_resource(self))
 
 
 def estimate_cost(shape: RunShape, *, recorded: dict | None = None) -> Cost:
@@ -657,6 +701,185 @@ def _pool_phrase(budget: Budget) -> str:
     return (
         f"{format_bytes(budget.ram_bytes)} of memory and "
         f"{format_bytes(budget.swap_bytes)} of swap"
+    )
+
+
+def _budget_label(budget: Budget) -> str:
+    """What the memory pool is called, so swap is never quoted as plain memory."""
+    return "memory and swap" if budget.swap_bytes else "memory"
+
+
+def _fig(text: str) -> str:
+    """A figure inside a resource message.
+
+    `ResourceFit.message` is rich text: the numbers and the model names are what
+    change when a setting moves, so they are the part of the sentence that reads
+    at a glance rather than being hunted for in prose.
+    """
+    return f"<b>{text}</b>"
+
+
+def _sized(value: int) -> str:
+    return _fig(format_bytes(value))
+
+
+def _rich_pool_phrase(budget: Budget) -> str:
+    """`_pool_phrase` with its figures marked, for the rich-text messages."""
+    if not budget.swap_bytes:
+        return _sized(budget.ram_bytes)
+    return f"{_sized(budget.ram_bytes)} of memory and {_sized(budget.swap_bytes)} of swap"
+
+
+def _ram_resource(verdict: Verdict) -> ResourceFit:
+    """The memory pool, graded on its own terms.
+
+    On a unified machine the graphics demand is already inside the need, which
+    is what makes it the only pool there is to report.
+    """
+    budget = verdict.budget
+    cost = verdict.cost
+    need = verdict.memory_need_bytes or cost.ram_bytes
+    usable = budget.usable_bytes
+    held = max(0, budget.memory_bytes - usable)
+    spill = max(0, min(need, usable) - budget.ram_bytes)
+    pool = _rich_pool_phrase(budget)
+    label = "Memory and swap" if budget.swap_bytes else "Memory"
+    if budget.unified:
+        label += " (shared with the graphics processor)"
+    warn_at = _SWAP_WARN_FRACTION if budget.swap_bytes else _WARN_FRACTION
+    slower = (
+        f" About {_sized(spill)} of that runs from swap, so it will be slower."
+        if spill
+        else ""
+    )
+
+    if need > usable:
+        level = "block"
+        if need <= budget.memory_bytes:
+            # The machine has it, something else is in it: a different problem,
+            # with a fix that costs nothing.
+            message = (
+                f"Needs about {_sized(need)}, and only {_sized(usable)} of the "
+                f"{pool} this machine can give a run is free -- {_sized(held)} is "
+                f"held by other applications."
+            )
+        else:
+            fixed_ram = max(stage.fixed_bytes for stage in cost.stages)
+            backend = verdict.shape.mapping_backend if verdict.shape else "the mapping model"
+            if fixed_ram > budget.memory_bytes:
+                message = (
+                    f"Loading {_fig(backend)} alone takes about {_sized(fixed_ram)}, "
+                    f"more than the {pool} this machine can give a run. Frame rate, "
+                    f"length and resolution do not change that."
+                )
+            else:
+                message = (
+                    f"Needs about {_sized(need)}, more than the {pool} this "
+                    f"machine can give a run."
+                )
+    elif usable and 100.0 * need / usable >= 100.0 * warn_at:
+        level = "warn"
+        message = (
+            f"Close to the limit: needs about {_sized(need)} of the "
+            f"{_sized(usable)} of {_budget_label(budget)} free for a run.{slower}"
+        )
+    else:
+        level = "ok"
+        message = (
+            f"Fits: needs about {_sized(need)} of the {_sized(usable)} "
+            f"of {_budget_label(budget)} free for a run.{slower}"
+        )
+    return ResourceFit(
+        key="ram",
+        label=label,
+        level=level,
+        message=message,
+        need_bytes=need,
+        budget_bytes=usable,
+        held_bytes=held,
+        swap_need_bytes=spill,
+    )
+
+
+def _vram_resource(verdict: Verdict) -> ResourceFit:
+    """The graphics card's pool, graded on its own terms.
+
+    Reported even where there is no separate pool to grade -- a machine with no
+    card, or one that shares the system's memory -- because a row that vanishes
+    reads as a row that passed.
+    """
+    budget = verdict.budget
+    cost = verdict.cost
+    shape = verdict.shape
+    if budget.unified:
+        return ResourceFit(
+            key="vram",
+            label="Graphics memory",
+            level="none",
+            message=(
+                "This machine's graphics processor draws from system memory, so "
+                "the whole run is graded against the pool above."
+            ),
+        )
+    if budget.vram_bytes is None:
+        return ResourceFit(
+            key="vram",
+            label="Graphics memory",
+            level="none",
+            message="No graphics card was detected, so the run uses memory only.",
+        )
+    need = cost.vram_bytes
+    pool = budget.vram_bytes
+    measured = (
+        " Measured on this card on an earlier run."
+        if cost.vram_source == "measured"
+        else " This is an estimate until a run on this card records what it took."
+    )
+    if need > pool:
+        level = "block"
+        if cost.fixed_vram_bytes > pool:
+            if cost.vram_fixed_from == "segmentation" and shape is not None:
+                message = (
+                    f"Reading {_fig(str(shape.batch_size))} frames at a time through "
+                    f"{_fig(shape.seg_model)} takes about "
+                    f"{_sized(cost.fixed_vram_bytes)} on the card, more than "
+                    f"the {_sized(pool)} it can give a run. Frame rate, "
+                    f"length and resolution do not change that -- the batch size "
+                    f"does.{measured}"
+                )
+            else:
+                backend = shape.mapping_backend if shape else "the mapping model"
+                message = (
+                    f"{_fig(backend)} holds about {_sized(cost.fixed_vram_bytes)} on "
+                    f"the card before the first frame is read, more than the "
+                    f"{_sized(pool)} it can give a run. Frame rate, length "
+                    f"and resolution do not change that.{measured}"
+                )
+        else:
+            message = (
+                f"Needs about {_sized(need)} at {_fig(str(cost.frames))} frames, more "
+                f"than the {_sized(pool)} of graphics memory this card can "
+                f"give a run."
+            )
+    elif need >= _WARN_FRACTION * pool:
+        level = "warn"
+        message = (
+            f"Close to this card's limit: needs about {_sized(need)} of the "
+            f"{_sized(pool)} of graphics memory it can give a run."
+        )
+    else:
+        level = "ok"
+        message = (
+            f"Fits: needs about {_sized(need)} of the {_sized(pool)} of "
+            f"graphics memory this card can give a run."
+        )
+    return ResourceFit(
+        key="vram",
+        label="Graphics memory",
+        level=level,
+        message=message,
+        need_bytes=need,
+        budget_bytes=pool,
     )
 
 

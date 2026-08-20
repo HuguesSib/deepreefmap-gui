@@ -354,7 +354,9 @@ QGroupBox {{
     /* Tall enough for the title to sit clear of the frame; any less and the
        top border is drawn straight through the text. */
     margin-top: 20px;
-    padding-top: 8px;
+    /* The title sits above the frame, so the card's own layout margin is all
+       the breathing room its first row needs. */
+    padding-top: 0px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;

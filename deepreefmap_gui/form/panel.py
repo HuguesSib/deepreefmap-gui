@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import log_icon
+from deepreefmap_gui.core.icons import ICON_SM, log_icon
 from deepreefmap_gui.core.spinner import BusySpinner, SpinnerStopButton
 from deepreefmap_gui.core.storage_bar import StorageBars
 from deepreefmap_gui.core.sync_badge import SyncBadge
@@ -71,6 +71,7 @@ from deepreefmap_gui.core.theme import (
     SPACE_XS,
     SUCCESS,
     SURFACE_HI,
+    TEXT_DIM,
     TEXT_MUTED,
     TEXT_SECONDARY,
     UPDATE,
@@ -126,6 +127,125 @@ def _separator() -> QWidget:
     return line
 
 
+class CapacityRow(QWidget):
+    """One pool's track: what it is called, how full the run would leave it, and
+    whether it takes the run.
+
+    Memory and the graphics card each get one. They are separate hardware and a
+    run is held to both, so they are never merged into a single track: a bar
+    drawn against whichever pool happened to be tighter read as a comfortable
+    machine on the run the card could not take.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        from deepreefmap_gui.core.widgets import MeterBar
+
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACE_XS)
+
+        self.title = QLabel()
+        self.title.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: {FONT_SM}; font-weight: {WEIGHT_BOLD};"
+        )
+        layout.addWidget(self.title)
+
+        self.bar = MeterBar()
+        layout.addWidget(self.bar)
+
+        # Names each part of the track, in the order it is painted.
+        self.legend = QLabel()
+        self.legend.setWordWrap(True)
+        self.legend.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        layout.addWidget(self.legend)
+
+        verdict_row = QHBoxLayout()
+        verdict_row.setContentsMargins(0, 0, 0, 0)
+        verdict_row.setSpacing(SPACE_XS)
+        self.icon = QLabel()
+        self.icon.setFixedWidth(ICON_SM)
+        # Top-aligned: the message wraps to several lines and the mark belongs
+        # beside the first of them.
+        verdict_row.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
+        self.message = QLabel()
+        self.message.setWordWrap(True)
+        # The figures inside it are marked, so the number a setting moves is the
+        # part of the line that reads first.
+        self.message.setTextFormat(Qt.TextFormat.RichText)
+        verdict_row.addWidget(self.message, 1)
+        layout.addLayout(verdict_row)
+
+    def set_resource(self, resource, *, held_colour: str) -> None:
+        """Paint one graded pool: bar, legend, and the verdict under it."""
+        from deepreefmap_gui.core.icons import (
+            blocked_icon,
+            check_icon,
+            icon_pixmap,
+            status_dot_icon,
+            warning_icon,
+        )
+        from deepreefmap_gui.core.storage_bar import FREE_SWATCH
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+
+        self.title.setText(resource.label)
+        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK, "none": TEXT_MUTED}[
+            resource.level
+        ]
+        draw = {
+            "ok": check_icon,
+            "warn": warning_icon,
+            "block": blocked_icon,
+            "none": lambda size: status_dot_icon(TEXT_MUTED, size),
+        }[resource.level]
+        self.icon.setPixmap(icon_pixmap(draw(ICON_SM), ICON_SM, self.devicePixelRatio()))
+        self.message.setStyleSheet(
+            f"color: {TEXT_MUTED if resource.level in ('ok', 'none') else colour}; "
+            f"font-size: {FONT_SM};"
+        )
+        self.message.setText(resource.message)
+
+        if not resource.available:
+            self.bar.set_unavailable()
+            self.bar.setToolTip("")
+            self.legend.clear()
+            return
+
+        # The whole pool, not just the free part of it: what other applications
+        # are already in, then what a run would take on top of that, then what
+        # neither has.
+        held = resource.held_bytes
+        pool = resource.budget_bytes + held
+        need = resource.need_bytes
+        self.bar.set_level(
+            100.0 * need / pool if pool else 0.0,
+            colour,
+            100.0 * held / pool if pool else 0.0,
+        )
+        parts = []
+        if held:
+            parts.append((held_colour, "■", "Other applications", held))
+        parts.append((colour, "■", "Needed", need))
+        free = max(0, pool - need - held)
+        if free:
+            parts.append((FREE_SWATCH, "□", "Free", free))
+        # A level that runs off the track is clipped there, so the part that did
+        # not fit is only readable if it is named.
+        over = max(0, need + held - pool)
+        if over:
+            parts.append((colour, "▸", "Over by", over))
+        self.legend.setText(
+            "&nbsp;&nbsp;&nbsp;".join(
+                f'<span style="color:{swatch};">{mark}</span> {label} '
+                f"{format_bytes(value)}"
+                for swatch, mark, label, value in parts
+            )
+        )
+        self.bar.setToolTip(
+            "\n".join(f"{label}: {format_bytes(value)}" for _, _, label, value in parts)
+        )
+
+
 class FormPanelMixin(MixinBase):
     """DeepReefMapWindow methods that build and drive the run form and the status bars."""
 
@@ -153,11 +273,15 @@ class FormPanelMixin(MixinBase):
         ) = self._build_panel_homes()
 
         self._build_deferred_top_bar_widgets(setup_layout)
-        self._build_input_group(setup_layout, profiles)
+        # Memory leads: it is the setting that decides whether the batch runs at
+        # all, and the frame rate that moves it is the control beside it. The
+        # camera profile is one choice per camera and closes the form.
+        self._build_memory_group(setup_layout)
         self._build_model_selection_group(setup_layout, seg_models, map_backends)
         self._build_output_group(setup_layout, default_root)
         self._build_advanced_toggle_and_notices(setup_layout)
         self._build_advanced_panel(setup_layout)
+        self._build_input_group(setup_layout, profiles)
         self._build_run_control_buttons()
         self._build_gated_warning(setup_layout)
         self._build_run_warnings_and_log(viewer_layout)
@@ -255,60 +379,40 @@ class FormPanelMixin(MixinBase):
         self._warnings_label_running.setVisible(False)
         setup_layout.addWidget(self._warnings_label_running)
 
+    def _build_memory_group(self, setup_layout: QVBoxLayout) -> None:
+        """What the batch would cost this machine, on the pools it is held to."""
+        memory_group = QGroupBox("Memory")
+        self._build_capacity_readout(QVBoxLayout(memory_group))
+        setup_layout.addWidget(memory_group)
+
     def _build_input_group(self, setup_layout: QVBoxLayout, profiles: list[str]) -> None:
-        """How the footage is read: which lens it was shot through, and how
-        densely it is sampled. Both are settings the whole batch shares; the
+        """Which lens the footage was shot through: one choice per camera, shared
+        by the whole batch, so it closes the form rather than opening it. The
         clips themselves come from the pass table on the Run step."""
         input_group = QGroupBox("Input")
         ig = QVBoxLayout(input_group)
-
-        profile_fps_row = QHBoxLayout()
-        profile_fps_row.setContentsMargins(0, 0, 0, 0)
-        profile_col = QVBoxLayout()
-        profile_col.setContentsMargins(0, 0, 0, 0)
-        profile_col.addWidget(QLabel("Camera profile"))
+        ig.addWidget(QLabel("Camera profile"))
         self._profile_combo = QComboBox()
         self._profile_combo.addItems(profiles)
-        profile_col.addWidget(self._profile_combo)
-        profile_fps_row.addLayout(profile_col, 1)
-
-        fps_col = QVBoxLayout()
-        fps_col.setContentsMargins(0, 0, 0, 0)
-        fps_col.addWidget(QLabel("FPS"))
-        self._fps_spin = QSpinBox()
-        self._fps_spin.setRange(1, 60)
-        self._fps_spin.setValue(5)
-        self._fps_spin.setMinimumWidth(64)
-        fps_col.addWidget(self._fps_spin)
-        profile_fps_row.addLayout(fps_col)
-        ig.addLayout(profile_fps_row)
-        self._build_capacity_readout(ig)
+        ig.addWidget(self._profile_combo)
         setup_layout.addWidget(input_group)
 
     def _build_capacity_readout(self, ig: QVBoxLayout) -> None:
         """How much of the machine the longest queued pass would use.
 
-        Sits with FPS because frame rate and trim are the two controls that move
-        it; the system panel can only report the machine, not change the run.
+        One row per pool, always both: a run has to fit the memory and the
+        graphics card at once, and either of them can be the one that refuses it.
         """
-        from deepreefmap_gui.core.widgets import MeterBar
-
-        ig.addSpacing(SPACE_SM)
-        self._capacity_caption = QLabel()
-        self._capacity_caption.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
-        ig.addWidget(self._capacity_caption)
-
-        self._capacity_bar = MeterBar()
-        ig.addWidget(self._capacity_bar)
-
-        # Names what each part of the track is, in the same order it is painted.
-        self._capacity_legend = QLabel()
-        self._capacity_legend.setWordWrap(True)
-        self._capacity_legend.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
-        ig.addWidget(self._capacity_legend)
+        self._capacity_rows: dict[str, CapacityRow] = {}
+        for key in ("ram", "vram"):
+            row = CapacityRow()
+            self._capacity_rows[key] = row
+            ig.addWidget(row)
+            ig.addSpacing(SPACE_XS)
 
         self._capacity_detail = QLabel()
         self._capacity_detail.setWordWrap(True)
+        self._capacity_detail.setTextFormat(Qt.TextFormat.RichText)
         self._capacity_detail.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
         ig.addWidget(self._capacity_detail)
 
@@ -318,6 +422,14 @@ class FormPanelMixin(MixinBase):
         self._capacity_advice.setVisible(False)
         self._capacity_advice.linkActivated.connect(lambda _: self._reveal_memory_detail())
         ig.addWidget(self._capacity_advice)
+
+        # Last, and dimmest: what was fed to the model is the footnote to the
+        # figures, not the headline over them.
+        self._capacity_caption = QLabel()
+        self._capacity_caption.setWordWrap(True)
+        self._capacity_caption.setTextFormat(Qt.TextFormat.RichText)
+        self._capacity_caption.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_caption)
 
     def _build_model_selection_group(
         self, setup_layout: QVBoxLayout, seg_models: list[str], map_backends: list[str]
@@ -365,6 +477,23 @@ class FormPanelMixin(MixinBase):
         self._map_status_btn = self._build_model_status_button(self._map_combo)
         map_row.addWidget(self._map_status_btn)
         mg.addLayout(map_row)
+
+        # How densely the footage is fed to those models, so it reads with them
+        # rather than as a property of the camera. It is also the control that
+        # moves the memory readout above.
+        mg.addWidget(QLabel("Frames per second"))
+        fps_row = QHBoxLayout()
+        fps_row.setContentsMargins(0, 0, 0, 0)
+        fps_row.setSpacing(SPACE_SM)
+        self._fps_spin = QSpinBox()
+        self._fps_spin.setRange(1, 60)
+        self._fps_spin.setValue(5)
+        self._fps_spin.setFixedWidth(80)
+        fps_row.addWidget(self._fps_spin)
+        fps_row.addWidget(
+            muted_label("Frames read from each video, per second of footage."), 1
+        )
+        mg.addLayout(fps_row)
 
         setup_layout.addWidget(models_group)
 
@@ -1456,7 +1585,7 @@ class FormPanelMixin(MixinBase):
     def _update_memory_profile_warning(self) -> None:
         """Refresh the capacity readout and the advisory Setup reads from it."""
         # Advisory only: a warn or block grade never gates the run.
-        if getattr(self, "_capacity_bar", None) is None:  # form not built yet
+        if not getattr(self, "_capacity_rows", None):  # form not built yet
             return
         try:
             fit = self._current_fit()
@@ -1486,113 +1615,64 @@ class FormPanelMixin(MixinBase):
         return fit.headline
 
     def _paint_capacity_readout(self, fit) -> None:
-        """Show the longest pass against what this machine can give one run."""
-        from deepreefmap_gui.profiling.memory_estimate import format_duration
-        from deepreefmap_gui.profiling.system_probe import format_bytes
+        """Show the longest pass against what this machine can give one run.
+
+        Both pools are drawn every time, each with its own verdict under it, so
+        the row that refuses the run is the row the reader is looking at.
+        """
+        from deepreefmap_gui.profiling.memory_estimate import ResourceFit, format_duration
 
         if fit is None:
             self._capacity_caption.setText("Memory needed")
-            self._capacity_bar.set_unavailable()
-            self._capacity_bar.setToolTip("")
-            self._capacity_legend.clear()
+            for key, label in (("ram", "Memory"), ("vram", "Graphics memory")):
+                self._capacity_rows[key].set_resource(
+                    ResourceFit(
+                        key=key,
+                        label=label,
+                        level="none",
+                        message="Nothing queued to size yet.",
+                    ),
+                    held_colour=SURFACE_HI,
+                )
             self._capacity_detail.setText("Add a pass to see what it would need.")
             self._capacity_advice.setVisible(False)
             self._vram_auto_label.setVisible(False)
             return
 
-        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
-        # Whichever resource decided the verdict is the one the bar measures. A
-        # bar drawn against RAM under a headline about the graphics card reads
-        # as comfortable while the run is refused.
         verdict = fit.verdict
-        need, budget = verdict.need_bytes, verdict.budget_bytes
-        # Named by the verdict: a pool that is part swapfile must not be quoted
-        # as plain memory, or a run that will crawl reads as one that will not.
-        resource = verdict.budget_label
+        # Says what was modelled and from what. "Longest pass" alone read as a
+        # statistic about the batch rather than as the input to these figures.
         self._capacity_caption.setText(
-            f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
+            f"Modelled on a pass of <b>{format_duration(fit.seconds)}</b> at "
+            f"<b>{fit.fps} FPS</b>, the longest queued."
         )
-        # The bar is the whole pool, not just the free part of it: what other
-        # applications are already in, then what a run would take on top of
-        # that, then what neither has. Held is only shown where the verdict is
-        # about memory -- it is a RAM figure, and putting it under a
-        # graphics-memory bar would measure two pools in one track.
-        held = 0 if verdict.limit.startswith("vram") else verdict.held_by_others_bytes
-        pool = budget + held
-        self._capacity_bar.set_level(
-            100.0 * need / pool if pool else 0.0,
-            colour,
-            100.0 * held / pool if pool else 0.0,
+        for resource in verdict.resources:
+            self._capacity_rows[resource.key].set_resource(
+                resource, held_colour=SURFACE_HI
+            )
+        # The ceiling is a property of the machine and the settings, not of the
+        # queued pass: it is the length at which the tightest stage would fill
+        # the pool. A fixed cost has no such length -- it does not fit at one
+        # frame -- so quoting one there would be a number that cannot be acted on.
+        self._capacity_detail.setText(
+            ""
+            if verdict.limit_is_fixed
+            else (
+                f"At <b>{fit.fps} FPS</b> these settings can take a pass of up to "
+                f"about <b>{format_duration(fit.max_seconds)}</b> on this machine."
+            )
         )
-        self._paint_capacity_legend(colour, need, held, max(0, pool - need - held))
-        detail = (
-            f"Needs about {format_bytes(need)} of the {format_bytes(budget)} of "
-            f"{resource} this machine can give one run."
-        )
-        # A fixed cost does not fit at any length, so quoting one would only say
-        # the run is impossible twice.
-        if not verdict.limit_is_fixed:
-            detail += (
-                f" It can process about {format_duration(fit.max_seconds)} "
-                f"at {fit.fps} FPS."
-            )
-        # What the machine has is not what it has left. Said on the readout, so a
-        # figure that moved because something else opened can be understood.
-        if verdict.held_by_others_bytes:
-            detail += (
-                f" {format_bytes(verdict.held_by_others_bytes)} more is in use by "
-                f"other applications."
-            )
-        # Stated, not warned about: the run works, it is the speed that changes.
-        if verdict.swap_need_bytes:
-            detail += (
-                f" About {format_bytes(verdict.swap_need_bytes)} of it runs from "
-                f"swap, so expect it to be slower."
-            )
-        self._capacity_detail.setText(detail)
         self._paint_batch_size_hint(fit)
         if fit.fits:
             self._capacity_advice.setVisible(False)
             return
+        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
         self._capacity_advice.setStyleSheet(f"color: {colour}; font-size: {FONT_SM};")
         self._capacity_advice.setText(
             f"<b>{fit.headline}.</b> {fit.advice} "
             f'<a href="#system" style="color:{colour};">Setup</a>'
         )
         self._capacity_advice.setVisible(True)
-
-    def _paint_capacity_legend(
-        self, colour: str, need: int, held: int, free: int
-    ) -> None:
-        """Name each part of the track, in the order it is painted.
-
-        Filled marks for what is taken and a hollow one for what is left, as the
-        drive legend does, so the two bars are read the same way. A part that is
-        nothing is left out rather than listed at zero.
-
-        The run's own share is "Needed" rather than named after the pass: the
-        caption above already says which pass is being sized, and this readout
-        is read as a question about the machine.
-        """
-        from deepreefmap_gui.core.storage_bar import FREE_SWATCH
-        from deepreefmap_gui.profiling.system_probe import format_bytes
-
-        parts = []
-        if held:
-            parts.append((SURFACE_HI, "■", "Other applications", held))
-        parts.append((colour, "■", "Needed", need))
-        if free:
-            parts.append((FREE_SWATCH, "□", "Free", free))
-        self._capacity_legend.setText(
-            "&nbsp;&nbsp;&nbsp;".join(
-                f'<span style="color:{swatch_colour};">{mark}</span> '
-                f"{label} {format_bytes(value)}"
-                for swatch_colour, mark, label, value in parts
-            )
-        )
-        self._capacity_bar.setToolTip(
-            "\n".join(f"{label}: {format_bytes(value)}" for _, _, label, value in parts)
-        )
 
     def _paint_batch_size_hint(self, fit) -> None:
         """Say what the batch size would have to be, when it is what decides.
