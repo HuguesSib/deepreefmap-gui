@@ -737,7 +737,7 @@ wheels = [
 [[package]]
 name = "deepreefmap"
 version = "1.1.0"
-source = { git = "https://github.com/eceo-epfl/deepreefmap.git?rev=3b3db91b4b1bb1fdb294fc7634af791a9d10786b#3b3db91b4b1bb1fdb294fc7634af791a9d10786b" }
+source = { git = "https://github.com/eceo-epfl/deepreefmap.git?rev=36110a30cc5a16f002da4a1ff0674a97e5b0fa86#36110a30cc5a16f002da4a1ff0674a97e5b0fa86" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "imageio", extra = ["ffmpeg"] },
@@ -831,7 +831,7 @@ rocm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=3b3db91b4b1bb1fdb294fc7634af791a9d10786b" },
+    { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=36110a30cc5a16f002da4a1ff0674a97e5b0fa86" },
     { name = "huggingface-hub", specifier = ">=0.30" },
     { name = "imohash", specifier = ">=1.1.0" },
     { name = "keyring", specifier = ">=24" },
