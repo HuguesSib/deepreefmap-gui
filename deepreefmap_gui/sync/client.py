@@ -35,6 +35,9 @@ SECTIONS_HEADER = "Deepreefmap-Sections"
 DEFAULT_TIMEOUT = 15.0
 # Enrolment mints a token behind argon2, so it is slower than a data call.
 ENROL_TIMEOUT = 30.0
+# One PUT moves a whole archive part, 32 MiB at the server's default, and a
+# field uplink can be slow enough that the client timeout is what would kill it.
+UPLOAD_TIMEOUT = 600.0
 PULL_LIMIT = 1000
 MAX_PULL_LIMIT = 5000
 
@@ -213,6 +216,43 @@ class SyncClient:
         """
         return self._request("POST", "/archive/initiate", body=dict(payload))
 
+    def archive_upload_part(self, object_id: str, part_number: int, chunk: bytes) -> str:
+        """PUT one part's bytes to the registry, returning the MD5 it answered.
+
+        A raw octet-stream body under the device token, so this is the one
+        authorised call that does not go through `_request`. The timeout is the
+        upload's own: a part can take minutes on a field uplink.
+        """
+        if not self._token:
+            raise DeviceRevokedError("This installation is not connected to a registry yet.")
+        url = self._url(f"/archive/{object_id}/parts/{part_number}")
+        headers = {
+            "Accept": "application/json",
+            CONTRACT_HEADER: CONTRACT_RANGE,
+            "Content-Type": "application/octet-stream",
+            "Authorization": f"Bearer {self._token}",
+        }
+        # S310: the URL comes from the pasted connect code, already checked to be
+        # http or https by connect_code.decode_connect_code.
+        request = urllib.request.Request(url, data=chunk, headers=headers, method="PUT")  # noqa: S310
+        try:
+            with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT) as response:  # noqa: S310
+                self._learn_range(response.headers.get(CONTRACT_HEADER))
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            raise self._http_error(exc, authorise=True) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            unreachable = f"Cannot reach {self.base_url}: {exc}. Check the network and try again."
+            raise ServerUnreachableError(unreachable) from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ServerFaultError(f"{url} did not answer with JSON.") from exc
+        etag = str(payload.get("etag") or "") if isinstance(payload, Mapping) else ""
+        if not etag:
+            raise SyncError("The registry answered a part without an ETag.")
+        return etag
+
     def archive_complete(
         self, object_id: str, parts: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:
@@ -243,8 +283,13 @@ class SyncClient:
             return None
 
     def archive_download(self, object_id: str) -> str:
-        """A short-lived presigned URL for a completed object."""
-        return str(self._request("GET", f"/archive/{object_id}/download").get("url", ""))
+        """A short-lived signed fetch link on the registry for a completed object.
+
+        A registry that does not know its public address answers a relative
+        path, joined here onto the address this client already talks to.
+        """
+        url = str(self._request("GET", f"/archive/{object_id}/download").get("url", ""))
+        return self._url(url) if url.startswith("/") else url
 
     def _url(self, path: str) -> str:
         prefix = "" if self.base_url.endswith("/api") else "/api"

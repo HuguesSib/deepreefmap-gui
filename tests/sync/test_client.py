@@ -424,7 +424,7 @@ def test_archive_initiate_and_complete_post_where_the_registry_listens(registry)
     registry.reply(
         "/api/archive/initiate",
         200,
-        {"object_id": "o-1", "status": "pending", "part_size_bytes": 4, "part_urls": []},
+        {"object_id": "o-1", "status": "pending", "part_size_bytes": 4, "parts_done": []},
     )
     registry.reply("/api/archive/o-1/complete", 200, {"object_id": "o-1", "status": "uploaded"})
     client = make_client(registry)
@@ -440,10 +440,23 @@ def test_archive_initiate_and_complete_post_where_the_registry_listens(registry)
     assert body == {"parts": [{"part_number": 1, "etag": "abc"}]}
 
 
-def test_archive_download_returns_the_presigned_url(registry) -> None:
-    registry.reply("/api/archive/o-1/download", 200, {"url": "https://blobs/o-1?sig=x"})
+def test_archive_download_joins_a_relative_fetch_link_onto_the_registry(registry) -> None:
+    """A registry without a configured public address answers a relative path,
+    and the fetch route lives under `/api` like every other."""
+    link = "/archive/o-1/fetch?expires=1&sig=x"
+    registry.reply("/api/archive/o-1/download", 200, {"url": link})
 
-    assert make_client(registry).archive_download("o-1") == "https://blobs/o-1?sig=x"
+    assert make_client(registry).archive_download("o-1") == f"{registry.base_url}/api{link}"
+    assert make_client(registry, suffix="/api").archive_download("o-1") == (
+        f"{registry.base_url}/api{link}"
+    )
+
+
+def test_archive_download_passes_an_absolute_url_through(registry) -> None:
+    link = "https://reef.example/api/archive/o-1/fetch?expires=1&sig=x"
+    registry.reply("/api/archive/o-1/download", 200, {"url": link})
+
+    assert make_client(registry).archive_download("o-1") == link
 
 
 def test_offline_server_raises_unreachable() -> None:

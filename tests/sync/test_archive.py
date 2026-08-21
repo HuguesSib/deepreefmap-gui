@@ -1,6 +1,6 @@
 """The archive queue: what is planned, and how one pass over it runs.
 
-Only the part-upload test reaches a socket, and it is a loopback server. The
+Only the part-upload tests reach a socket, and it is a loopback server. The
 registry is a fake object standing in for `SyncClient`, so the real plan builder
 and the real executor run against real files.
 """
@@ -8,6 +8,7 @@ and the real executor run against real files.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -24,9 +25,13 @@ from deepreefmap_gui.sync.archive import (
     ArchiveReport,
     archive_plan,
     run_archive,
-    upload_part,
 )
-from deepreefmap_gui.sync.client import ServerUnreachableError, SyncError
+from deepreefmap_gui.sync.client import (
+    AccessDeniedError,
+    ServerUnreachableError,
+    SyncClient,
+    SyncError,
+)
 
 CLIP_BYTES = b"reef footage " * 64
 
@@ -174,6 +179,7 @@ class FakeArchive:
     def __init__(self, answers):
         self._answers = dict(answers)
         self.initiated: list[dict] = []
+        self.uploaded: list[tuple[str, int, bytes]] = []
         self.completed: list[tuple[str, list[dict]]] = []
 
     def archive_initiate(self, payload):
@@ -182,6 +188,10 @@ class FakeArchive:
         if isinstance(answer, Exception):
             raise answer
         return dict(answer)
+
+    def archive_upload_part(self, object_id, part_number, chunk):
+        self.uploaded.append((object_id, part_number, bytes(chunk)))
+        return hashlib.md5(chunk, usedforsecurity=False).hexdigest()
 
     def archive_complete(self, object_id, parts):
         self.completed.append((object_id, [dict(p) for p in parts]))
@@ -200,125 +210,103 @@ def make_job(tmp_path, content=CLIP_BYTES, name="clip.mp4"):
     )
 
 
-def pending(object_id, part_size, part_numbers, parts_done=()):
+def pending(object_id, part_size, parts_done=()):
     return {
         "object_id": object_id,
         "status": "pending",
         "upload_id": "u-1",
         "part_size_bytes": part_size,
         "parts_done": list(parts_done),
-        "presign_ttl_seconds": 900,
-        "part_urls": [{"part_number": n, "url": f"https://blobs/{n}"} for n in part_numbers],
     }
-
-
-def capture_uploads(monkeypatch):
-    sent: list[tuple[str, bytes]] = []
-
-    def fake_upload(url, chunk):
-        sent.append((url, chunk))
-        return f"etag-{url.rsplit('/', 1)[-1]}"
-
-    monkeypatch.setattr(archive, "upload_part", fake_upload)
-    return sent
 
 
 def no_progress(text, done, total):
     pass
 
 
-def test_content_the_server_already_holds_uploads_nothing(tmp_path, monkeypatch):
+def test_content_the_server_already_holds_uploads_nothing(tmp_path):
     job = make_job(tmp_path)
     client = FakeArchive({job.content_hash: {"object_id": "o-1", "status": "complete"}})
-    sent = capture_uploads(monkeypatch)
 
     report = run_archive(client, [job], no_progress)
 
     assert (report.archived, report.already, report.failed) == (0, 1, [])
-    assert sent == [] and client.completed == []
+    assert client.uploaded == [] and client.completed == []
 
 
-def test_a_lapsed_signature_reinitiates_and_finishes_the_rest(tmp_path, monkeypatch):
-    """Scenario: a 403 on a part URL that outlived its signature.
-
-    Expected behaviour: the pass asks for fresh URLs and carries on from the
-    parts the registry says are still missing, rather than failing the file.
-    """
-    job = make_job(tmp_path, content=b"x" * 24)
-    client = FakeArchive({job.content_hash: pending("o-1", 8, [1, 2, 3])})
-    client._answers[job.content_hash] = [
-        pending("o-1", 8, [1, 2, 3]),
-        pending("o-1", 8, [2, 3], parts_done=[1]),
-    ]
-    answers = iter(client._answers[job.content_hash])
-    client.archive_initiate = lambda payload: dict(next(answers))  # type: ignore[method-assign]
-
-    lapsed = {"first": True}
-
-    def fake_upload(url, chunk):
-        if lapsed["first"] and url.endswith("/2"):
-            lapsed["first"] = False
-            raise archive.PresignExpiredError("lapsed")
-        return f"etag-{url.rsplit('/', 1)[-1]}"
-
-    monkeypatch.setattr(archive, "upload_part", fake_upload)
-
-    report = run_archive(client, [job], no_progress)
-
-    assert (report.archived, report.failed) == (1, [])
-    assert client.completed == [("o-1", [])]
-
-
-def test_missing_parts_are_read_at_their_offsets(tmp_path, monkeypatch):
+def test_missing_parts_are_read_at_their_offsets(tmp_path):
     """Scenario: a prior pass got part 1 up before the connection dropped.
 
-    Expected behaviour: only the parts the server presigned travel, each read at
+    Expected behaviour: only the parts the registry lacks travel, each read at
     the offset its part number names, not wherever the file handle sat.
     """
     part_size = 16
     content = bytes(range(48))
     job = make_job(tmp_path, content=content)
-    client = FakeArchive(
-        {job.content_hash: pending("o-1", part_size, part_numbers=[2, 3], parts_done=[1])}
-    )
-    sent = capture_uploads(monkeypatch)
+    client = FakeArchive({job.content_hash: pending("o-1", part_size, parts_done=[1])})
 
     report = run_archive(client, [job], no_progress)
 
     assert report.archived == 1
-    assert sent == [
-        ("https://blobs/2", content[16:32]),
-        ("https://blobs/3", content[32:48]),
+    assert client.uploaded == [
+        ("o-1", 2, content[16:32]),
+        ("o-1", 3, content[32:48]),
     ]
-    # No receipts: the registry assembles from the store's own part listing,
-    # which is the only account that covers parts an earlier attempt sent.
+    receipts = [
+        {"part_number": n, "etag": hashlib.md5(chunk, usedforsecurity=False).hexdigest()}
+        for _, n, chunk in client.uploaded
+    ]
+    assert client.completed == [("o-1", receipts)]
+
+
+def test_an_upload_with_every_part_stored_is_assembled_without_sending(tmp_path):
+    job = make_job(tmp_path, content=b"x" * 24)
+    client = FakeArchive({job.content_hash: pending("o-1", 8, parts_done=[1, 2, 3])})
+
+    report = run_archive(client, [job], no_progress)
+
+    assert report.archived == 1
+    assert client.uploaded == []
     assert client.completed == [("o-1", [])]
 
 
-def test_a_failing_job_does_not_stop_the_rest(tmp_path, monkeypatch):
+def test_a_part_the_registry_stored_differently_fails_the_file(tmp_path):
+    """The registry answers each part with the MD5 of what it wrote, so a
+    mismatch is corruption in transit and the file is not assembled."""
+    job = make_job(tmp_path)
+    client = FakeArchive({job.content_hash: pending("o-1", 1 << 20)})
+    client.archive_upload_part = lambda object_id, number, chunk: "0" * 32  # type: ignore[method-assign]
+
+    report = run_archive(client, [job], no_progress)
+
+    assert client.completed == []
+    assert [(label, "differs from the one sent" in reason) for label, reason in report.failed] == [
+        ("clip.mp4", True)
+    ]
+
+
+def test_a_failing_job_does_not_stop_the_rest(tmp_path):
     """A flaky connection costs a retry, never the whole queue."""
     broken = make_job(tmp_path, name="broken.mp4", content=b"one")
     fine = make_job(tmp_path, name="fine.mp4", content=b"two")
     client = FakeArchive(
         {
-            broken.content_hash: ServerUnreachableError("Cannot reach the blob store"),
+            broken.content_hash: ServerUnreachableError("Cannot reach the registry"),
             fine.content_hash: {"object_id": "o-2", "status": "complete"},
         }
     )
-    capture_uploads(monkeypatch)
 
     report = run_archive(client, [broken, fine], no_progress)
 
     assert report.already == 1
-    assert [(label, "blob store" in reason) for label, reason in report.failed] == [
+    assert [(label, "Cannot reach" in reason) for label, reason in report.failed] == [
         ("broken.mp4", True)
     ]
 
 
-def test_a_cancelled_queue_stops_between_jobs(tmp_path, monkeypatch):
+def test_a_cancelled_queue_stops_between_jobs(tmp_path):
     job = make_job(tmp_path)
     client = FakeArchive({job.content_hash: {"object_id": "o-1", "status": "complete"}})
-    capture_uploads(monkeypatch)
     cancelled = threading.Event()
     cancelled.set()
 
@@ -330,28 +318,37 @@ def test_a_cancelled_queue_stops_between_jobs(tmp_path, monkeypatch):
 
 # --- the raw part upload ----------------------------------------------------------
 
+TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
+
 
 @pytest.fixture
-def blob_store():
-    """A loopback stand-in for S3: answers PUTs with an ETag, records the bytes."""
-    received: list[tuple[str, bytes]] = []
+def part_store():
+    """A loopback registry for part PUTs: answers JSON receipts, records requests."""
+    received: list[tuple[str, dict, bytes]] = []
 
     class Handler(BaseHTTPRequestHandler):
-        # None means answer with the MD5 of what arrived, as a store does.
+        status = 200
+        # None means answer the MD5 of what arrived, as the registry does.
         etag: str | None = None
 
         def do_PUT(self):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
-            received.append((self.path, body))
-            self.send_response(200)
+            received.append((self.path, dict(self.headers), body))
             answer = self.etag
             if answer is None:
-                answer = '"%s"' % hashlib.md5(body, usedforsecurity=False).hexdigest()
+                answer = hashlib.md5(body, usedforsecurity=False).hexdigest()
+            payload: dict = {"part_number": 2}
             if answer:
-                self.send_header("ETag", answer)
-            self.send_header("Content-Length", "0")
+                payload["etag"] = answer
+            if self.status != 200:
+                payload = {"error": "the registry said no"}
+            raw = json.dumps(payload).encode()
+            self.send_response(self.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
+            self.wfile.write(raw)
 
         def log_message(self, *args):
             pass
@@ -359,46 +356,58 @@ def blob_store():
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_address[1]}"
+    client = SyncClient(f"http://127.0.0.1:{server.server_address[1]}", token=TOKEN)
     try:
-        yield url, received, Handler
+        yield client, received, Handler
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
 
-def test_upload_part_sends_the_bytes_and_strips_the_etag_quotes(blob_store) -> None:
-    url, received, _ = blob_store
+def test_upload_part_puts_the_bytes_under_the_device_token(part_store) -> None:
+    client, received, _ = part_store
 
-    etag = upload_part(f"{url}/part-1?sig=xyz", b"part bytes")
+    etag = client.archive_upload_part("o-1", 2, b"part bytes")
 
     assert etag == hashlib.md5(b"part bytes", usedforsecurity=False).hexdigest()
-    assert received == [("/part-1?sig=xyz", b"part bytes")]
+    path, headers, body = received[0]
+    assert path == "/api/archive/o-1/parts/2"
+    assert headers["Authorization"] == f"Bearer {TOKEN}"
+    assert headers["Content-Type"] == "application/octet-stream"
+    assert body == b"part bytes"
 
 
-def test_upload_part_refuses_a_part_the_store_stored_differently(blob_store) -> None:
-    """The store answers each part with the MD5 of what it wrote, so a mismatch
-    is corruption in transit and the part is not counted as sent."""
-    url, _, handler = blob_store
-    handler.etag = '"%s"' % ("0" * 32)
-
-    with pytest.raises(SyncError, match="differs from the one sent"):
-        upload_part(f"{url}/part-1", b"part bytes")
-
-
-def test_upload_part_refuses_an_answer_without_an_etag(blob_store) -> None:
-    url, _, handler = blob_store
+def test_upload_part_refuses_an_answer_without_an_etag(part_store) -> None:
+    client, _, handler = part_store
     handler.etag = ""
 
     with pytest.raises(SyncError, match="without an ETag"):
-        upload_part(f"{url}/part-1", b"part bytes")
+        client.archive_upload_part("o-1", 2, b"part bytes")
 
 
-def test_upload_part_reports_an_unreachable_blob_store() -> None:
+def test_upload_part_reports_a_refused_part(part_store) -> None:
+    client, _, handler = part_store
+    handler.status = 409
+
+    with pytest.raises(SyncError, match="the registry said no"):
+        client.archive_upload_part("o-1", 2, b"part bytes")
+
+
+def test_upload_part_reports_a_denied_device(part_store) -> None:
+    client, _, handler = part_store
+    handler.status = 403
+
+    with pytest.raises(AccessDeniedError, match="refused this request"):
+        client.archive_upload_part("o-1", 2, b"part bytes")
+
+
+def test_upload_part_reports_an_unreachable_registry() -> None:
     # Port 1 on loopback: nothing listens, so this is a refusal, not a lookup.
+    client = SyncClient("http://127.0.0.1:1", token=TOKEN)
+
     with pytest.raises(ServerUnreachableError, match="Cannot reach"):
-        upload_part("http://127.0.0.1:1/part-1", b"part bytes")
+        client.archive_upload_part("o-1", 1, b"part bytes")
 
 
 # --- single-item plans ---

@@ -7,9 +7,10 @@ imohash, the same sampled identity a clip already carries from ingest, so
 planning a pass never reads a file end to end and re-running the queue costs
 one initiate per archived file and sends nothing twice.
 
-Integrity of the bytes is the store's own: S3 answers every part with the MD5
-it computed of what it stored, and a part whose ETag disagrees with the buffer
-just sent is retried rather than assembled.
+Every part travels through the registry itself, under the device token, so no
+address outside the registry's own is ever contacted. The registry answers each
+part with the MD5 of what it stored, and a part whose ETag disagrees with the
+buffer just sent fails the file rather than being assembled.
 
 No Qt here, deliberately: the Server page runs this on a worker thread and
 marshals progress back through signals, the same shape as `engine.py`.
@@ -19,9 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,22 +28,9 @@ from typing import Any, Protocol
 from deepreefmap_gui.io.video_hash import hash_video
 from deepreefmap_gui.survey.models import RunRecord, VideoAsset
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.client import ServerUnreachableError, SyncError
+from deepreefmap_gui.sync.client import SyncError
 
 logger = logging.getLogger(__name__)
-
-# One PUT moves a whole part, 32 MiB at the server's default, and a field
-# uplink can be slow enough that the client timeout is what would kill it.
-UPLOAD_TIMEOUT = 600.0
-
-# Presigned URLs lapse. Re-initiating costs one request and mints a fresh set,
-# so the loop does that before a part could outlive the batch it came in. The
-# margin covers a part already in flight when the check is made.
-PRESIGN_MARGIN = 30.0
-DEFAULT_PRESIGN_TTL = 900.0
-
-# A clip that cannot finish in this many rounds of fresh URLs is not going to.
-MAX_PRESIGN_ROUNDS = 40
 
 KIND_VIDEO = "video"
 KIND_ARTIFACT = "artifact"
@@ -66,47 +51,15 @@ ProgressFn = Callable[[str, int, int], None]
 
 
 class ArchiveTransport(Protocol):
-    """The two calls one pass over the queue makes on a registry client."""
+    """The three calls one pass over the queue makes on a registry client."""
 
     def archive_initiate(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def archive_upload_part(self, object_id: str, part_number: int, chunk: bytes) -> str: ...
 
     def archive_complete(
         self, object_id: str, parts: Sequence[dict[str, Any]]
     ) -> dict[str, Any]: ...
-
-
-class PresignExpiredError(SyncError):
-    """A part URL lapsed before its turn. The caller re-initiates and resumes."""
-
-
-def upload_part(url: str, chunk: bytes) -> str:
-    """PUT one part's bytes to its presigned URL, returning the ETag it answered.
-
-    The URL is not under the registry's address and carries its own auth in the
-    query string, so no bearer token travels here. The ETag comes back quoted,
-    and the completion call wants it bare.
-    """
-    # S310: the URL was presigned by the registry this device is enrolled with.
-    request = urllib.request.Request(url, data=chunk, method="PUT")  # noqa: S310
-    try:
-        with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT) as response:  # noqa: S310
-            etag = response.headers.get("ETag", "")
-    except urllib.error.HTTPError as exc:
-        # 403 is what a lapsed signature looks like from here.
-        if exc.code == 403:
-            raise PresignExpiredError("The part URL is no longer valid.") from exc
-        raise SyncError(f"The blob store refused a part ({exc.code}).") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ServerUnreachableError(f"Cannot reach the blob store: {exc}.") from exc
-    if not etag:
-        raise SyncError("The blob store answered a part without an ETag.")
-    etag = etag.strip('"')
-    # The store's own checksum of what it stored. Comparing it to the buffer in
-    # hand is the whole integrity check, and it costs no second read.
-    expected = hashlib.md5(chunk, usedforsecurity=False).hexdigest()
-    if etag != expected:
-        raise SyncError("The blob store stored a part that differs from the one sent.")
-    return etag
 
 
 @dataclass(frozen=True)
@@ -430,74 +383,38 @@ def _send_one(
 ) -> None:
     """Offer one file, uploading whatever the registry says is still missing.
 
-    Presigned URLs lapse well inside the time a 4 GB clip takes on a field
-    uplink, so the loop re-initiates when the current batch is close to expiry
-    and resumes from the parts the registry reports. That also makes a lapse
-    that happens anyway survivable: the URL answers 403, and the next round
-    mints a fresh one for the same part.
+    The registry names the parts it already stores, so a pass interrupted mid
+    file resumes from there on the next initiate rather than starting over.
     """
-    for attempt in range(MAX_PRESIGN_ROUNDS):
-        answer = client.archive_initiate(job.initiate_payload())
-        minted_at = time.monotonic()
-        status = answer.get("status")
-        if status == STATUS_COMPLETE:
-            # Nothing left to send: either dedup, or an earlier round finished it.
-            if attempt:
-                report.archived += 1
-            else:
-                report.already += 1
-            return
-        part_size = int(answer.get("part_size_bytes") or 0)
-        part_urls = answer.get("part_urls") or []
-        if status != STATUS_PENDING or part_size < 1:
-            raise SyncError(f"The registry answered an unusable upload state ({status}).")
-        if not part_urls:
-            # Every part is stored already; assemble and stop.
-            client.archive_complete(str(answer["object_id"]), [])
-            report.archived += 1
-            return
-
-        ttl = float(answer.get("presign_ttl_seconds") or DEFAULT_PRESIGN_TTL)
-        # One part may run the whole upload timeout, so a URL is only started
-        # while the batch still has room for that plus a margin.
-        usable = ttl - UPLOAD_TIMEOUT - PRESIGN_MARGIN
-        if usable <= 0:
-            usable = ttl / 2
-
-        if _upload_batch(job, part_urls, part_size, minted_at, usable, progress, done, total):
-            client.archive_complete(str(answer["object_id"]), [])
-            report.archived += 1
-            return
-        # Ran out of signature life. Re-initiate and carry on where S3 got to.
-    raise SyncError(f"Could not finish {job.label} before its upload URLs kept lapsing.")
-
-
-def _upload_batch(
-    job: ArchiveJob,
-    part_urls: Sequence[Mapping[str, Any]],
-    part_size: int,
-    minted_at: float,
-    usable: float,
-    progress: ProgressFn,
-    done: int,
-    total: int,
-) -> bool:
-    """PUT this batch of parts, returning whether it got through all of them."""
+    answer = client.archive_initiate(job.initiate_payload())
+    if answer.get("status") == STATUS_COMPLETE:
+        report.already += 1
+        return
+    part_size = int(answer.get("part_size_bytes") or 0)
+    if answer.get("status") != STATUS_PENDING or part_size < 1:
+        raise SyncError(f"The registry answered an unusable upload state ({answer.get('status')}).")
+    object_id = str(answer["object_id"])
+    count = (job.size_bytes + part_size - 1) // part_size
+    stored = {int(n) for n in answer.get("parts_done") or []}
+    missing = [number for number in range(1, count + 1) if number not in stored]
+    parts: list[dict[str, Any]] = []
     with job.path.open("rb") as handle:
-        for sent, part in enumerate(part_urls):
-            if time.monotonic() - minted_at >= usable:
-                return False
-            number = int(part["part_number"])
+        for sent, number in enumerate(missing):
             progress(
-                f"Archiving {job.label} (part {sent + 1} of {len(part_urls)})…",
+                f"Archiving {job.label} (part {sent + 1} of {len(missing)})…",
                 done,
                 total,
             )
-            # Only the missing parts were presigned, so the offset comes from
-            # the part number rather than from read position.
+            # Only the missing parts travel, so the offset comes from the part
+            # number rather than from read position.
             handle.seek((number - 1) * part_size)
-            try:
-                upload_part(str(part["url"]), handle.read(part_size))
-            except PresignExpiredError:
-                return False
-    return True
+            chunk = handle.read(part_size)
+            etag = client.archive_upload_part(object_id, number, chunk)
+            # The registry's own checksum of what it stored. Comparing it to
+            # the buffer in hand is the whole integrity check, and it costs no
+            # second read.
+            if etag != hashlib.md5(chunk, usedforsecurity=False).hexdigest():
+                raise SyncError("The registry stored a part that differs from the one sent.")
+            parts.append({"part_number": number, "etag": etag})
+    client.archive_complete(object_id, parts)
+    report.archived += 1
