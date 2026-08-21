@@ -1242,7 +1242,11 @@ class FormPanelMixin(MixinBase):
         row.addWidget(self._gpu_indicator_box)
         # The registry link sits beside the drives: the two facts a diver
         # checks before packing up are "did it fit" and "is it on the server".
+        # Hidden until the badge state says an enrolment exists: a laptop that
+        # never joined a registry has no sync state worth a status-row slot,
+        # and the Server view on Setup is the way in.
         self._sync_badge = SyncBadge()
+        self._sync_badge.setVisible(False)
         self._sync_badge.clicked.connect(self._on_sync_badge_clicked)
         row.addWidget(self._sync_badge)
         # Storage rides on this row rather than a band of its own: the bars are

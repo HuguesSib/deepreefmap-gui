@@ -497,6 +497,20 @@ class RunDetailPanel(DetailCard):
             if broken
             else "Change what this run is called"
         )
+        # The registry catalogues artefacts against the run row, so a
+        # folder-only run has nothing to hang them off, and a run whose data
+        # went has nothing left to send.
+        archive = self.menu_actions["archive"]
+        if entry.db_run is None:
+            why = "This run is not in the survey database, so the registry has no record to file it under."
+        elif entry.data_missing:
+            why = "The output data was removed, so there is nothing to send."
+        elif status != "succeeded":
+            why = "Only a finished run's outputs can be archived."
+        else:
+            why = ""
+        archive.setEnabled(not why)
+        archive.setToolTip(why or "Send this run's outputs to the registry's archive")
         self.open_btn.setVisible(self._open_action_allowed and not broken)
         # Offered for any run that kept one, whatever its status: run.log is kept
         # through every storage-cleanup tier, so a run whose outputs were cleared

@@ -423,7 +423,6 @@ if TYPE_CHECKING:
         def _build_machine_page(self) -> QWidget: ...  # SimpleMachineMixin
         def _build_machine_nav_button(self) -> QToolButton: ...  # SimpleMachineMixin
         def _build_server_page(self) -> QWidget: ...  # ServerPageMixin
-        def _build_server_nav_button(self) -> QToolButton: ...  # ServerPageMixin
         def _refresh_server_page(self) -> None: ...  # ServerPageMixin
         def _refresh_sync_badge(self) -> None: ...  # ServerPageMixin
         def _archive_video(self, video_id: str) -> None: ...  # ServerPageMixin

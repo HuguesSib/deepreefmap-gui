@@ -67,6 +67,7 @@ from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.notify.conditions import conditions_from_state
 from deepreefmap_gui.runs.run_cards import run_facts_line
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
+from deepreefmap_gui.server.state import SERVER_SECTION
 from deepreefmap_gui.simple.cart import CartButton
 from deepreefmap_gui.simple.section_state import (
     SectionState,
@@ -149,12 +150,13 @@ _DESTINATION_TIPS = {
 # server are utilities you visit and leave, storage belongs to a drive button,
 # and view is where an opened run goes, reached by opening one. Everything is
 # keyed by name, so the destinations may be reordered freely.
-SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view", "storage", "server")
+SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view", "storage")
 
-# Sections no destination pill owns. Machine and server are utilities you visit
-# and leave, and storage belongs to a drive button at the foot of the window,
-# which is what lights while its page is open.
-NON_DESTINATIONS = ("machine", "storage", "server")
+# Sections no destination pill owns. Machine is a utility you visit and leave,
+# and storage belongs to a drive button at the foot of the window, which is
+# what lights while its page is open. The Server page is a Setup view rather
+# than a section of its own, reached through Setup or the sync badge.
+NON_DESTINATIONS = ("machine", "storage")
 
 # What the info panel takes when it is open. Wide enough for the metadata block
 # without eating into the cloud, which is what View mode is for.
@@ -578,7 +580,6 @@ class InterfaceShellMixin(MixinBase):
             "browse": self._build_browse_page(),
             "machine": self._build_machine_page(),
             "storage": self._build_storage_page(),
-            "server": self._build_server_page(),
             "view": self._build_view_info_page(),
         }
 
@@ -615,7 +616,6 @@ class InterfaceShellMixin(MixinBase):
         # bell, which is empty unless something is.
         nav.addWidget(self._build_notification_bell())
         nav.addWidget(self._log_toggle_btn)
-        nav.addWidget(self._build_server_nav_button())
         nav.addWidget(self._build_machine_nav_button())
         # The cart last, split from the utilities: it is a destination, badged
         # with what the next session holds.
@@ -1006,6 +1006,13 @@ class InterfaceShellMixin(MixinBase):
             self._set_simple_section(name)
 
     def _set_simple_section(self, name: str) -> None:
+        if name == SERVER_SECTION:
+            # The Server page is a Setup view, but its old section name is
+            # stamped into persisted notifications and every caller landing
+            # sync or archive feedback, so the name keeps routing.
+            self._set_simple_section("machine")
+            self._set_machine_view(SERVER_SECTION)
+            return
         if name not in SIMPLE_SECTIONS:
             raise ValueError(f"Unknown simple section: {name!r}")
         if name in DESTINATIONS:
@@ -1020,8 +1027,6 @@ class InterfaceShellMixin(MixinBase):
         self._sync_destination_chrome()
         if name == "storage":
             self._refresh_storage_page()
-        if name == "server":
-            self._refresh_server_page()
         # The gauges poll at 1 Hz, so they run only while they are on screen.
         self._sync_system_gauges_running()
         self._update_work_area()

@@ -61,13 +61,14 @@ logger = logging.getLogger(__name__)
 # Left to right in the order they matter: what stops a run, what a run needs
 # installed, what the machine does while it runs, the software itself, and the
 # record of everything the app has had to say.
-MACHINE_VIEWS = ("readiness", "models", "performance", "updates", "activity")
+MACHINE_VIEWS = ("readiness", "models", "performance", "updates", "server", "activity")
 
 _VIEW_LABELS = {
     "readiness": "Readiness",
     "models": "Models",
     "performance": "Performance",
     "updates": "Updates",
+    "server": "Server",
     "activity": "Activity",
 }
 
@@ -76,6 +77,7 @@ _VIEW_TIPS = {
     "models": "The models installed here, and how to add or remove them.",
     "performance": "Live usage of this machine, and what past runs cost it.",
     "updates": "The version installed here, and any newer one available.",
+    "server": "The registry this survey syncs with, and what is waiting to go.",
     "activity": "Everything this survey has reported, and anything you silenced.",
 }
 
@@ -153,11 +155,14 @@ class SimpleMachineMixin(MixinBase):
     _machine_view: str = "readiness"
 
     def _build_machine_page(self) -> QWidget:
-        """One page, four views, and a segmented control to pick between them.
+        """One page, its views, and a segmented control to pick between them.
 
         A segmented control rather than tabs or another header entry: these are
-        four ways of looking at one computer, not four places to go, and the
-        component is the one Browse already uses for the same job.
+        ways of looking at one computer, not places to go, and the component is
+        the one Browse already uses for the same job. The Server view lives
+        here too since the sync badge took over saying whether the registry is
+        healthy: a configuration surface belongs with the rest of Setup, not
+        behind a header button of its own.
         """
         # The whole destination is one centred column: heading, switch and views
         # share an edge, so the switch stays over the view it opens instead of
@@ -199,6 +204,7 @@ class SimpleMachineMixin(MixinBase):
             "models": self._build_machine_host("_machine_models_host"),
             "performance": self._build_machine_host("_machine_system_host"),
             "updates": self._build_machine_updates_view(),
+            "server": self._build_server_page(),
             "activity": self._build_activity_view(),
         }
         for view in MACHINE_VIEWS:
@@ -320,6 +326,8 @@ class SimpleMachineMixin(MixinBase):
             button.blockSignals(False)
         self._machine_stack.setCurrentIndex(MACHINE_VIEWS.index(view))
         self._sync_system_gauges_running()
+        if view == "server":
+            self._refresh_server_page()
         # Read on opening rather than kept live: the log is a record, and a table
         # that repainted under the cursor as conditions came and went would be
         # the one surface here that will not hold still.

@@ -1,10 +1,12 @@
 """The Server page: what this device is enrolled with, and the sync it drives.
 
-A section rather than a fourth destination. The destinations are where the work is
-(footage, transects, the cart, the archive) and this is a place you visit to check
-a connection and leave again, which is what Setup and the storage pages already
-are, so it takes their shape: a bordered utility button in the header, no pill,
-nothing lit while you are here.
+A Setup view rather than a destination. The destinations are where the work is
+(footage, transects, the cart, the archive) and this is a place you visit to
+check a connection and leave again, so it lives on the Setup page's segmented
+control beside Models and Updates. The sync badge at the foot of the window is
+the day-to-day face of the connection; pressing it lands here when something
+needs reading. The old section name still routes: `_set_simple_section` maps it
+to Setup plus this view, because persisted notifications carry it.
 
 Both network calls run on a worker thread and report back over the window's
 signals. Sync conflicts are not reported on this page at all: the engine posts them
@@ -25,12 +27,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QToolButton,
     QWidget,
 )
 
 from deepreefmap_gui.core import sync_badge
-from deepreefmap_gui.core.icons import ICON_SM, server_icon
 from deepreefmap_gui.core.spinner import BusySpinner
 from deepreefmap_gui.core.theme import FONT_LG, SPACE_SM, SUCCESS, WEIGHT_SEMIBOLD
 from deepreefmap_gui.core.widgets import (
@@ -43,7 +43,6 @@ from deepreefmap_gui.core.widgets import (
     confirm,
     muted_label,
     section_card,
-    utility_button_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.notify.widgets import relative_age
@@ -51,6 +50,8 @@ from deepreefmap_gui.server import enrolment as enrolment_mod
 from deepreefmap_gui.server.connect_ui import ConnectDialog
 from deepreefmap_gui.server.state import (
     DEVICE_NAME_KEY,
+    DISCLAIMER,
+    DISCLAIMER_TITLE,
     ENROLLED_BY_KEY,
     LAST_SYNC_KEY,
     SECTION_LABELS,
@@ -67,8 +68,12 @@ from deepreefmap_gui.server.state import (
     summarise,
 )
 from deepreefmap_gui.survey.models.common import utc_now_iso
-from deepreefmap_gui.survey.models.notification import INFO, SURVEY, WARNING
-from deepreefmap_gui.survey.preset import remember_assignment, resolved_identity
+from deepreefmap_gui.survey.models.notification import INFO, MACHINE, SURVEY, WARNING
+from deepreefmap_gui.survey.preset import (
+    registry_preset,
+    remember_assignment,
+    resolved_identity,
+)
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
@@ -120,6 +125,14 @@ CANCELLING_ARCHIVE = "Finishing the file in flight…"
 # One episode per pass over the queue: re-archiving resumes server-side, so the
 # same fingerprint updating in place is the right shape for a retry.
 ARCHIVE_FAILED = "archive.upload_failed"
+
+# Said when an archive is asked for on a laptop that never enrolled. The sync
+# button hides then, but the Browse cards still offer their Archive actions.
+ARCHIVE_NOT_CONNECTED = "Connect this laptop to a registry before archiving."
+
+DOWNLOAD_NOW = "Download now"
+# One episode per preset identity: a new version naming new models is new news.
+PRESET_MODELS_MISSING = "presets.models_missing"
 
 
 class ConflictNotifier:
@@ -189,6 +202,9 @@ class ServerPageMixin(MixinBase):
     # for, and the plan awaiting confirmation or upload.
     _archive_client: Any | None = None
     _archive_plan_pending: ArchivePlan | None = None
+    # What the last sync found the resolved server preset still missing, kept
+    # for the notice strip's Download now press.
+    _preset_missing_models: tuple[str, ...] = ()
 
     # --- building -----------------------------------------------------------
 
@@ -208,8 +224,24 @@ class ServerPageMixin(MixinBase):
         self._server_notice.action_clicked.connect(self._on_sync_now)
         body.addWidget(self._server_notice)
 
+        # Its own strip rather than a message through the sync one, which every
+        # exchange rewrites: the offer has to stand until it is taken or the
+        # models arrive some other way.
+        self._preset_models_notice = NoticeStrip()
+        self._preset_models_notice.action_clicked.connect(self._download_missing_preset_models)
+        body.addWidget(self._preset_models_notice)
+
         self._server_empty = EmptyState(NOT_CONNECTED, NOT_CONNECTED_HINT)
         body.addWidget(self._server_empty)
+
+        # The terms of the exchange, on the page where it is agreed to. Gone
+        # after the first sync: whoever kept syncing has read it.
+        self._server_disclaimer_card, disclaimer_layout = section_card(DISCLAIMER_TITLE)
+        for paragraph in DISCLAIMER:
+            line = muted_label(paragraph)
+            line.setWordWrap(True)
+            disclaimer_layout.addWidget(line)
+        body.addWidget(self._server_disclaimer_card)
 
         self._server_device_card, device_layout = section_card(DEVICE_CARD)
         self._server_device_label = QLabel("")
@@ -304,19 +336,6 @@ class ServerPageMixin(MixinBase):
         row.addWidget(self._server_disconnect_btn)
         return holder
 
-    def _build_server_nav_button(self) -> QToolButton:
-        """Header entry, beside the other utilities and never a destination pill."""
-        button = QToolButton()
-        button.setText(PAGE_TITLE)
-        button.setIcon(server_icon(ICON_SM))
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setStyleSheet(utility_button_qss())
-        button.setToolTip("The registry this survey syncs with, and what is waiting to go.")
-        button.clicked.connect(lambda: self._set_simple_section(SERVER_SECTION))
-        self._server_nav_button = button
-        return button
-
     # --- painting -----------------------------------------------------------
 
     def _refresh_server_page(self) -> None:
@@ -328,6 +347,10 @@ class ServerPageMixin(MixinBase):
         )
         connected = state.connected
         self._server_empty.setVisible(not connected)
+        # Before enrolment and up to the first sync, whichever comes first for
+        # this survey: last_sync is per survey database, so a fresh output root
+        # shows the terms again.
+        self._server_disclaimer_card.setVisible(not state.last_sync)
         self._server_device_card.setVisible(connected)
         self._server_card.setVisible(connected)
         self._server_waiting_card.setVisible(connected and bool(state.pending))
@@ -464,6 +487,7 @@ class ServerPageMixin(MixinBase):
         store = self._try_survey_store()
         self._server_syncing = True
         self._server_notice.clear()
+        self._preset_models_notice.clear()
         self._set_server_busy(True, PULLING.format(page=1))
         self._refresh_sync_badge()
 
@@ -555,6 +579,10 @@ class ServerPageMixin(MixinBase):
 
         if run_id is None:
             return
+        # The planning, progress and summary widgets live on the Server page,
+        # so a press from Browse lands there first rather than reporting to a
+        # page nobody is looking at.
+        self._set_simple_section(SERVER_SECTION)
         self._archive_with_plan(
             lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id))
         )
@@ -587,7 +615,11 @@ class ServerPageMixin(MixinBase):
             self._on_archive_done(describe_failure(exc))
             return
         if held is None:
+            # Reachable from the Browse cards, whose Archive actions do not
+            # hide with the Server page's buttons, so silence here read as a
+            # button that does nothing.
             self._refresh_server_page()
+            self._server_blocker.show_blocker(ARCHIVE_NOT_CONNECTED, CONNECT)
             return
         # No `agreed` here: archive responses carry no contract stamp, and a
         # client that has adopted one refuses unstamped bodies.
@@ -839,6 +871,13 @@ class ServerPageMixin(MixinBase):
         # Kept beside the badge so the click can act on what is being shown
         # rather than re-reading a state that may have moved since.
         self._sync_badge_state = state if isinstance(state, ServerState) else None
+        # Shown only once an enrolment exists, or when the credential is there
+        # but unreadable, which is worth a face rather than silence.
+        # Disconnecting hides it again on the next repaint.
+        shown = self._sync_badge_state is not None and (
+            self._sync_badge_state.connected or bool(self._sync_badge_state.fault)
+        )
+        badge.setVisible(shown)
         badge.show_face(self._badge_face(self._sync_badge_state))
         if getattr(self, "_sync_badge_rerun", False):
             self._sync_badge_rerun = False
@@ -927,10 +966,73 @@ class ServerPageMixin(MixinBase):
         # badges are worth asking about.
         self._refresh_archive_badges()
         self._server_notice.show_notice(summarise(pulled, pushed))
+        # After the pull has landed, so it sees the preset row and the
+        # assignment in whichever order the registry delivered them.
+        self._offer_preset_model_downloads(store)
         # A pull rewrites the survey underneath every list drawn from it.
         self._refresh_transect_list()
         self._refresh_data_manager()
         self._refresh_survey_analysis()
+
+    def _offer_preset_model_downloads(self, store: SurveyStore | None) -> None:
+        """Offer to fetch the models the resolved server preset still needs.
+
+        Run after every successful sync, which covers both orderings: the
+        heartbeat can record an assignment before the preset row has been
+        pulled, and the row landing on a later pull re-raises the offer.
+        Answered from what _refresh_model_status verified on its worker
+        thread, never by verifying here, for the reasons
+        _survey_missing_models gives: until the first refresh lands, nothing
+        is offered. The run gate stays the backstop either way.
+        """
+        self._preset_missing_models = ()
+        self._preset_models_notice.clear()
+        if store is None or not self._last_model_states:
+            return
+        identity = resolved_identity(store)
+        if identity is None:
+            return
+        name, version = identity
+        row = store.get_server_preset(name, version)
+        if row is None:
+            return
+        from deepreefmap_gui.models.cache import required_model_names
+
+        required = required_model_names(registry_preset(name, version, row.settings).settings)
+        missing = sorted(
+            info.name
+            for info, cached in self._last_model_states
+            if info.name in required and not cached and info.name not in self._downloading
+        )
+        if not missing:
+            return
+        self._preset_missing_models = tuple(missing)
+        self._preset_models_notice.show_notice(
+            f"{name} (v{version}) needs {len(missing)} model(s) this laptop has "
+            f"not downloaded: {', '.join(missing)}.",
+            DOWNLOAD_NOW,
+        )
+        self._notify_post(
+            {
+                "fingerprint": f"{PRESET_MODELS_MISSING}.{name}.{version}",
+                "title": f"{name} (v{version}) names models that are not downloaded",
+                "body": f"Missing: {', '.join(missing)}. Download them before running a session.",
+                "severity": WARNING,
+                "scope": MACHINE,
+                "section": "machine",
+            }
+        )
+
+    def _download_missing_preset_models(self) -> None:
+        """Start the offered downloads through the model library's own path.
+
+        _download_model carries the free-disk refusal, the progress rendering
+        and the retry-with-reason, so the offer inherits all three.
+        """
+        for model_name in self._preset_missing_models:
+            self._download_model(model_name)
+        self._preset_missing_models = ()
+        self._preset_models_notice.clear()
 
     # --- disconnecting ------------------------------------------------------
 
@@ -1026,7 +1128,9 @@ def _heartbeat(client: object, store: SurveyStore | None) -> None:
     if client is None:
         return
     try:
-        report = heartbeat_report()
+        # The store sits at the survey output root, which is the disk a run
+        # fills, so its free space is the one worth reporting.
+        report = heartbeat_report(store.path.parent if store is not None else None)
         identity = resolved_identity(store)
         if identity is not None:
             report["active_preset_name"], report["active_preset_version"] = identity

@@ -15,6 +15,7 @@ import logging
 import platform
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync import client, credentials
@@ -64,6 +65,26 @@ SECTION_LABELS = {
 }
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."
+
+# Read before a first sync: what connecting shares, and what the registry may
+# decide from its side. Shown until this survey has synced once, then the page
+# stops lecturing. Every claim here is pinned to the wire by
+# tests/server/test_disclaimer.py, so the words cannot quietly drift from what
+# actually travels.
+DISCLAIMER_TITLE = "What syncing shares"
+DISCLAIMER = (
+    "Syncing sends the survey records made here: transects, clips, sections, "
+    "and runs with their settings, software versions, timings and cover "
+    "numbers. Footage and run outputs never travel with a sync: they go only "
+    "when Archive to server is pressed.",
+    "Each sync also reports what this machine is: software versions, platform, "
+    "hardware totals, free space on the survey disk, and the name of the "
+    "preset it runs under. No file paths, and nothing about what this laptop "
+    "is otherwise doing.",
+    "The registry can assign this device a default preset, which is followed "
+    "until a choice made here or an administrator's settings file outranks "
+    "it. The registry never deletes or changes anything on this laptop.",
+)
 
 # Said when the registry held sections back because this build never asked for
 # them. Their names would mean nothing to a diver, so it counts them instead.
@@ -266,17 +287,19 @@ def library_version() -> str:
     return __version__
 
 
-def heartbeat_report() -> dict[str, object]:
-    """What a device says about itself: software, and static hardware only.
+def heartbeat_report(disk_path: Path | None = None) -> dict[str, object]:
+    """What a device says about itself: software, hardware, and room left to work.
 
-    Free space, available RAM and the disk path stay off the wire. They are an
-    activity trace of one person's laptop, and a disk path can embed a username.
+    Free space is measured at the survey output root, so the console can see a
+    laptop about to run out of room. The path itself, available RAM and free
+    swap stay off the wire: they are an activity trace of one person's laptop,
+    and a disk path can embed a username.
     """
     from deepreefmap_gui.packaging.releases import current_version
     from deepreefmap_gui.profiling.system_probe import probe_system
     from deepreefmap_gui.survey.preset_schema import PRESET_SCHEMA_VERSION
 
-    profile = probe_system(wait_for_gpu=False).to_dict()
+    profile = probe_system(disk_path, wait_for_gpu=False).to_dict()
     gpu = profile.get("gpu") or {}
     return {
         "gui_version": current_version(),
@@ -291,6 +314,7 @@ def heartbeat_report() -> dict[str, object]:
             "total_ram_bytes": profile.get("total_ram_bytes"),
             "total_swap_bytes": profile.get("total_swap_bytes"),
             "disk_total_bytes": profile.get("disk_total_bytes"),
+            "disk_free_bytes": profile.get("disk_free_bytes"),
             "gpu": {
                 "kind": gpu.get("kind"),
                 "name": gpu.get("name"),

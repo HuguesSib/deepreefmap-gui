@@ -28,10 +28,11 @@ import logging
 import os
 import shutil
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from deepreefmap.paths import loger_ckpts_dir
 from huggingface_hub.constants import HF_HUB_CACHE
@@ -230,6 +231,26 @@ DPT_BACKBONE_MAP: dict[str, str] = {
     "coralscapes-vit-b-dpt": "dinov3-vitb16",
     "coralscapes-vit-l-dpt": "dinov3-vitl16",
 }
+
+def required_model_names(settings: Mapping[str, Any]) -> set[str]:
+    """The model names a run under these settings would load.
+
+    The settings-dict twin of cache_ui's
+    ModelManagementMixin._required_model_names, which reads the same answer off
+    the run form's widgets: the mapping backend, and unless segmentation is
+    skipped, the segmentation model plus the DINOv3 backbone a DPT head fetches
+    at first use. Change the two together.
+    """
+    required = {str(settings.get("mapping_name") or "")}
+    if not settings.get("skip_segmentation"):
+        seg = str(settings.get("segmentation_name") or "")
+        required.add(seg)
+        backbone = DPT_BACKBONE_MAP.get(seg)
+        if backbone:
+            required.add(backbone)
+    required.discard("")
+    return required
+
 
 # Mapping backends with no processor fallback: without a card they do not run
 # slowly, they do not run at all. Every gate reads this one list rather than

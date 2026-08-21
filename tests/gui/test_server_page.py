@@ -24,6 +24,7 @@ from deepreefmap_gui.server.state import (
     SERVER_SECTION,
     SYNC_ERROR_KEY,
 )
+from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.sync import client as client_mod
 from deepreefmap_gui.sync import contract, credentials
@@ -153,28 +154,36 @@ def _rows(listing) -> dict[str, str]:
     return dict(zip(listing._keys, values, strict=True))
 
 
-def test_the_server_page_is_a_utility_section_not_a_destination(window):
-    """Scenario: the Server page is registered in the shell.
+def on_server_page(window) -> bool:
+    """Whether the Server view is what the window is showing."""
+    return window._current_section() == "machine" and window._machine_view == SERVER_SECTION
 
-    Expected behaviour: it is a section like Setup and storage, so no pill owns it
-    and none is lit while it is open. The four destinations are where the work is;
-    this is a connection you check and leave.
+
+def test_the_server_page_is_a_setup_view_not_a_section(window):
+    """Scenario: the Server page lives on Setup's segmented control.
+
+    Expected behaviour: no section, pill or header button of its own; the old
+    section name still routes there because persisted notifications carry it.
     """
-    assert SERVER_SECTION in SIMPLE_SECTIONS
-    assert SERVER_SECTION in NON_DESTINATIONS
+    assert SERVER_SECTION in MACHINE_VIEWS
+    assert SERVER_SECTION not in SIMPLE_SECTIONS
+    assert SERVER_SECTION not in NON_DESTINATIONS
     assert SERVER_SECTION not in DESTINATIONS
-    assert list(window._simple_nav_buttons) == list(DESTINATIONS)
+    assert not hasattr(window, "_server_nav_button")
 
     window._set_simple_section(SERVER_SECTION)
 
-    assert window._current_section() == SERVER_SECTION
+    assert on_server_page(window)
     assert not any(b.isChecked() for b in window._simple_nav_buttons.values())
 
 
-def test_the_header_button_goes_there(window):
-    window._server_nav_button.click()
+def test_the_setup_segment_goes_there(window):
+    window._set_simple_section("machine")
 
-    assert window._current_section() == SERVER_SECTION
+    window._machine_view_buttons[SERVER_SECTION].click()
+
+    assert on_server_page(window)
+    assert window._server_empty.isVisibleTo(window)
 
 
 def test_an_unconnected_install_offers_only_the_connect_button(window):
@@ -185,6 +194,23 @@ def test_an_unconnected_install_offers_only_the_connect_button(window):
     assert not window._server_sync_btn.isVisibleTo(window)
     assert not window._server_disconnect_btn.isVisibleTo(window)
     assert NOT_CONNECTED in window._server_empty._message.text()
+
+
+def test_the_disclaimer_shows_until_the_first_sync(window, qapp, registry):
+    """The terms of the exchange are read before it happens: unconnected and
+    connected-but-unsynced both show them, the first sync retires them."""
+    window._set_simple_section(SERVER_SECTION)
+    assert window._server_disclaimer_card.isVisibleTo(window)
+
+    enrol_this_device()
+    window._refresh_server_page()
+    assert window._server_disclaimer_card.isVisibleTo(window)
+
+    registry()
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert not window._server_disclaimer_card.isVisibleTo(window)
 
 
 def test_a_connected_install_names_the_server_and_the_position(window):
@@ -447,7 +473,7 @@ def test_a_row_the_registry_held_newer_reaches_the_bell(window, qapp, registry):
 
     window._on_notification_activated(posted[CONFLICT_DISCARDED].section)
 
-    assert window._current_section() == SERVER_SECTION
+    assert on_server_page(window)
 
 
 def test_disconnecting_forgets_the_token_and_says_only_that(window, monkeypatch):
@@ -675,6 +701,131 @@ def test_an_archive_that_cannot_reach_the_registry_is_a_retry(
     assert "archive.upload_failed" in posted
 
 
+def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp, registry):
+    """The planning, progress and summary widgets all live on the Server page,
+    so an archive pressed from a Browse card must not report to a page nobody
+    is looking at."""
+    enrol_this_device()
+    registry()
+    window._set_simple_section("videos")
+
+    window._archive_run("no-such-run")
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    assert on_server_page(window)
+    assert "Archived 0 file(s)" in window._server_notice._message.text()
+
+
+def test_an_unenrolled_archive_says_to_connect_first(window):
+    from deepreefmap_gui.server.page_ui import ARCHIVE_NOT_CONNECTED, CONNECT
+
+    window._set_simple_section("videos")
+
+    window._archive_run("some-run")
+
+    assert on_server_page(window)
+    assert window._server_blocker._reason.text() == ARCHIVE_NOT_CONNECTED
+    assert window._server_blocker._action.text() == CONNECT
+
+
+# --- the preset model offer ---
+
+PRESET_SETTINGS = {
+    "mapping_name": "scsfmlearner",
+    "segmentation_name": "segformer-b2",
+    "skip_segmentation": False,
+}
+
+
+def model_states(*cached_names):
+    """What _refresh_model_status would have delivered from its worker."""
+    from deepreefmap_gui.models.cache import ALL_MODELS
+
+    return [(info, info.name in cached_names) for info in ALL_MODELS]
+
+
+def assign_preset(window, name="Expedition standard", version=2, settings=None):
+    """Land the assignment as a heartbeat would, and the row as a pull would."""
+    import json
+
+    from deepreefmap_gui.survey.models.server_preset import ServerPreset
+    from deepreefmap_gui.survey.preset import ASSIGNED_PRESET_KEY
+
+    store = window._survey_store()
+    store.set_sync_state(ASSIGNED_PRESET_KEY, json.dumps({"name": name, "version": version}))
+    if settings is not None:
+        store._add("server_preset", ServerPreset(name=name, version=version, settings=settings))
+    return store
+
+
+def test_a_sync_offers_to_download_what_the_assigned_preset_needs(
+    window, qapp, registry, monkeypatch
+):
+    enrol_this_device()
+    assign_preset(window, settings=PRESET_SETTINGS)
+    window._last_model_states = model_states()
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    strip = window._preset_models_notice
+    assert strip.isVisibleTo(window)
+    message = strip._message.text()
+    assert "Expedition standard" in message
+    assert "scsfmlearner" in message and "segformer-b2" in message
+    posted = {note.fingerprint for note in window._notify.active()}
+    assert "presets.models_missing.Expedition standard.2" in posted
+
+    asked: list[str] = []
+    monkeypatch.setattr(window, "_download_model", asked.append)
+    strip._action.click()
+
+    assert asked == ["scsfmlearner", "segformer-b2"]
+    assert not strip.isVisibleTo(window)
+
+
+def test_a_preset_whose_models_are_cached_offers_nothing(window):
+    enrol_this_device()
+    store = assign_preset(window, settings=PRESET_SETTINGS)
+    window._last_model_states = model_states("scsfmlearner", "segformer-b2")
+    window._set_simple_section(SERVER_SECTION)
+
+    window._offer_preset_model_downloads(store)
+
+    assert not window._preset_models_notice.isVisibleTo(window)
+
+
+def test_the_offer_waits_for_the_preset_row_to_be_pulled(window):
+    """The heartbeat can assign a preset before the row itself has come down,
+    so the offer holds its tongue until a pull lands it."""
+    enrol_this_device()
+    store = assign_preset(window)
+    window._last_model_states = model_states()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._offer_preset_model_downloads(store)
+    assert not window._preset_models_notice.isVisibleTo(window)
+
+    assign_preset(window, settings=PRESET_SETTINGS)
+    window._offer_preset_model_downloads(store)
+    assert window._preset_models_notice.isVisibleTo(window)
+
+
+def test_unchecked_models_are_not_offered_as_missing(window):
+    """Until the first status refresh lands, nothing has been verified, and a
+    model merely not yet checked must not read as a model absent."""
+    enrol_this_device()
+    store = assign_preset(window, settings=PRESET_SETTINGS)
+    window._last_model_states = []
+    window._set_simple_section(SERVER_SECTION)
+
+    window._offer_preset_model_downloads(store)
+
+    assert not window._preset_models_notice.isVisibleTo(window)
+
+
 # --- the status-bar badge ---
 
 
@@ -781,7 +932,7 @@ def test_a_failed_sync_keeps_the_badge_faulted_across_repaints(window, qapp, reg
     window._on_sync_badge_clicked()
 
     assert sum(fake.calls.count("pull") for fake in made) == pulls_before
-    assert window._current_section() == SERVER_SECTION
+    assert on_server_page(window)
     assert "access has been revoked" in window._server_blocker._reason.text()
 
 
@@ -798,14 +949,23 @@ def test_a_successful_sync_clears_the_badge_fault(window, qapp, registry):
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
 
 
-def test_the_badge_opens_the_server_page_when_not_connected(window, qapp):
+def test_the_badge_hides_until_an_enrolment_exists(window, qapp):
+    """An unconnected status row does not advertise a registry nobody joined:
+    the Server segment on Setup is the way in. Disconnecting, or a revocation
+    that forgets the token, takes the badge away again on the next repaint."""
+    from deepreefmap_gui.server import enrolment as enrolment_mod
+
     window._refresh_sync_badge()
     assert settle(qapp, lambda: getattr(window, "_sync_badge_state", None) is not None)
-    assert "No registry" in window._sync_badge._label.text()
+    assert not window._sync_badge.isVisibleTo(window)
 
-    window._on_sync_badge_clicked()
+    enrol_this_device()
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: window._sync_badge.isVisibleTo(window))
 
-    assert window._current_section() == SERVER_SECTION
+    enrolment_mod.forget(window._try_survey_store())
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: not window._sync_badge.isVisibleTo(window))
 
 
 def test_a_single_clip_is_archived_from_its_id(window, qapp, registry, tmp_path):

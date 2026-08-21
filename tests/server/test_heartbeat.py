@@ -94,3 +94,56 @@ def test_no_survey_store_still_sends_the_report():
     _heartbeat(client, None)
 
     assert client.reports and client.reports[0]["preset_schema_version"] == PRESET_SCHEMA_VERSION
+
+
+@pytest.fixture
+def probed_paths(monkeypatch):
+    """Record the disk path the probe measures, without faking its answer."""
+    from deepreefmap_gui.profiling import system_probe
+
+    real = system_probe.probe_system
+    paths: list[object] = []
+
+    def spy(disk_path=None, *, wait_for_gpu=True):
+        paths.append(disk_path)
+        return real(disk_path, wait_for_gpu=wait_for_gpu)
+
+    monkeypatch.setattr(system_probe, "probe_system", spy)
+    return paths
+
+
+def test_free_disk_is_measured_at_the_survey_output_root(store, probed_paths):
+    client = FakeClient({"assigned_preset": None})
+
+    _heartbeat(client, store)
+
+    assert probed_paths == [store.path.parent]
+    assert isinstance(client.reports[0]["system_profile"]["disk_free_bytes"], int)
+
+
+def test_no_survey_store_measures_no_particular_disk(probed_paths):
+    _heartbeat(FakeClient({}), None)
+
+    assert probed_paths == [None]
+
+
+def test_the_profile_carries_exactly_the_agreed_keys(store):
+    """Free space travels. The path it was measured at, available RAM and free
+    swap stay off the wire: an activity trace of one person's laptop."""
+    client = FakeClient({"assigned_preset": None})
+
+    _heartbeat(client, store)
+
+    profile = client.reports[0]["system_profile"]
+    assert set(profile) == {
+        "os_name",
+        "os_release",
+        "cpu_logical",
+        "cpu_physical",
+        "total_ram_bytes",
+        "total_swap_bytes",
+        "disk_total_bytes",
+        "disk_free_bytes",
+        "gpu",
+    }
+    assert set(profile["gpu"]) == {"kind", "name", "total_vram_bytes"}

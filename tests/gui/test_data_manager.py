@@ -637,6 +637,51 @@ def test_a_run_whose_data_went_cannot_have_its_command_copied(out_root, make_win
     assert "gone" in copy.toolTip()
 
 
+def test_archive_is_offered_only_on_a_recorded_finished_run(out_root, make_window):
+    """The registry catalogues artefacts against the run row, so a folder-only
+    run has nothing to hang them off."""
+    write_run(out_root, "folder_only")
+    write_survey_run(out_root, "recorded")
+    window = make_window()
+    archive = window._run_detail.menu_actions["archive"]
+
+    select_run(window, row_of(window, "folder_only"))
+    assert not archive.isEnabled()
+    assert "survey database" in archive.toolTip()
+
+    select_run(window, row_of(window, "recorded"))
+    assert archive.isEnabled()
+    assert "registry's archive" in archive.toolTip()
+
+
+def test_a_failed_run_cannot_be_archived(out_root, make_window):
+    store = SurveyStore(out_root / "survey.db")
+    _transect, _pass, run = seed_survey_run(store, out_root, "went_wrong")
+    store.set_run_status(run.id, "failed", "ran out of memory")
+    store.close()
+    window = make_window()
+
+    select_run(window, 0)
+    archive = window._run_detail.menu_actions["archive"]
+    assert not archive.isEnabled()
+    assert "finished run" in archive.toolTip()
+
+
+def test_a_run_whose_data_went_cannot_be_archived(out_root, make_window, monkeypatch):
+    write_survey_run(out_root, "kept_record")
+    window = make_window()
+    select_run(window, 0)
+    archive = window._run_detail.menu_actions["archive"]
+    assert archive.isEnabled()
+
+    choose_delete(monkeypatch, DeleteChoice.DATA)
+    window._on_data_delete_clicked()
+    select_run(window, 0)
+
+    assert not archive.isEnabled()
+    assert "nothing to send" in archive.toolTip()
+
+
 # --- T1.7 multi-select actions ---
 
 

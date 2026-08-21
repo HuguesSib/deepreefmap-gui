@@ -402,6 +402,11 @@ class ModelManagementMixin(MixinBase):
             self._recompute_survey_start()
 
     def _required_model_names(self) -> set[str]:
+        """The model names the run form as it stands would load.
+
+        The widget-reading twin of cache.required_model_names, which answers
+        the same question from a settings dict. Change the two together.
+        """
         required = {self._map_combo.currentText()}
         if not self._skip_seg_check.isChecked():
             seg = self._seg_combo.currentText()
