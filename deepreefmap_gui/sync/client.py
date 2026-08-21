@@ -90,6 +90,9 @@ class Enrolment:
     # Who onboarded this installation. Audit only: the token's rights are the
     # server's fixed device capability set, not theirs.
     enrolled_by: str = ""
+    # The durable name this installation goes by, chosen in the web console when
+    # the connect code was minted. Empty from a registry old enough to echo none.
+    device_name: str = ""
 
 
 class SyncClient:
@@ -129,7 +132,12 @@ class SyncClient:
         gui_version: str | None = None,
         library_version: str | None = None,
     ) -> Enrolment:
-        """Trade a connect code for this device's long-lived token."""
+        """Trade a connect code for this device's long-lived token.
+
+        The name in the body is only for registries old enough to still read
+        it: a current one names the device from the connect code and answers
+        with the name adopted.
+        """
         body = {
             "code": code.secret,
             "device_name": device_name,
@@ -149,6 +157,7 @@ class SyncClient:
             device_id=str(payload.get("device_id", "")),
             token=str(payload.get("token", "")),
             enrolled_by=str(payload.get("enrolled_by") or ""),
+            device_name=str(payload.get("device_name") or ""),
         )
 
     def pull(self, since: int | None = None, limit: int = PULL_LIMIT) -> dict[str, Any]:
@@ -182,13 +191,18 @@ class SyncClient:
             known.append(self.agreed)
         return min(known)
 
-    def heartbeat(self, report: Mapping[str, Any]) -> None:
+    def heartbeat(self, report: Mapping[str, Any]) -> dict[str, Any]:
         """Report this device's software and static hardware, onto its own row.
 
         A courtesy, not a precondition: callers treat any failure here as
-        non-fatal and go on to sync.
+        non-fatal and go on to sync. The answer names the registry's assigned
+        preset. Its body is unstamped like the archive responses, so it is not
+        held to a contract version; the range header still travels and is
+        checked on errors.
         """
-        self._request("POST", "/sync/heartbeat", body=dict(report))
+        return self._request(
+            "POST", "/sync/heartbeat", body=dict(report), verify_contract=False
+        )
 
     def archive_initiate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Begin or resume one content-addressed upload.
@@ -243,6 +257,7 @@ class SyncClient:
         body: Any | None = None,
         authorise: bool = True,
         declare_sections: bool = True,
+        verify_contract: bool = True,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         url = self._url(path)
@@ -281,7 +296,8 @@ class SyncClient:
             raise ServerFaultError(f"{url} did not answer with JSON.") from exc
         if not isinstance(payload, dict):
             raise ServerFaultError(f"{url} answered with {type(payload).__name__}, not an object.")
-        self._verify_contract(payload)
+        if verify_contract:
+            self._verify_contract(payload)
         logger.info("%s %s ok", method, path.split("?", maxsplit=1)[0])
         return payload
 

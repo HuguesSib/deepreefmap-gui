@@ -28,11 +28,14 @@ def registry(monkeypatch):
         asked["url"] = self.base_url
         asked["path"] = path
         asked["body"] = body
-        return {
+        response = {
             "device_id": "device-1",
             "token": asked.get("token", TOKEN),
             "enrolled_by": "Kim Nguyen",
         }
+        if "device_name" in asked:
+            response["device_name"] = asked["device_name"]
+        return response
 
     monkeypatch.setattr(client.SyncClient, "_request", _request)
     return asked
@@ -105,9 +108,19 @@ def test_who_onboarded_the_device_is_reported_for_audit(connect_code, registry):
     assert connected.enrolled_by == "Kim Nguyen"
 
 
-def test_the_device_enrols_under_the_machines_own_name(connect_code, registry, hostname):
-    """Nothing here collects a name: the device starts as the machine, and any
-    renaming happens in the web interface."""
+def test_the_servers_minted_name_is_the_one_adopted(connect_code, registry, hostname):
+    """The name is chosen in the web console with the connect code, so the
+    machine's own name never overrides what the enrolment answers."""
+    registry["device_name"] = "North wall laptop"
+
+    connected = connect(connect_code())
+
+    assert connected.device_name == "North wall laptop"
+
+
+def test_an_old_registry_that_echoes_no_name_leaves_the_machines_own(
+    connect_code, registry, hostname
+):
     connected = connect(connect_code())
 
     assert connected.device_name == hostname

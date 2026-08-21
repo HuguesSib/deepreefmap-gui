@@ -27,6 +27,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The registry's published contract/preset-schema.json revision this build
+# understands, reported in the heartbeat so the console knows which fields and
+# model names this installation can apply. Not the preset file format, which is
+# preset.PRESET_FILE_SCHEMA_VERSION.
+PRESET_SCHEMA_VERSION = 1
+
 KIND_INT = "int"
 KIND_FLOAT = "float"
 KIND_BOOL = "bool"

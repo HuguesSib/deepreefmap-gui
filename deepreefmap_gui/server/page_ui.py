@@ -68,6 +68,7 @@ from deepreefmap_gui.server.state import (
 )
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.notification import INFO, SURVEY, WARNING
+from deepreefmap_gui.survey.preset import remember_assignment, resolved_identity
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
@@ -458,6 +459,9 @@ class ServerPageMixin(MixinBase):
         if engine is None:
             return
         client = self._sync_client
+        # Read on the GUI thread: the store accessor touches widgets. The store
+        # itself is safe to hand over, its connections are per thread.
+        store = self._try_survey_store()
         self._server_syncing = True
         self._server_notice.clear()
         self._set_server_busy(True, PULLING.format(page=1))
@@ -465,7 +469,7 @@ class ServerPageMixin(MixinBase):
 
         def worker() -> None:
             try:
-                _heartbeat(client)
+                _heartbeat(client, store)
                 pulled = engine.pull()
                 pushed = engine.push()
             except Exception as exc:
@@ -1009,15 +1013,30 @@ def summarise_archive(report: ArchiveReport) -> str:
     return line
 
 
-def _heartbeat(client: object) -> None:
+def _heartbeat(client: object, store: SurveyStore | None) -> None:
     """Best-effort self-report before the sync proper.
 
     Never fatal: the sync matters more than the courtesy, and a registry too
-    old to know the route answers 404, which is also fine.
+    old to know the route answers 404, which is also fine. The report names the
+    preset this machine runs under, and the answer names the registry's
+    assigned one, kept beside the sync cursor as this survey's default. An old
+    registry answers with no body, which says nothing about an assignment and
+    so clears nothing.
     """
     if client is None:
         return
     try:
-        client.heartbeat(heartbeat_report())  # type: ignore[attr-defined]
+        report = heartbeat_report()
+        identity = resolved_identity(store)
+        if identity is not None:
+            report["active_preset_name"], report["active_preset_version"] = identity
+        answer = client.heartbeat(report)  # type: ignore[attr-defined]
     except Exception as exc:
         logger.info("Heartbeat not delivered: %s", exc)
+        return
+    if store is None or not isinstance(answer, Mapping) or "assigned_preset" not in answer:
+        return
+    try:
+        remember_assignment(store, answer.get("assigned_preset"))
+    except Exception:
+        logger.info("Could not record the assigned preset", exc_info=True)

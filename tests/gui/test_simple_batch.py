@@ -2362,6 +2362,43 @@ def test_a_withdrawn_server_preset_falls_back_out_loud(window):
     assert "standard settings are in force" in label
 
 
+def _assign_server_preset(window, name, version):
+    import json as json_mod
+
+    from deepreefmap_gui.survey.preset import ASSIGNED_PRESET_KEY
+
+    window._survey_store().set_sync_state(
+        ASSIGNED_PRESET_KEY, json_mod.dumps({"name": name, "version": version})
+    )
+    window._reload_active_preset()
+    window._survey_preset_label.setText(window._survey_preset_summary())
+
+
+def test_an_assignment_is_the_default_and_a_choice_outranks_it(window):
+    store = window._survey_store()
+    _publish_server_preset(store, name="Assigned standard", version=1)
+    _publish_server_preset(store, name="Chosen standard", version=2)
+
+    _assign_server_preset(window, "Assigned standard", 1)
+    assert window._active_preset.org.name == "Assigned standard"
+    assert "assigned by the registry" in window._survey_preset_label.text()
+
+    _pin_server_preset(window, "Chosen standard", 2)
+    assert window._active_preset.org.name == "Chosen standard"
+    label = window._survey_preset_label.text()
+    assert "from the server" in label
+    assert "assigned by the registry" not in label
+
+
+def test_an_assignment_not_yet_pulled_falls_back_without_a_notice(window):
+    """The assignment was never this survey's own choice, so a row no pull has
+    landed yet means the standard, quietly, not a withdrawal warning."""
+    _assign_server_preset(window, "Never pulled", 1)
+
+    assert window._active_preset.org.name == "Standard reef survey"
+    assert "no longer on the registry" not in window._survey_preset_label.text()
+
+
 def test_every_table_names_a_column_width_store(window):
     """Dragged column widths survive a restart on every page with a table."""
     assert window._pass_column_sizer._settings_key == "passes"

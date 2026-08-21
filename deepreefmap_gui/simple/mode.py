@@ -84,6 +84,8 @@ from deepreefmap_gui.survey.health import (
 )
 from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 from deepreefmap_gui.survey.preset import (
+    ASSIGNED_PRESET_KEY,
+    SERVER_PRESET_KEY,
     ActivePreset,
     OrgPreset,
     OverrideResult,
@@ -98,10 +100,6 @@ from deepreefmap_gui.survey.preset import (
 from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore, latest_schema_version
 
 logger = logging.getLogger(__name__)
-
-# Which server preset this survey chose, stored beside the sync cursor because
-# the runs it shapes live in that survey. Absent means the standard settings.
-SERVER_PRESET_KEY = "preset.server_selection"
 
 # Peers, not steps. None is a prerequisite for another: a pass with no transect
 # processes perfectly well, so ordering them as a sequence would claim a
@@ -373,17 +371,22 @@ class InterfaceShellMixin(MixinBase):
         self._survey_preset = self._active_preset.settings
 
     def _selected_server_preset(self) -> OrgPreset | None:
-        """The server preset this survey chose, or None when it chose none.
+        """The server preset in force: the survey's own choice, else the
+        registry's assignment, or None when there is neither.
 
         None also covers a selection the registry has since removed: the run
         must not silently keep stale settings under a name the console deleted,
         so the standard comes back and the label says which settings are live.
         """
         self._server_preset_withdrawn = ""
+        self._server_preset_assigned = False
         store = self._try_survey_store()
         if store is None:
             return None
         raw = store.sync_state(SERVER_PRESET_KEY)
+        assigned = not raw
+        if assigned:
+            raw = store.sync_state(ASSIGNED_PRESET_KEY)
         if not raw:
             return None
         try:
@@ -393,6 +396,12 @@ class InterfaceShellMixin(MixinBase):
             logger.warning("Ignoring an unreadable server preset selection")
             return None
         if row is None:
+            if assigned:
+                # The assignment was never this survey's own choice, so falling
+                # back to the standard needs no withdrawn notice: the named
+                # preset may simply not have been pulled yet.
+                logger.info("The assigned server preset is not in this survey yet")
+                return None
             logger.info("The selected server preset is no longer on the registry")
             # Kept for the settings label: falling back to the standard is
             # right, doing it without a word is not.
@@ -400,6 +409,7 @@ class InterfaceShellMixin(MixinBase):
                 f"{wanted.get('name')} (v{wanted.get('version')})"
             )
             return None
+        self._server_preset_assigned = assigned
         return registry_preset(row.name, row.version, row.settings)
 
     def _on_choose_server_preset(self) -> None:

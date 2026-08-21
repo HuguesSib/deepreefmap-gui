@@ -108,7 +108,11 @@ def serve_pull(registry, **overrides):
 
 
 def test_enrol_spends_the_code_and_returns_a_token(registry, make_code, code_secret) -> None:
-    registry.reply("/api/enrol", 200, {"device_id": "d-1", "token": TOKEN, "enrolled_by": "sub-1"})
+    registry.reply(
+        "/api/enrol",
+        200,
+        {"device_id": "d-1", "token": TOKEN, "enrolled_by": "sub-1", "device_name": "Reef 3"},
+    )
     code = decode_connect_code(make_code(registry.base_url))
 
     enrolment = make_client(registry, token=None).enrol(
@@ -116,6 +120,7 @@ def test_enrol_spends_the_code_and_returns_a_token(registry, make_code, code_sec
     )
 
     assert (enrolment.device_id, enrolment.token, enrolment.enrolled_by) == ("d-1", TOKEN, "sub-1")
+    assert enrolment.device_name == "Reef 3"
     method, path, body, headers = registry.requests[-1]
     assert (method, path) == ("POST", "/api/enrol")
     assert body == {
@@ -135,6 +140,27 @@ def test_module_enrol_uses_the_address_inside_the_code(registry, make_code) -> N
     enrolment = enrol(decode_connect_code(make_code(registry.base_url)), "Laptop")
 
     assert enrolment.token == TOKEN
+
+
+def test_heartbeat_returns_the_answer_without_demanding_a_stamp(registry) -> None:
+    """Scenario: a client that has already agreed a contract heartbeats a
+    registry whose heartbeat body carries no `contract_version`.
+
+    Expected behaviour: the answer comes back rather than being refused as
+    unstamped, like the archive responses, so the assigned preset it names can
+    be kept.
+    """
+    registry.reply(
+        "/api/sync/heartbeat",
+        200,
+        {"assigned_preset": {"id": "p-1", "name": "Deep reef", "version": 2}},
+    )
+    client = make_client(registry, agreed=CONTRACT_VERSION)
+
+    answer = client.heartbeat({"gui_version": "0.3.3"})
+
+    assert answer["assigned_preset"]["name"] == "Deep reef"
+    assert registry.requests[-1][2] == {"gui_version": "0.3.3"}
 
 
 def test_pull_and_push_carry_the_bearer_token(registry) -> None:

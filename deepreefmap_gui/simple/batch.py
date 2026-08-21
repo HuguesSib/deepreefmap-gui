@@ -902,7 +902,12 @@ class SimpleBatchMixin(MixinBase):
         if org.locked:
             lines[0] += ", set by your organisation"
         elif org.source == "server":
-            lines[0] += ", from the server"
+            # An assignment is the registry's doing, a selection the operator's,
+            # and the label is where that difference is visible.
+            if getattr(self, "_server_preset_assigned", False):
+                lines[0] += ", assigned by the registry"
+            else:
+                lines[0] += ", from the server"
         # Split by what this machine is allowed to keep rather than by what is
         # already on disk: the answer must not change depending on whether the
         # settings dialog has closed yet. The page carries it, not the status

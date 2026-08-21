@@ -54,7 +54,9 @@ class Connected:
 def connect(pasted: str) -> Connected:
     """Trade a pasted connect code for a stored device credential.
 
-    The device enrols under the machine's own name, sent here and nowhere else.
+    The device's name is minted in the web console with the connect code, and
+    the enrolment answer carries the name adopted. The machine's own name is
+    only the fallback, sent for old registries that read it and echo nothing.
     Naming and renaming are web interface actions, so attribution is never
     mutable from the device it names.
     """
@@ -81,7 +83,7 @@ def connect(pasted: str) -> Connected:
     return Connected(
         base_url=code.base_url,
         device_id=enrolment.device_id,
-        device_name=name,
+        device_name=enrolment.device_name or name,
         enrolled_by=enrolment.enrolled_by,
     )
 

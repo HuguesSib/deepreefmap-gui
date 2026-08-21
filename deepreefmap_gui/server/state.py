@@ -274,6 +274,7 @@ def heartbeat_report() -> dict[str, object]:
     """
     from deepreefmap_gui.packaging.releases import current_version
     from deepreefmap_gui.profiling.system_probe import probe_system
+    from deepreefmap_gui.survey.preset_schema import PRESET_SCHEMA_VERSION
 
     profile = probe_system(wait_for_gpu=False).to_dict()
     gpu = profile.get("gpu") or {}
@@ -281,6 +282,7 @@ def heartbeat_report() -> dict[str, object]:
         "gui_version": current_version(),
         "library_version": library_version(),
         "platform": platform_name(),
+        "preset_schema_version": PRESET_SCHEMA_VERSION,
         "system_profile": {
             "os_name": profile.get("os_name"),
             "os_release": profile.get("os_release"),

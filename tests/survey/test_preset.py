@@ -4,12 +4,15 @@ The invariant most of this file guards: editing settings on a field laptop write
 back only the allow-listed keys, never a whole copy of the organisation preset.
 """
 
+import json
+
 import pytest
 import yaml
 
 from deepreefmap_gui.survey.preset import (
     MACHINE_OVERRIDABLE_KEYS,
     PRESET_KEYS,
+    SERVER_PRESET_KEY,
     ActivePreset,
     OrgPreset,
     _bundled_defaults,
@@ -26,6 +29,8 @@ from deepreefmap_gui.survey.preset import (
     parse_preset,
     preset_content_hash,
     registry_preset,
+    remember_assignment,
+    resolved_identity,
     save_machine_override,
 )
 
@@ -413,3 +418,59 @@ def test_a_registry_preset_drops_a_value_of_the_wrong_type():
 
     assert [key for key, _ in preset.dropped] == ["fps"]
     assert preset.settings["enable_tsdf"] is True, "a legible string still counts"
+
+
+def _publish(store, name, version, settings=None):
+    from deepreefmap_gui.survey.models.server_preset import ServerPreset
+
+    store._add("server_preset", ServerPreset(name=name, version=version, settings=settings or {"fps": 3}))
+
+
+def test_resolved_identity_is_the_organisation_preset_by_default(store):
+    assert resolved_identity(store) == ("Standard reef survey", 1)
+    assert resolved_identity(None) == ("Standard reef survey", 1)
+
+
+def test_resolved_identity_follows_the_registry_assignment(store):
+    _publish(store, "Deep reef", 2)
+    remember_assignment(store, {"id": "p-1", "name": "Deep reef", "version": 2})
+
+    assert resolved_identity(store) == ("Deep reef", 2)
+
+    remember_assignment(store, None)
+    assert resolved_identity(store) == ("Standard reef survey", 1)
+
+
+def test_resolved_identity_prefers_an_explicit_selection_over_the_assignment(store):
+    _publish(store, "Assigned", 1)
+    _publish(store, "Chosen", 3)
+    remember_assignment(store, {"id": "p-1", "name": "Assigned", "version": 1})
+    store.set_sync_state(SERVER_PRESET_KEY, json.dumps({"name": "Chosen", "version": 3}))
+
+    assert resolved_identity(store) == ("Chosen", 3)
+
+
+def test_resolved_identity_falls_back_when_the_named_row_is_missing(store):
+    remember_assignment(store, {"id": "p-1", "name": "Never pulled", "version": 1})
+
+    assert resolved_identity(store) == ("Standard reef survey", 1)
+
+
+def test_resolved_identity_ignores_the_store_under_an_admin_file(store, tmp_path, monkeypatch):
+    """A mandate outranks a menu: the admin file's identity is what runs, so it
+    is what the heartbeat must report."""
+    _publish(store, "Deep reef", 2)
+    remember_assignment(store, {"id": "p-1", "name": "Deep reef", "version": 2})
+    admin = tmp_path / "preset.yaml"
+    admin.write_text(preset_yaml(preset_name="Reef Watch 2026", preset_version=4))
+    monkeypatch.setenv("DEEPREEFMAP_SURVEY_PRESET", str(admin))
+
+    assert resolved_identity(store) == ("Reef Watch 2026", 4)
+
+
+def test_resolved_identity_is_none_when_the_settings_cannot_be_read(store, tmp_path, monkeypatch):
+    admin = tmp_path / "broken.yaml"
+    admin.write_text("fps: [")
+    monkeypatch.setenv("DEEPREEFMAP_SURVEY_PRESET", str(admin))
+
+    assert resolved_identity(store) is None

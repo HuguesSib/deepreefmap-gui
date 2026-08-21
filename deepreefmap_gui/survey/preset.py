@@ -22,9 +22,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.survey.store import SurveyStore
 
 from deepreefmap_gui.io.atomic import atomic_write_text
 from deepreefmap_gui.paths import survey_preset_path
@@ -32,7 +35,21 @@ from deepreefmap_gui.survey.preset_schema import coerce_settings
 
 logger = logging.getLogger(__name__)
 
-PRESET_SCHEMA_VERSION = 3
+# Format of the preset YAML files this module reads and writes (the bundled
+# survey_preset.yaml, an admin's DEEPREEFMAP_SURVEY_PRESET file, and the
+# machine-override file). Bump when a file older than this needs migrating.
+# Unrelated to the registry's published preset schema, which is
+# preset_schema.PRESET_SCHEMA_VERSION.
+PRESET_FILE_SCHEMA_VERSION = 3
+
+# Which server preset this survey chose, stored beside the sync cursor because
+# the runs it shapes live in that survey. Absent means no choice was made.
+SERVER_PRESET_KEY = "preset.server_selection"
+
+# The preset the registry assigned to this device, from the heartbeat answer.
+# The default when the survey chose nothing itself; an explicit selection and
+# an admin file both outrank it.
+ASSIGNED_PRESET_KEY = "preset.server_assignment"
 
 # Schema 1 held only the seven core settings. Schema 2 held every setting, as a
 # whole copy of the preset per machine. Either is upgraded on read.
@@ -370,7 +387,7 @@ def save_machine_override(settings: Mapping[str, Any], org: OrgPreset) -> Overri
         _unlink_quietly(path)
         return OverrideResult(saved={}, refused=refused, path=None)
     text = yaml.safe_dump(
-        {"schema_version": PRESET_SCHEMA_VERSION, "overrides": saved}, sort_keys=False
+        {"schema_version": PRESET_FILE_SCHEMA_VERSION, "overrides": saved}, sort_keys=False
     )
     atomic_write_text(path, text)
     return OverrideResult(saved=saved, refused=refused, path=path)
@@ -431,7 +448,7 @@ def parse_preset(text: str) -> dict[str, Any]:
     version = _schema_version(data)
     for key in PRESET_META_KEYS:
         data.pop(key, None)
-    if version < PRESET_SCHEMA_VERSION:
+    if version < PRESET_FILE_SCHEMA_VERSION:
         # Keep the file's own choices, take the shipped value for everything
         # the older schema had no field for.
         data = {**_bundled_defaults(), **data}
@@ -476,6 +493,49 @@ def parse_machine_override(text: str, org: OrgPreset) -> dict[str, Any]:
             org.label,
         )
     return kept
+
+
+def remember_assignment(store: SurveyStore, assigned: Mapping[str, Any] | None) -> None:
+    """Keep the registry's assigned preset beside the sync cursor, or clear it.
+
+    Kept even when the named preset has not been pulled into this survey yet:
+    resolution copes with a row that is not here, and the next pull may land it.
+    """
+    if assigned is None:
+        store.set_sync_state(ASSIGNED_PRESET_KEY, None)
+        return
+    store.set_sync_state(
+        ASSIGNED_PRESET_KEY,
+        json.dumps({"name": str(assigned["name"]), "version": int(assigned["version"])}),
+    )
+
+
+def resolved_identity(store: SurveyStore | None) -> tuple[str, int] | None:
+    """Name and version of the org preset this machine currently runs under.
+
+    Mirrors the interface's own resolution: an admin file when one is in force,
+    else the survey's server selection, else the registry's assignment, else the
+    organisation preset itself. A selection or assignment whose row is not in
+    the store falls back to the organisation preset, exactly as the run would.
+    None when the settings cannot be read at all.
+    """
+    try:
+        active = load_active_preset()
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    org = active.org
+    if not org.locked and store is not None:
+        raw = store.sync_state(SERVER_PRESET_KEY) or store.sync_state(ASSIGNED_PRESET_KEY)
+        if raw:
+            row = None
+            try:
+                wanted = json.loads(raw)
+                row = store.get_server_preset(str(wanted["name"]), int(wanted["version"]))
+            except (ValueError, KeyError, TypeError):
+                logger.warning("Ignoring an unreadable server preset reference")
+            if row is not None:
+                return (row.name, int(row.version))
+    return (org.name, org.version)
 
 
 def manifest_config_block(org: OrgPreset, deviations: Mapping[str, Any]) -> dict[str, Any]:
