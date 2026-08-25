@@ -25,6 +25,16 @@ def direction_text(direction: str | None) -> str:
     arrow = DIRECTION_ARROWS.get(key)
     return f"{arrow} {key.capitalize()}" if arrow else ""
 
+
+# What an unrecorded direction is called wherever a choice is offered.
+DIRECTION_UNRECORDED = "Not recorded"
+
+
+def direction_phrase(direction: str | None) -> str:
+    """The direction inside a sentence: "forward", or "an unrecorded direction"."""
+    key = (direction or "").strip().lower()
+    return key if key in PASS_DIRECTIONS else "an unrecorded direction"
+
 # The diver's assessment, on the fixed scale that normalises the free text in the
 # field spreadsheets ("meh", "good/meh", "very bad"). None is not assessed.
 PASS_QUALITIES = ("excellent", "very_good", "good", "meh", "bad", "very_bad")
@@ -51,13 +61,14 @@ class TransectPass:
     video_id: uuid.UUID
     begin_s: float
     end_s: float
-    direction: str = "forward"
+    # None is not recorded, which is a fact of its own.
+    direction: str | None = None
     batch_id: uuid.UUID | None = None
     campaign_id: uuid.UUID | None = None
     quality: str | None = None
-    # The camera was mounted the other way up, which the reconstruction has to
-    # know and no probe can tell it.
-    upside_down: bool = False
+    # The day of the swim, ISO ``YYYY-MM-DD``, from the clip's capture stamp
+    # unless corrected.
+    surveyed_on: str | None = None
     notes: str = ""
     # What a person calls this section. Empty means nobody has named it, which
     # reads as the generated default rather than as a blank -- storing the
@@ -71,9 +82,11 @@ class TransectPass:
     device_id: uuid.UUID | None = None
     # The registry position this row was last seen at, sent back as base_seq.
     head_seq: int | None = None
+    validated_at: str | None = None
+    validated_by: str | None = None
 
     def __post_init__(self) -> None:
-        if self.direction not in PASS_DIRECTIONS:
+        if self.direction is not None and self.direction not in PASS_DIRECTIONS:
             raise ValueError(f"direction must be one of {PASS_DIRECTIONS}, got {self.direction!r}")
         if self.quality is not None and self.quality not in PASS_QUALITIES:
             raise ValueError(f"quality must be one of {PASS_QUALITIES}, got {self.quality!r}")

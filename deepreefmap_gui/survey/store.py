@@ -702,6 +702,121 @@ _MIGRATIONS: list[Migration] = [
         """
         + _pending_push_triggers({"sites": "site", "campaigns": "campaign"}),
     ),
+    # The catalogue as the field data needs it, matching the registry: a site name
+    # unique within its country, a transect that may lack GPS ends, a pass whose
+    # direction may be unrecorded and which knows the day it was swum, a clip that
+    # knows its camera and its review, a run that knows its scale. Every table
+    # carries the console's validation stamp. created_by was never read.
+    #
+    # SQLite cannot relax NOT NULL or drop a CHECK in place, so transect and
+    # transect_pass are rebuilt, and their pending-push triggers with them.
+    Migration(
+        17,
+        "the catalogue carries validation, clip review, run scale and optional ends",
+        """
+        DROP INDEX IF EXISTS site_name_lower;
+        CREATE UNIQUE INDEX site_country_name_lower
+            ON site(LOWER(COALESCE(country, '')), LOWER(name)) WHERE deleted_at IS NULL;
+        ALTER TABLE site ADD COLUMN validated_at TEXT;
+        ALTER TABLE site ADD COLUMN validated_by TEXT;
+        ALTER TABLE site DROP COLUMN created_by;
+        ALTER TABLE campaign ADD COLUMN validated_at TEXT;
+        ALTER TABLE campaign ADD COLUMN validated_by TEXT;
+        ALTER TABLE campaign DROP COLUMN created_by;
+
+        CREATE TABLE transect_new (
+            id TEXT PRIMARY KEY,
+            site_id TEXT REFERENCES site(id),
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            start_lat REAL,
+            start_lon REAL,
+            start_accuracy_m REAL,
+            end_lat REAL,
+            end_lon REAL,
+            end_accuracy_m REAL,
+            length_m REAL,
+            depth_m REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER,
+            validated_at TEXT,
+            validated_by TEXT
+        );
+        INSERT INTO transect_new
+            (id, site_id, name, description, start_lat, start_lon, start_accuracy_m,
+             end_lat, end_lon, end_accuracy_m, length_m, depth_m, created_at,
+             updated_at, deleted_at, device_id, head_seq)
+            SELECT id, site_id, name, description, start_lat, start_lon, start_accuracy_m,
+                   end_lat, end_lon, end_accuracy_m, length_m, depth_m, created_at,
+                   updated_at, deleted_at, device_id, head_seq
+            FROM transect;
+        DROP TABLE transect;
+        ALTER TABLE transect_new RENAME TO transect;
+        CREATE UNIQUE INDEX transect_site_name_lower
+            ON transect(site_id, LOWER(name)) WHERE deleted_at IS NULL;
+
+        CREATE TABLE transect_pass_new (
+            id TEXT PRIMARY KEY,
+            transect_id TEXT REFERENCES transect(id),
+            campaign_id TEXT REFERENCES campaign(id),
+            video_id TEXT NOT NULL REFERENCES video_asset(id),
+            batch_id TEXT REFERENCES survey_batch(id),
+            direction TEXT CHECK (direction IS NULL OR direction IN ('forward', 'reverse')),
+            begin_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            quality TEXT CHECK (quality IS NULL OR quality IN
+                ('excellent', 'very_good', 'good', 'meh', 'bad', 'very_bad')),
+            surveyed_on TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            extra_video_ids TEXT NOT NULL DEFAULT '[]',
+            head_seq INTEGER,
+            validated_at TEXT,
+            validated_by TEXT
+        );
+        INSERT INTO transect_pass_new
+            (id, transect_id, campaign_id, video_id, batch_id, direction, begin_s, end_s,
+             label, notes, quality, created_at, updated_at, deleted_at, device_id,
+             extra_video_ids, head_seq)
+            SELECT id, transect_id, campaign_id, video_id, batch_id, direction, begin_s,
+                   end_s, label, notes, quality, created_at, updated_at, deleted_at,
+                   device_id, extra_video_ids, head_seq
+            FROM transect_pass;
+        DROP TABLE transect_pass;
+        ALTER TABLE transect_pass_new RENAME TO transect_pass;
+
+        ALTER TABLE video_asset ADD COLUMN camera_label TEXT;
+        ALTER TABLE video_asset ADD COLUMN rig_position TEXT
+            CHECK (rig_position IS NULL OR rig_position IN ('left', 'centre', 'right'));
+        ALTER TABLE video_asset ADD COLUMN upside_down INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE video_asset ADD COLUMN review TEXT NOT NULL DEFAULT 'unreviewed'
+            CHECK (review IN ('unreviewed', 'usable', 'excluded'));
+        ALTER TABLE video_asset ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+        ALTER TABLE video_asset ADD COLUMN validated_at TEXT;
+        ALTER TABLE video_asset ADD COLUMN validated_by TEXT;
+        ALTER TABLE video_asset DROP COLUMN created_by;
+
+        ALTER TABLE run_record ADD COLUMN camera_profile TEXT;
+        ALTER TABLE run_record ADD COLUMN pixel_size_m REAL;
+        ALTER TABLE run_record ADD COLUMN scale_type TEXT;
+        ALTER TABLE run_record ADD COLUMN transect_length_m REAL;
+        ALTER TABLE run_record ADD COLUMN crop_width_m REAL;
+        ALTER TABLE run_record ADD COLUMN preset_id TEXT;
+        ALTER TABLE run_record ADD COLUMN validated_at TEXT;
+        ALTER TABLE run_record ADD COLUMN validated_by TEXT;
+        ALTER TABLE run_record DROP COLUMN created_by;
+
+        ALTER TABLE server_preset DROP COLUMN created_by;
+        """
+        + _pending_push_triggers({"transects": "transect", "passes": "transect_pass"}),
+    ),
 ]
 
 
@@ -715,10 +830,10 @@ SYNC_SECTIONS: dict[str, str] = {
     "transects": "transect",
     "videos": "video_asset",
     "passes": "transect_pass",
-    "runs": "run_record",
-    # Pull-only and last, matching the registry's apply order. Never authored
-    # here: the contract keeps it out of the push sections.
+    # Pull-only, ahead of the runs that name the preset they ran under. Never
+    # authored here: the contract keeps it out of the push sections.
     "presets": "server_preset",
+    "runs": "run_record",
 }
 
 _TOMBSTONED_TABLES = frozenset(SYNC_SECTIONS.values())
@@ -955,7 +1070,7 @@ def _blocked_only_by_each_other(
 # on ``deleted_at IS NULL``, so a tombstone collides with nothing. A table absent
 # from here carries no unique index a pulled row can land on.
 _UNIQUE_NAME_SCOPE: dict[str, tuple[str, ...]] = {
-    "site": (),
+    "site": ("country",),
     "campaign": (),
     "transect": ("site_id",),
 }
@@ -1033,6 +1148,8 @@ class ApplyResult:
 
 @dataclass
 class RebuildReport:
+    sites: int = 0
+    campaigns: int = 0
     transects: int = 0
     videos: int = 0
     batches: int = 0
@@ -2616,16 +2733,45 @@ class SurveyStore:
             self.add_transect(Transect(
                 id=transect_id,
                 name=snapshot["name"],
-                start_lat=snapshot["start_lat"],
-                start_lon=snapshot["start_lon"],
-                end_lat=snapshot["end_lat"],
-                end_lon=snapshot["end_lon"],
+                start_lat=snapshot.get("start_lat"),
+                start_lon=snapshot.get("start_lon"),
+                end_lat=snapshot.get("end_lat"),
+                end_lon=snapshot.get("end_lon"),
+                site_id=self._restore_site(snapshot.get("site"), report),
                 length_m=snapshot.get("length_m"),
                 depth_m=snapshot.get("depth_m"),
                 deleted_at=snapshot.get("deleted_at"),
             ))
             report.transects += 1
         return transect_id
+
+    def _restore_site(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
+        if not isinstance(snapshot, dict) or not snapshot.get("id"):
+            return None
+        site_id = uuid.UUID(snapshot["id"])
+        if not self.holds_id("sites", site_id):
+            self.add_site(Site(
+                id=site_id,
+                name=snapshot.get("name") or "Recovered site",
+                country=snapshot.get("country"),
+                region=snapshot.get("region"),
+            ))
+            report.sites += 1
+        return site_id
+
+    def _restore_campaign(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
+        if not isinstance(snapshot, dict) or not snapshot.get("id"):
+            return None
+        campaign_id = uuid.UUID(snapshot["id"])
+        if not self.holds_id("campaigns", campaign_id):
+            self.add_campaign(Campaign(
+                id=campaign_id,
+                name=snapshot.get("name") or "Recovered campaign",
+                begin_date=snapshot.get("begin_date"),
+                end_date=snapshot.get("end_date"),
+            ))
+            report.campaigns += 1
+        return campaign_id
 
     def _restore_batch(self, survey: dict[str, Any], report: RebuildReport) -> uuid.UUID | None:
         raw = survey.get("batch_id")
@@ -2686,9 +2832,12 @@ class SurveyStore:
                 video_id=video_ids[0],
                 extra_video_ids=video_ids[1:],
                 batch_id=batch_id,
-                direction=snapshot["direction"],
+                direction=snapshot.get("direction"),
                 begin_s=snapshot["begin_s"],
                 end_s=snapshot["end_s"],
+                campaign_id=self._restore_campaign(snapshot.get("campaign"), report),
+                surveyed_on=snapshot.get("surveyed_on"),
+                quality=snapshot.get("quality"),
             ))
             report.passes += 1
         return pass_id

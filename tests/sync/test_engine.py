@@ -193,7 +193,6 @@ def pass_row(pass_id, transect_id=None, **overrides):
         "begin_s": 0.0,
         "end_s": 60.0,
         "direction": "forward",
-        "upside_down": False,
         "label": "",
         "notes": "",
         "quality": None,

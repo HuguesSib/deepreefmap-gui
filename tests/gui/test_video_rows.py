@@ -394,6 +394,7 @@ def test_a_clip_with_nothing_cut_from_it_keeps_the_space_but_not_the_chevron() -
 
 def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None:
     entry = make_entry(windows=((0.0, 30.0),), runs_per_pass=(("succeeded", "succeeded"),))
+    entry.passes[0].direction = "forward"
     listing = VideoLibraryList()
     listing.set_groups(one_group(entry), lambda _id: "North reef")
     row = listing.sections()[str(entry.passes[0].id)]

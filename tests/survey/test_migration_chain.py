@@ -223,7 +223,7 @@ def test_a_populated_v10_survives_the_sync_columns(tmp_path):
         assert (pass_.notes, pass_.label) == ("surge", "first swim")
         assert pass_.batch_id == uuid.UUID(ids["batch"])
         # Nothing assessed a pass that predates the scale.
-        assert (pass_.quality, pass_.campaign_id, pass_.upside_down) == (None, None, False)
+        assert (pass_.quality, pass_.campaign_id, pass_.surveyed_on) == (None, None, None)
         assert store.list_batch_items(uuid.UUID(ids["batch"]))[0].overrides == {"fps": 4}
         assert len(store.list_notifications()) == 1
     finally:

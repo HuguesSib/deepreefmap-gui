@@ -122,7 +122,7 @@ def test_row_round_trip_preserves_every_model():
     batch = SurveyBatch(name="Day 1")
     pass_ = make_pass(
         transect, video, batch_id=batch.id, campaign_id=campaign.id, direction="reverse",
-        quality="meh", upside_down=True,
+        quality="meh", surveyed_on="2026-07-01",
     )
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01__20260720-0900", batch_id=batch.id)
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
@@ -182,6 +182,9 @@ def test_manifest_block_snapshots_pass_and_transect():
         "direction": "reverse",
         "begin_s": 0.0,
         "end_s": 60.0,
+        "surveyed_on": None,
+        "quality": None,
+        "campaign": None,
     }
     assert block["transect"]["name"] == "T1"
     assert block["transect"]["start_lat"] == -17.5
@@ -234,6 +237,7 @@ def test_every_video_field_is_covered_by_a_carry_over_group():
         + VideoAsset.CARRIED_FIELDS
         + VideoAsset.TRISTATE_FIELDS
         + VideoAsset.SYNC_FIELDS
+        + VideoAsset.REVIEW_FIELDS
     )
     assert len(set(grouped)) == len(grouped), "a field is named in two groups"
     assert set(grouped) == {f.name for f in fields(VideoAsset)}

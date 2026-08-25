@@ -190,6 +190,8 @@ def survey_manifest_block(
     provenance: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
     model_versions: dict[str, str] | None = None,
+    site: Site | None = None,
+    campaign: Campaign | None = None,
 ) -> dict[str, Any]:
     """The ``survey`` entry embedded in run_manifest.json.
 
@@ -209,6 +211,14 @@ def survey_manifest_block(
             "direction": pass_.direction,
             "begin_s": pass_.begin_s,
             "end_s": pass_.end_s,
+            "surveyed_on": pass_.surveyed_on,
+            "quality": pass_.quality,
+            "campaign": None if campaign is None else {
+                "id": str(campaign.id),
+                "name": campaign.name,
+                "begin_date": campaign.begin_date,
+                "end_date": campaign.end_date,
+            },
         },
         # None for a pass run without one. rebuild_from_scan reads the absence
         # rather than a placeholder, so a copied output folder restores the pass
@@ -221,6 +231,12 @@ def survey_manifest_block(
         "transect": None if transect is None else {
             "id": str(transect.id),
             "name": transect.name,
+            "site": None if site is None else {
+                "id": str(site.id),
+                "name": site.name,
+                "country": site.country,
+                "region": site.region,
+            },
             "start_lat": transect.start_lat,
             "start_lon": transect.start_lon,
             "end_lat": transect.end_lat,

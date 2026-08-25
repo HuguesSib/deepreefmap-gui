@@ -114,7 +114,7 @@ from deepreefmap_gui.survey.catalogue import (
     preview_points,
 )
 from deepreefmap_gui.survey.models.run_record import RunRecord
-from deepreefmap_gui.survey.models.transect_pass import TransectPass
+from deepreefmap_gui.survey.models.transect_pass import TransectPass, direction_phrase
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_SORT_COLUMN,
@@ -1337,7 +1337,7 @@ class SectionRow(QWidget):
         )
         self.transect_chip.set_assignment(transect_name, pass_.direction)
         self._direction.setToolTip(
-            f"Swum {pass_.direction} along the transect."
+            f"Swum {direction_phrase(pass_.direction)} along the transect."
         )
         self._apply_icons()
         self._runs.setText(run_label(run_count))

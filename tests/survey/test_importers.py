@@ -123,11 +123,25 @@ def test_csv_import_reports_row_number_on_error(tmp_path):
         import_transects_csv(path)
 
 
-def test_csv_import_rejects_missing_columns(tmp_path):
+def test_csv_import_rejects_a_missing_name_column(tmp_path):
+    path = tmp_path / "transects.csv"
+    path.write_text("start_lat,start_lon\n-17.5,177.1\n")
+    with pytest.raises(ValueError, match="name"):
+        import_transects_csv(path)
+
+
+def test_csv_import_rejects_half_an_end_point(tmp_path):
     path = tmp_path / "transects.csv"
     path.write_text("name,start_lat\nT1,-17.5\n")
-    with pytest.raises(ValueError, match="end_lat"):
+    with pytest.raises(ValueError, match="Row 2.*both a latitude"):
         import_transects_csv(path)
+
+
+def test_csv_import_takes_a_line_with_no_end_points(tmp_path):
+    path = tmp_path / "transects.csv"
+    path.write_text("name,length_m\nT1,50\n")
+    [transect] = import_transects_csv(path)
+    assert (transect.name, transect.length_m, transect.end_points()) == ("T1", 50.0, None)
 
 
 def test_csv_round_trip_preserves_ids(tmp_path):

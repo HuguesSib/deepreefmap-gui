@@ -26,10 +26,12 @@ from deepreefmap_gui.survey.models.transect import (
 )
 from deepreefmap_gui.survey.models.transect_pass import (
     DIRECTION_ARROWS,
+    DIRECTION_UNRECORDED,
     PASS_DIRECTIONS,
     PASS_QUALITIES,
     TransectPass,
     direction_arrow,
+    direction_phrase,
     direction_text,
 )
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -37,6 +39,7 @@ from deepreefmap_gui.survey.models.video_asset import VideoAsset
 __all__ = [
     "BLOCKER",
     "DIRECTION_ARROWS",
+    "DIRECTION_UNRECORDED",
     "CONDITION",
     "EVENT",
     "INFO",
@@ -61,6 +64,7 @@ __all__ = [
     "VideoAsset",
     "compass_point",
     "direction_arrow",
+    "direction_phrase",
     "direction_text",
     "haversine_m",
     "initial_bearing_deg",

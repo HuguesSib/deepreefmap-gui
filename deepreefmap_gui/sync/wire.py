@@ -46,11 +46,11 @@ WIRE_SECTIONS: tuple[str, ...] = (
     "videos",
     "passes",
     PASS_VIDEOS,
+    # Registry-published run settings, pull-only, ahead of the runs that name
+    # the preset they ran under.
+    PRESETS,
     "runs",
     COVER_ROWS,
-    # Registry-published run settings, pull-only, behind everything else
-    # because nothing here references them.
-    PRESETS,
 )
 
 
@@ -95,6 +95,7 @@ _TIMESTAMPS = frozenset({
     "started_at",
     "finished_at",
     "captured_at",
+    "validated_at",
 })
 
 # Fixed namespaces, so a derived id is the same id on every device and across
@@ -122,6 +123,11 @@ _PROVENANCE_FIELDS = (
     "run_duration_s",
     "stage_durations",
     "stage_peaks",
+    "camera_profile",
+    "pixel_size_m",
+    "scale_type",
+    "transect_length_m",
+    "crop_width_m",
 )
 
 
@@ -388,6 +394,14 @@ def provenance_from_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     provenance["run_duration_s"] = _seconds(manifest.get("run_duration_s"))
     provenance["stage_durations"] = _block(manifest, "stage_durations") or None
     provenance["stage_peaks"] = _block(manifest, "stage_peaks") or None
+    # The scale the cover was measured at. The tape length and crop width are the
+    # ones the run used, which may differ from the transect's current reading.
+    provenance["camera_profile"] = _text(manifest.get("camera_profile"))
+    provenance["pixel_size_m"] = _seconds(manifest.get("pixel_size_m"))
+    provenance["scale_type"] = _text(manifest.get("scale_type"))
+    transect = _block(manifest, "transect")
+    provenance["transect_length_m"] = _seconds(transect.get("length"))
+    provenance["crop_width_m"] = _seconds(transect.get("crop_width"))
     return provenance
 
 

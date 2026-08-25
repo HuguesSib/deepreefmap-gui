@@ -45,14 +45,16 @@ class Transect:
     """User-defined survey line; ``length_m`` is the tape length used for scaling.
 
     ``name`` is unique per site rather than globally: two reefs each have a "T1".
-    The accuracy figures are per end point, which is how a field GPS exports them.
+    The end points are optional, both or neither per end: most historical lines
+    were never fixed by GPS. The accuracy figures are per end point, which is how
+    a field GPS exports them.
     """
 
     name: str
-    start_lat: float
-    start_lon: float
-    end_lat: float
-    end_lon: float
+    start_lat: float | None = None
+    start_lon: float | None = None
+    end_lat: float | None = None
+    end_lon: float | None = None
     site_id: uuid.UUID | None = None
     start_accuracy_m: float | None = None
     end_accuracy_m: float | None = None
@@ -66,15 +68,22 @@ class Transect:
     device_id: uuid.UUID | None = None
     # The registry position this row was last seen at, sent back as base_seq.
     head_seq: int | None = None
+    # Stamped by the console; from then on a change made here is a proposal.
+    validated_at: str | None = None
+    validated_by: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("Transect name must not be empty")
-        for lat in (self.start_lat, self.end_lat):
-            if not -90.0 <= lat <= 90.0:
+        for which, lat, lon in (
+            ("start", self.start_lat, self.start_lon),
+            ("end", self.end_lat, self.end_lon),
+        ):
+            if (lat is None) != (lon is None):
+                raise ValueError(f"The {which} point needs both a latitude and a longitude")
+            if lat is not None and not -90.0 <= lat <= 90.0:
                 raise ValueError(f"Latitude out of range: {lat}")
-        for lon in (self.start_lon, self.end_lon):
-            if not -180.0 <= lon <= 180.0:
+            if lon is not None and not -180.0 <= lon <= 180.0:
                 raise ValueError(f"Longitude out of range: {lon}")
         for value, label in (
             (self.length_m, "length_m"),
@@ -85,6 +94,18 @@ class Transect:
             if value is not None and value < 0:
                 raise ValueError(f"{label} must be >= 0")
 
-    def geodesic_length_m(self) -> float:
+    def end_points(self) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        """Both ends as (lat, lon) pairs, or None where either is unrecorded."""
+        if (
+            self.start_lat is None
+            or self.start_lon is None
+            or self.end_lat is None
+            or self.end_lon is None
+        ):
+            return None
+        return (self.start_lat, self.start_lon), (self.end_lat, self.end_lon)
+
+    def geodesic_length_m(self) -> float | None:
         """Great-circle length of the line, shown beside the tape length as a QC hint."""
-        return haversine_m(self.start_lat, self.start_lon, self.end_lat, self.end_lon)
+        ends = self.end_points()
+        return None if ends is None else haversine_m(*ends[0], *ends[1])

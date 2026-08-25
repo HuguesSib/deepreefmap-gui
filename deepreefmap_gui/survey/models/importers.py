@@ -10,7 +10,7 @@ from xml.etree import ElementTree
 
 from deepreefmap_gui.survey.models.transect import Transect
 
-_CSV_REQUIRED = {"name", "start_lat", "start_lon", "end_lat", "end_lon"}
+_CSV_REQUIRED = {"name"}
 
 _HEMISPHERE_SIGN = {"N": 1.0, "S": -1.0, "E": 1.0, "W": -1.0}
 # One coordinate ending in a hemisphere letter: digits and the usual degree,
@@ -44,22 +44,27 @@ def build_transect(
     depth_m: float | None = None,
     description: str = "",
     site_id: uuid.UUID | None = None,
+    start_accuracy_m: float | None = None,
+    end_accuracy_m: float | None = None,
 ) -> Transect:
     """Validate and build a transect from typed fields, naming the field at fault.
 
-    Shared by the Transects form and the new-transect dialog so their
-    validation cannot drift. Both endpoints are required: inventing 0,0 would
-    file the transect in the Gulf of Guinea.
+    Shared by the Transects form and the new-transect dialog so their validation
+    cannot drift. The end points are both or neither: a line with one end is a
+    typo, a line with none was never fixed by GPS.
     """
-    coords: list[float] = []
+    coords: list[float | None] = []
     for which, raw in (("start", start_text), ("end", end_text)):
         cleaned = raw.strip()
         if not cleaned:
-            raise ValueError(f"Missing {which} point")
+            coords.extend((None, None))
+            continue
         try:
             coords.extend(parse_latlon(cleaned))
         except ValueError as exc:
             raise ValueError(f"{which.capitalize()} point: {exc}") from None
+    if (coords[0] is None) != (coords[2] is None):
+        raise ValueError(f"Missing {'start' if coords[0] is None else 'end'} point")
     return Transect(
         name=name.strip(),
         start_lat=coords[0],
@@ -70,6 +75,8 @@ def build_transect(
         depth_m=depth_m or None,
         description=description,
         site_id=site_id,
+        start_accuracy_m=start_accuracy_m or None,
+        end_accuracy_m=end_accuracy_m or None,
     )
 
 
@@ -122,8 +129,9 @@ def _dms_to_degrees(numbers: str, hemisphere: str) -> float:
 def import_transects_csv(path: Path) -> list[Transect]:
     """Read transects from a CSV with case-insensitive headers.
 
-    Required columns: name, start_lat, start_lon, end_lat, end_lon.
-    Optional: length_m, depth_m, description, id (a UUID kept for round-trips).
+    Required column: name. Optional: start_lat, start_lon, end_lat, end_lon,
+    start_accuracy_m, end_accuracy_m, length_m, depth_m, description, site
+    (a site name, resolved by the caller), id (a UUID kept for round-trips).
     """
     with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -160,10 +168,12 @@ def _optional_float(raw: str) -> float | None:
 def _transect_from_csv_row(row: dict[str, str], norm: dict[str, str], name: str) -> Transect:
     transect = Transect(
         name=name,
-        start_lat=float(_cell(row, norm, "start_lat")),
-        start_lon=float(_cell(row, norm, "start_lon")),
-        end_lat=float(_cell(row, norm, "end_lat")),
-        end_lon=float(_cell(row, norm, "end_lon")),
+        start_lat=_optional_float(_cell(row, norm, "start_lat")),
+        start_lon=_optional_float(_cell(row, norm, "start_lon")),
+        end_lat=_optional_float(_cell(row, norm, "end_lat")),
+        end_lon=_optional_float(_cell(row, norm, "end_lon")),
+        start_accuracy_m=_optional_float(_cell(row, norm, "start_accuracy_m")),
+        end_accuracy_m=_optional_float(_cell(row, norm, "end_accuracy_m")),
         length_m=_optional_float(_cell(row, norm, "length_m")),
         depth_m=_optional_float(_cell(row, norm, "depth_m")),
         description=_cell(row, norm, "description"),
@@ -172,6 +182,20 @@ def _transect_from_csv_row(row: dict[str, str], norm: dict[str, str], name: str)
     if raw_id:
         transect.id = uuid.UUID(raw_id)
     return transect
+
+
+def csv_site_names(path: Path) -> dict[str, str]:
+    """Transect name to site name, for the rows that carry one."""
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            return {}
+        norm = {fn.strip().lower(): fn for fn in reader.fieldnames}
+        return {
+            _cell(row, norm, "name"): _cell(row, norm, "site")
+            for row in reader
+            if _cell(row, norm, "name") and _cell(row, norm, "site")
+        }
 
 
 def import_transects_gpx(path: Path) -> list[Transect]:

@@ -152,6 +152,8 @@ def assign_transect(window, row_index, transect_id=None):
     store = window._survey_store()
     pass_ = store.get_pass(window._survey_rows[row_index].pass_id)
     pass_.transect_id = transect_id or store.list_transects()[0].id
+    # The picker always answers a direction, and forward is what it opens on.
+    pass_.direction = pass_.direction or "forward"
     store.update_pass(pass_)
     window._refresh_survey_batch_tab()
 

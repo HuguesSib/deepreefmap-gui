@@ -104,11 +104,11 @@ def test_a_pass_names_a_campaign_and_a_quality(store):
     _, _, pass_ = seed_pass(store)
     pass_.campaign_id = campaign.id
     pass_.quality = "very_good"
-    pass_.upside_down = True
+    pass_.surveyed_on = "2026-07-01"
     store.update_pass(pass_)
     stored = store.get_pass(pass_.id)
-    assert (stored.campaign_id, stored.quality, stored.upside_down) == (
-        campaign.id, "very_good", True,
+    assert (stored.campaign_id, stored.quality, stored.surveyed_on) == (
+        campaign.id, "very_good", "2026-07-01",
     )
 
 

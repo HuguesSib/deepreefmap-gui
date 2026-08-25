@@ -102,13 +102,13 @@ def test_a_clip_leaves_its_disk_location_behind():
 
 
 def test_a_pass_leaves_its_session_and_its_chapter_columns_behind():
-    pass_ = make_pass(campaign_id=uuid.uuid4(), quality="very_good", upside_down=True, label="swim 1")
+    pass_ = make_pass(campaign_id=uuid.uuid4(), quality="very_good", surveyed_on="2026-07-01", label="swim 1")
 
     row = wire.rows_to_wire("passes", [pass_])[0]
 
     assert {"batch_id", "video_id", "extra_video_ids"}.isdisjoint(row)
     assert row["campaign_id"] == str(pass_.campaign_id)
-    assert (row["quality"], row["upside_down"], row["label"]) == ("very_good", True, "swim 1")
+    assert (row["quality"], row["surveyed_on"], row["label"]) == ("very_good", "2026-07-01", "swim 1")
 
 
 def test_a_transect_carries_its_site_and_both_accuracies():
@@ -647,7 +647,7 @@ def test_an_inbound_row_keeps_the_registrys_position_and_what_it_carried():
 
 def test_a_pass_row_survives_the_trip_out_and_back():
     """A pushed pass and the same pass pulled again describe the same swim."""
-    pass_ = make_pass(quality="meh", upside_down=True, campaign_id=uuid.uuid4())
+    pass_ = make_pass(quality="meh", surveyed_on="2026-07-01", campaign_id=uuid.uuid4())
 
     sent = wire.rows_to_wire("passes", [pass_])[0]
     chapters = wire.pass_video_rows(pass_)
@@ -658,7 +658,7 @@ def test_a_pass_row_survives_the_trip_out_and_back():
     assert landed["video_id"] == str(pass_.video_id)
     assert landed["extra_video_ids"] == [str(v) for v in pass_.extra_video_ids]
     assert landed["updated_at"] == pass_.updated_at
-    assert (landed["quality"], landed["upside_down"]) == ("meh", True)
+    assert (landed["quality"], landed["surveyed_on"]) == ("meh", "2026-07-01")
 
 
 def test_a_cover_row_is_json_the_registry_can_check(tmp_path):

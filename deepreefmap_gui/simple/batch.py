@@ -83,6 +83,7 @@ from deepreefmap_gui.survey.models import (
     Transect,
     TransectPass,
     VideoAsset,
+    direction_phrase,
 )
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
@@ -394,7 +395,7 @@ class _PassRow:
     videos: list[VideoAsset]
     begin_s: float
     end_s: float
-    direction: str = "forward"
+    direction: str | None = None
     transect_id: uuid.UUID | None = None
     pass_id: uuid.UUID | None = None
     # The section's own name. Empty means it has never been renamed, and the
@@ -2040,7 +2041,7 @@ class SimpleBatchMixin(MixinBase):
         """
         directions: dict[uuid.UUID, list[str]] = {}
         for row in self._survey_rows:
-            if row.transect_id is not None:
+            if row.transect_id is not None and row.direction:
                 directions.setdefault(row.transect_id, []).append(row.direction)
         flagged = {}
         for transect_id, values in directions.items():
@@ -2092,7 +2093,7 @@ class SimpleBatchMixin(MixinBase):
             # Names the direction the arrow icon shows, so it reaches a reader who
             # sees neither the glyph nor its colour.
             notes = [
-                f"Swum {row.direction} along the transect, "
+                f"Swum {direction_phrase(row.direction)} along the transect, "
                 "and what part of the clip that was."
             ]
             if missing:
@@ -2696,6 +2697,16 @@ class SimpleBatchMixin(MixinBase):
                             "survey": survey_manifest_block(
                                 job.run, job.pass_, job.transect, batch,
                                 config=job.config, model_versions=model_versions,
+                                site=(
+                                    store.get_site(job.transect.site_id)
+                                    if job.transect is not None and job.transect.site_id
+                                    else None
+                                ),
+                                campaign=(
+                                    store.get_campaign(job.pass_.campaign_id)
+                                    if job.pass_.campaign_id
+                                    else None
+                                ),
                             )
                         },
                         **settings,
