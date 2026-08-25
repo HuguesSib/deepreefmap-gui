@@ -122,6 +122,15 @@ _FRAC_EXHAUSTED = 0.999
 # Once a stage has run this many times longer than its prior predicted with no
 # measurable progress, the prior is falsified and its remainder is withheld.
 _PRIOR_OVERRUN_FACTOR = 1.5
+# The live estimate is re-derived on decile boundaries, not on every event: the
+# underlying rate does not move that fast, and a figure that changes on each
+# report reads as noise rather than as a countdown.
+_DECILE = 0.1
+# A run's own evidence corrects the stages still to come, but only so far -- one
+# stage that hit a cache or thrashed once should not rescale the whole run. Same
+# band the batch tracker clamps its cross-pass calibration to.
+MIN_CALIBRATION = 0.25
+MAX_CALIBRATION = 4.0
 
 
 def stage_for_phase(phase_key: str) -> str | None:
@@ -188,6 +197,20 @@ class _StageRun:
     frac: float = 0.0
     frac0: float | None = None  # fraction at the first determinate event
     frac0_at: float | None = None  # wall clock at that first determinate event
+    # The (fraction, wall clock) pair the live rate is fitted on, re-latched each
+    # time the stage crosses into a new decile and held between crossings.
+    rate_frac: float | None = None
+    rate_at: float | None = None
+    rate_decile: float = -1.0
+
+    def latch_rate(self, now: float) -> None:
+        """Re-fit the live rate if this report crossed into a new decile."""
+        decile = math.floor(self.frac / _DECILE)
+        if decile <= self.rate_decile:
+            return
+        self.rate_decile = decile
+        self.rate_frac = self.frac
+        self.rate_at = now
 
     def elapsed(self, now: float) -> float:
         if self.started_at is None:
@@ -249,19 +272,27 @@ class RunEtaEstimator:
         if stage is None:
             return
         run = self._runs[stage]
-        # Any earlier stage still marked running is finished the moment a later
-        # one reports, since the pipeline is sequential.
+        # Any earlier stage is finished the moment a later one reports, since the
+        # pipeline is sequential. One still pending never ran at all -- a
+        # geometry-only pass reports no ortho -- and is skipped rather than left
+        # pending, where its prior would sit in the total for work that will
+        # never happen.
         idx = self._order.index(stage)
         for k in self._order[:idx]:
             prev = self._runs[k]
             if prev.state == "running":
                 prev.state = "done"
                 prev.ended_at = now
-        if run.state == "pending":
+            elif prev.state == "pending":
+                prev.state = "skipped"
+        if run.state in ("pending", "skipped"):
             run.state = "running"
             run.started_at = now
-        if run.state == "done":
-            return
+        elif run.state == "done":
+            # Reopened: viewer setup arriving after the scene write has started is
+            # late, not absent, and dropping it strands the stage with no estimate.
+            run.state = "running"
+            run.ended_at = None
         if total <= 0:
             # Indeterminate sub-steps (align prep, the resume save) carry no
             # fraction; zeroing frac here would blank the remainder mid-stage.
@@ -275,7 +306,9 @@ class RunEtaEstimator:
             # The extrapolation baseline: only progress earned after this point
             # counts, so a stage entered mid-slice doesn't divide by unearned frac.
             run.frac0 = frac
+            run.frac0_at = now
         run.frac = frac
+        run.latch_rate(now)
 
     def _driver_value(self, spec: StageSpec) -> float | None:
         # Point-driven stages have no true N until mapping ends, so fall back to
@@ -284,23 +317,23 @@ class RunEtaEstimator:
         return driver_denominator(spec.driver, self.frames, points)
 
     def _completed_seconds_per_weight(self, now: float) -> float | None:
-        """Seconds-per-weight calibrated from stages already finished this run."""
+        """Seconds-per-weight calibrated from stages already finished this run.
+
+        FIXED-driver stages are excluded: `startup` is model and CUDA loading,
+        which relates to no weight and to nothing that follows it.
+        """
         num = den = 0.0
         for spec in STAGES:
+            if spec.driver == FIXED:
+                continue
             run = self._runs[spec.key]
             if run.state == "done":
                 num += run.elapsed(now)
                 den += spec.weight
         return num / den if den > 0 else None
 
-    def _seconds_per_weight(self, now: float) -> float | None:
-        """A per-weight rate for stages that lack their own driver-based prior.
-
-        Keeps a point-driven stage from reading 0 before its point count is known.
-        """
-        measured = self._completed_seconds_per_weight(now)
-        if measured is not None:
-            return measured
+    def _prior_seconds_per_weight(self) -> float | None:
+        """Seconds-per-weight implied by the stored priors, across the stages."""
         ratios: list[float] = []
         for spec in STAGES:
             driver = self._driver_value(spec)
@@ -309,11 +342,50 @@ class RunEtaEstimator:
                 ratios.append((const * driver) / spec.weight)
         return statistics.median(ratios) if ratios else None
 
+    def _seconds_per_weight(self, now: float) -> float | None:
+        """A per-weight rate for stages that lack their own driver-based prior.
+
+        Keeps a point-driven stage from reading 0 before its point count is known.
+        Where both a measured and a prior-derived rate exist, the measured one is
+        clamped against the prior rather than replacing it outright: one fast
+        stage is not evidence that the rest of the run is proportionally fast.
+        """
+        measured = self._completed_seconds_per_weight(now)
+        expected = self._prior_seconds_per_weight()
+        if measured is None:
+            return expected
+        if expected is None:
+            return measured
+        return min(max(measured, expected * MIN_CALIBRATION), expected * MAX_CALIBRATION)
+
+    def calibration(self, now: float) -> float:
+        """What this run is costing against what its priors predicted.
+
+        Applied to the stages still to come, so a machine slower than its stored
+        rates does not show a total that rises while work completes. Clamped to
+        the same band the batch tracker uses across passes.
+        """
+        ratios: list[float] = []
+        for spec in STAGES:
+            run = self._runs[spec.key]
+            if run.state != "done":
+                continue
+            driver = self._driver_value(spec)
+            const = self.priors.get(spec.key)
+            if const is None or driver is None:
+                continue
+            predicted = const * driver
+            if predicted > 0:
+                ratios.append(run.elapsed(now) / predicted)
+        if not ratios:
+            return 1.0
+        return max(MIN_CALIBRATION, min(MAX_CALIBRATION, statistics.median(ratios)))
+
     def _prior_estimate(self, spec: StageSpec, now: float) -> float | None:
         driver = self._driver_value(spec)
         const = self.priors.get(spec.key)
         if const is not None and driver is not None:
-            return const * driver
+            return const * driver * self.calibration(now)
         spw = self._seconds_per_weight(now)
         if spw is not None:
             return spw * spec.weight
@@ -331,10 +403,20 @@ class RunEtaEstimator:
         run = self._runs[spec.key]
         if run.frac0 is None:
             return None
-        delta = run.frac - run.frac0
-        elapsed = run.elapsed(now)
-        if delta >= _MIN_FRAC_FOR_LIVE and elapsed > 0:
-            return max(0.0, elapsed * (1.0 - run.frac) / delta)
+        # The rate is re-fitted only when the stage crosses into a new decile, so
+        # it does not move on every report. Still evaluated against the wall
+        # clock at query time, so it counts on between sparse events and grows
+        # honestly when the stage stalls rather than freezing at the last rate.
+        #
+        # `earning`, not `elapsed`: a stage can spend minutes on indeterminate
+        # sub-steps before its first counted event, and charging that head to the
+        # fraction earned after it inflates the rate by the ratio of the two.
+        if run.rate_frac is None:
+            return None
+        delta = run.rate_frac - run.frac0
+        earning = run.earning(now)
+        if delta >= _MIN_FRAC_FOR_LIVE and earning > 0:
+            return max(0.0, earning * (1.0 - run.frac) / delta)
         return None
 
     def _live_confidence(self, spec: StageSpec) -> float:
@@ -395,25 +477,56 @@ class RunEtaEstimator:
     def visible_remaining(self, now: float) -> float | None:
         """The whole-run figure for the always-visible total slot, or None."""
         # Withheld without history: the pending stages have no seed, so a total would
-        # be a guess masquerading as a countdown.
+        # be a guess masquerading as a countdown. The running stage still shows its
+        # own measured figure -- see `current_stage_remaining`.
         return self.total_remaining_s(now) if self.has_history else None
 
-    def total_remaining_s(self, now: float) -> float | None:
-        remaining = 0.0
-        have_signal = False
+    def learning(self) -> bool:
+        """True when this machine has no timings for these models yet.
+
+        The stage figure is still offered -- it is measured from this run -- but
+        the whole-run total is not, and the wording has to say which is which.
+        """
+        return not self.has_history
+
+    def is_finishing(self, now: float) -> bool:
+        """True when the run is past every estimate but not yet over.
+
+        A counter reaching its end is not the stage ending: the last write, the
+        viewer upload and the scene file all run on past 100%. Saying so beats
+        both a countdown that has nothing left to count and a blank.
+        """
         for spec in STAGES:
             run = self._runs[spec.key]
-            if run.state == "done":
+            if run.state == "running":
+                return self._running_remaining(spec, now) is None or run.frac >= _FRAC_EXHAUSTED
+        return False
+
+    def total_remaining_s(self, now: float) -> float | None:
+        """The whole run, or None when any stage still to come has no figure.
+
+        A stage yields no figure for three different reasons -- no basis, a
+        falsified prior, nothing left to extrapolate -- and only the third is
+        worth zero. Summing the other two as zero is how the headline drops by
+        minutes with no progress, so the total is withheld instead.
+        """
+        remaining = 0.0
+        for spec in STAGES:
+            run = self._runs[spec.key]
+            if run.state in ("done", "skipped"):
                 continue
             if run.state == "running":
+                if run.frac >= _FRAC_EXHAUSTED:
+                    # Fraction spent, stage still going: nothing left to add, and
+                    # the run reads as finishing rather than as unknown.
+                    continue
                 part = self._running_remaining(spec, now)
             else:
                 part = self._prior_estimate(spec, now)
             if part is None:
-                continue
-            have_signal = True
+                return None
             remaining += part
-        return remaining if have_signal else None
+        return remaining
 
     def stage_rows(self, now: float) -> list[StageRow]:
         rows: list[StageRow] = []
@@ -421,6 +534,10 @@ class RunEtaEstimator:
             run = self._runs[spec.key]
             if run.state == "done":
                 rows.append(StageRow(spec.key, spec.label, "done", run.elapsed(now), False, frac=1.0))
+            elif run.state == "skipped":
+                # This mode never ran it; a figure here would be an estimate for
+                # work that will not happen.
+                rows.append(StageRow(spec.key, spec.label, "skipped", None, False))
             elif run.state == "running":
                 rows.append(StageRow(
                     spec.key, spec.label, "running", run.elapsed(now), False,

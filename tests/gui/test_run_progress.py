@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from deepreefmap_gui.profiling.eta import STAGES as ETA_STAGES
+
 
 @pytest.fixture(autouse=True)
 def _isolate_run_history(tmp_path, monkeypatch):
@@ -68,13 +70,27 @@ def test_status_ticker_resets_per_stage(make_window, monkeypatch) -> None:
 def test_update_progress_zero_total_is_indeterminate(make_window) -> None:
     window = make_window()
     window._begin_progress(window._recon_model)
-    # A stage outside the continuous-fill set (here an ortho step) keeps the
-    # barber-pole for a zero (indeterminate) total.
+    # A stage outside the continuous-fill set keeps the barber-pole for a zero
+    # (indeterminate) total.
     window._on_viewer_status(
-        "update_progress", stage="outputs", current=0, total=0, message="Computing PCA projection"
+        "update_progress", stage="startup", current=0, total=0, message="Starting reconstruction"
     )
     assert window._run_progress.stage_percent is None
-    assert "Computing PCA projection" in window._status_label.text()
+
+
+def test_ortho_steps_advance_the_bar_without_a_count(make_window) -> None:
+    # Ortho reports by message with no count. Its sub-phases carry weighted spans
+    # so the stage still advances; without them its fraction stays 0 for the whole
+    # stage and the countdown is a frozen constant.
+    window = make_window()
+    window._begin_progress(window._recon_model)
+    seen = []
+    for message in ("Computing PCA projection", "Sorting points into cells", "Aggregating ortho grid"):
+        window._on_viewer_status("update_progress", stage="outputs", current=0, total=0, message=message)
+        seen.append(window._run_progress.stage_percent)
+    assert all(p is not None for p in seen)
+    assert seen == sorted(seen)
+    assert 0 < window._eta._runs["ortho"].frac < 1.0
 
 
 def test_mapping_zero_total_holds_the_continuous_bar(make_window) -> None:
@@ -136,8 +152,11 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
     window._begin_progress(window._recon_model)
     window._render_eta()
     assert window._eta_total_label.text() == "estimating…"
-    # Give the estimator history so the whole-run total is shown, not withheld.
-    window._eta.priors = {"mapping": 0.5}
+    # Give the estimator history and a frame count so the whole-run total is
+    # shown, not withheld: without a driver the pending stages have no basis.
+    window._eta.priors = {s.key: 0.5 for s in ETA_STAGES}
+    window._eta.frames = 100
+    window._eta.expected_points = 10_000
     window._apply_progress("mapping", "Mapping", current=1, total=100)
     clock[0] = 20.0
     window._apply_progress("mapping", "Mapping", current=25, total=100)
