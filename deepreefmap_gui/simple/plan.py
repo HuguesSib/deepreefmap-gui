@@ -33,8 +33,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY, tabular
-from deepreefmap_gui.core.icons import ICON_MD, ICON_SM, check_icon, copy_icon, crosshair_icon
+from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY
+from deepreefmap_gui.core.icons import (
+    ICON_MD,
+    ICON_SM,
+    check_icon,
+    close_icon,
+    copy_icon,
+    crosshair_icon,
+)
 from deepreefmap_gui.core.theme import (
     BORDER,
     GUTTER,
@@ -50,10 +57,12 @@ from deepreefmap_gui.core.widgets import (
     FilterChips,
     SortableTreeItem,
     enable_sorting,
+    icon_button,
     install_column_sizer,
     muted_label,
     secondary_label,
     section_card,
+    tabular_columns,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import OverlayTransect
@@ -105,9 +114,15 @@ FOCUS_FILL = 0.6
 # Wide enough for the cover chart and its six-column table.
 PLAN_ANALYSIS_MIN_WIDTH = 460
 
+# What the details form asks for while it is open. A coordinate field has a copy
+# button inside it, so a pane short of this clips the leading digit of a latitude.
+_PLAN_DETAILS_WIDTH = 440
+
 # How much of the page width the analysis column takes, and how much of the
 # working column's height the transect list takes under the map and the form.
 _PLAN_ANALYSIS_SHARE = 0.34
+# How much of the top row the form takes when it is open.
+_PLAN_DETAILS_SHARE = 0.42
 _PLAN_LIST_SHARE = 0.42
 _PLAN_LIST_MIN_HEIGHT = 220
 
@@ -220,6 +235,20 @@ def _field_label(text: str, top: bool = False) -> QLabel:
     align = Qt.AlignmentFlag.AlignRight | (Qt.AlignmentFlag.AlignTop if top else Qt.AlignmentFlag.AlignVCenter)
     label.setAlignment(align)
     return label
+
+
+def _show_coord(edit: QLineEdit, lat: float, lon: float) -> None:
+    """Write a fix into a field, showing its start rather than its end.
+
+    A field a few pixels short of the pair scrolls to the caret, which parks it
+    on the longitude and cuts the latitude's sign and degrees off the left. The
+    latitude is what says which reef this is, so it is the end kept in view; the
+    whole value is on the tooltip and behind the copy button.
+    """
+    text = f"{lat:.6f}, {lon:.6f}"
+    edit.setText(text)
+    edit.setToolTip(text)
+    edit.setCursorPosition(0)
 
 
 def _coord_edit() -> QLineEdit:
@@ -354,8 +383,9 @@ class SimplePlanMixin(MixinBase):
         header_item.setToolTip(4, "Reconstructions produced from them")
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
-        # Tabular figures, so lengths and depths line up down their columns.
-        self._transect_list.setFont(tabular(self._transect_list.font()))
+        # Tabular figures on the figures alone: "Vatu-i-Ra North" is a name, and
+        # the feature widens the hyphen it is spelled with.
+        tabular_columns(self._transect_list, range(1, PLAN_SPACER_COLUMN))
         enable_sorting(self._transect_list)
         install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
@@ -372,7 +402,7 @@ class SimplePlanMixin(MixinBase):
         group_layout.addWidget(self._transect_stack, 1)
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
-        new_btn = QPushButton("New")
+        new_btn = QPushButton("New transect")
         new_btn.setProperty("cta", "true")
         new_btn.clicked.connect(self._on_transect_new)
         # A saved transect's endpoints are fixed until this is pressed, so a
@@ -389,6 +419,7 @@ class SimplePlanMixin(MixinBase):
         export_btn.clicked.connect(self._on_transects_export)
         # Creating and deleting a transect is a different kind of act from
         # moving the whole set in and out of a file, so the two groups separate.
+        buttons.addWidget(new_btn)
         buttons.addWidget(self._transect_edit_btn)
         buttons.addWidget(delete_btn)
         buttons.addStretch(1)
@@ -397,14 +428,20 @@ class SimplePlanMixin(MixinBase):
         group_layout.addLayout(buttons)
 
         details, details_layout = section_card("Details")
-        # New sits at the top of the card it fills. At the far corner of the
-        # table card below, the eye had to travel bottom-left to top-right to
-        # follow one action to its effect.
-        new_btn.setText("New transect")
-        new_row = QHBoxLayout()
-        new_row.addStretch(1)
-        new_row.addWidget(new_btn)
-        details_layout.addLayout(new_row)
+        # Shut unless a transect is being read or written. Standing open it took
+        # a third of the page to show empty fields, and the map and the cover
+        # chart either side of it had to give up the width.
+        details.setVisible(False)
+        self._transect_details = details
+        close_row = QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        self._transect_details_close = icon_button(
+            close_icon(), "Close the transect details", "Close these details"
+        )
+        self._transect_details_close.clicked.connect(self._close_transect_details)
+        close_row.addWidget(self._transect_details_close)
+        details_layout.addLayout(close_row)
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(8)
@@ -415,11 +452,11 @@ class SimplePlanMixin(MixinBase):
         grid.setColumnStretch(3, 1)
         grid.addWidget(_field_label("Name"), 0, 0)
         self._tr_name_input = QLineEdit()
-        grid.addWidget(self._tr_name_input, 0, 1)
+        grid.addWidget(self._tr_name_input, 0, 1, 1, 2)
         # Which reef the line is on. Sites come down from the registry, so with
         # none pulled the combo holds only "No site" and changes nothing; names
         # are unique per site, so two reefs can each have a T1.
-        grid.addWidget(_field_label("Site"), 0, 2)
+        grid.addWidget(_field_label("Site"), 1, 0)
         site_row = QHBoxLayout()
         site_row.setContentsMargins(0, 0, 0, 0)
         site_row.setSpacing(4)
@@ -431,7 +468,7 @@ class SimplePlanMixin(MixinBase):
         self._tr_new_site_btn.setToolTip("Name a site the registry does not list yet.")
         self._tr_new_site_btn.clicked.connect(self._on_new_site)
         site_row.addWidget(self._tr_new_site_btn)
-        grid.addLayout(site_row, 0, 3)
+        grid.addLayout(site_row, 1, 1, 1, 2)
         self._refresh_site_choices()
 
         # One box per end takes a coordinate straight off a GPS, pasted or
@@ -440,10 +477,10 @@ class SimplePlanMixin(MixinBase):
         # only appears once there is something to copy.
         self._tr_start_coord = _coord_edit()
         self._tr_end_coord = _coord_edit()
-        grid.addWidget(_field_label("Start"), 1, 0)
-        grid.addWidget(self._tr_start_coord, 1, 1, 1, 2)
-        grid.addWidget(_field_label("End"), 2, 0)
-        grid.addWidget(self._tr_end_coord, 2, 1, 1, 2)
+        grid.addWidget(_field_label("Start"), 2, 0)
+        grid.addWidget(self._tr_start_coord, 2, 1, 1, 2)
+        grid.addWidget(_field_label("End"), 3, 0)
+        grid.addWidget(self._tr_end_coord, 3, 1, 1, 2)
         self._coord_copy_actions = {which: self._add_copy_action(which) for which in ("start", "end")}
         for edit in (self._tr_start_coord, self._tr_end_coord):
             edit.editingFinished.connect(self._on_coords_edited)
@@ -461,7 +498,7 @@ class SimplePlanMixin(MixinBase):
         )
         self._pick_both_btn.toggled.connect(self._on_pick_both_toggled)
         self._sync_map_pick_mode()
-        grid.addWidget(self._pick_both_btn, 1, 3, 2, 1)
+        grid.addWidget(self._pick_both_btn, 2, 3, 2, 1)
 
         # Length and heading are read off the two endpoints, so they are stated
         # rather than entered: a transect drawn the wrong way round shows it here.
@@ -470,36 +507,36 @@ class SimplePlanMixin(MixinBase):
         self._tr_geometry.setToolTip(
             "Straight-line distance and compass heading from the start point to the end point."
         )
-        grid.addWidget(self._tr_geometry, 3, 1, 1, 3)
+        grid.addWidget(self._tr_geometry, 4, 1, 1, 3)
         self._refresh_geometry_readout()
 
         self._tr_length = OptionalMetresSpinBox(500.0)
         self._tr_length.setToolTip("Tape length measured underwater. Scales the run when set.")
         self._tr_depth = OptionalMetresSpinBox(100.0)
         self._tr_depth.setToolTip("Depth of the transect. Leave unset if not recorded.")
-        grid.addWidget(_field_label("Length"), 4, 0)
-        grid.addWidget(self._tr_length, 4, 1)
-        grid.addWidget(_field_label("Depth"), 4, 2)
-        grid.addWidget(self._tr_depth, 4, 3)
+        grid.addWidget(_field_label("Length"), 5, 0)
+        grid.addWidget(self._tr_length, 5, 1)
+        grid.addWidget(_field_label("Depth"), 5, 2)
+        grid.addWidget(self._tr_depth, 5, 3)
 
         # The GPS fix's own accuracy, per end, as a field unit exports it.
         self._tr_start_accuracy = OptionalMetresSpinBox(1000.0)
         self._tr_start_accuracy.setToolTip("GPS accuracy at the start fix.")
         self._tr_end_accuracy = OptionalMetresSpinBox(1000.0)
         self._tr_end_accuracy.setToolTip("GPS accuracy at the end fix.")
-        grid.addWidget(_field_label("Start ±"), 5, 0)
-        grid.addWidget(self._tr_start_accuracy, 5, 1)
-        grid.addWidget(_field_label("End ±"), 5, 2)
-        grid.addWidget(self._tr_end_accuracy, 5, 3)
+        grid.addWidget(_field_label("Start ±"), 6, 0)
+        grid.addWidget(self._tr_start_accuracy, 6, 1)
+        grid.addWidget(_field_label("End ±"), 6, 2)
+        grid.addWidget(self._tr_end_accuracy, 6, 3)
 
         # Why the form is read-only, when it is.
         self._tr_lock_note = secondary_label("")
         self._tr_lock_note.setWordWrap(True)
-        grid.addWidget(self._tr_lock_note, 6, 1, 1, 3)
+        grid.addWidget(self._tr_lock_note, 7, 1, 1, 3)
 
-        grid.addWidget(_field_label("Notes", top=True), 7, 0, Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(_field_label("Notes", top=True), 8, 0, Qt.AlignmentFlag.AlignTop)
         self._tr_description = NotesEdit()
-        grid.addWidget(self._tr_description, 7, 1, 1, 3)
+        grid.addWidget(self._tr_description, 8, 1, 1, 3)
 
         # No Save button: a new transect shows as a live draft row in the list
         # and commits itself the moment name and both endpoints are complete;
@@ -527,7 +564,10 @@ class SimplePlanMixin(MixinBase):
         top.addWidget(details)
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
-        details.setMinimumWidth(360)
+        # Wide enough for a coordinate and the button inside its field. Only
+        # spent while the form is open, which is why the page can afford it.
+        details.setMinimumWidth(_PLAN_DETAILS_WIDTH)
+        self._plan_top_split = top
 
         # Map and form over the list on the left, and what a transect found down
         # the full height of the right. The chart plus its six-column table need
@@ -573,6 +613,17 @@ class SimplePlanMixin(MixinBase):
                 total = sum(self._plan_split.sizes()) or 1200
             analysis = max(PLAN_ANALYSIS_MIN_WIDTH, int(total * _PLAN_ANALYSIS_SHARE))
             self._plan_split.setSizes([max(1, total - analysis), analysis])
+
+            # With the form shut the map takes the whole top row; with it open the
+            # two share, the form on its floor and the map on the rest.
+            top = getattr(self, "_plan_top_split", None)
+            if top is not None:
+                width = top.width() or sum(top.sizes())
+                if self._transect_details.isVisible():
+                    form = max(_PLAN_DETAILS_WIDTH, int(width * _PLAN_DETAILS_SHARE))
+                    top.setSizes([max(1, width - form), form])
+                else:
+                    top.setSizes([max(1, width), 0])
 
             height = self._plan_work_split.height()
             if height < SPLIT_MIN_TOTAL:
@@ -886,6 +937,24 @@ class SimplePlanMixin(MixinBase):
                 return
         self._on_transect_save()
 
+    def _open_transect_details(self) -> None:
+        """Show the form, and give it its share of the top row."""
+        if self._transect_details.isVisible():
+            return
+        self._transect_details.setVisible(True)
+        self._apply_plan_split_sizes()
+
+    def _close_transect_details(self) -> None:
+        """Put the form away and hand the width back to the map.
+
+        The selection stays: closing the form is done with reading it, not done
+        with the transect, and the list is still where the eye is.
+        """
+        self._transect_details.setVisible(False)
+        self._set_pick_armed(False)
+        self._set_transect_editing(False)
+        self._apply_plan_split_sizes()
+
     def _selected_transect_id(self) -> uuid.UUID | None:
         item = self._transect_list.currentItem()
         if item is None:
@@ -902,6 +971,7 @@ class SimplePlanMixin(MixinBase):
         transect = self._survey_store().get_transect(transect_id)
         if transect is None:
             return
+        self._open_transect_details()
         self._transect_form_id = transect.id
         self._set_pick_armed(False)
         # A transect opened from the list is being looked at, not moved.
@@ -912,8 +982,8 @@ class SimplePlanMixin(MixinBase):
             self._tr_start_coord.clear()
             self._tr_end_coord.clear()
         else:
-            self._tr_start_coord.setText(f"{ends[0][0]:.6f}, {ends[0][1]:.6f}")
-            self._tr_end_coord.setText(f"{ends[1][0]:.6f}, {ends[1][1]:.6f}")
+            _show_coord(self._tr_start_coord, *ends[0])
+            _show_coord(self._tr_end_coord, *ends[1])
         self._tr_length.setValue(transect.length_m or 0.0)
         self._tr_depth.setValue(transect.depth_m or 0.0)
         self._tr_start_accuracy.setValue(transect.start_accuracy_m or 0.0)
@@ -940,6 +1010,7 @@ class SimplePlanMixin(MixinBase):
         name unique), so it is filled in and left selected for anyone who has a
         better one, and the map tool arms itself for the two clicks that matter.
         """
+        self._open_transect_details()
         self._transect_form_id = None
         self._transect_list.setCurrentIndex(QModelIndex())
         for edit in (
@@ -964,7 +1035,7 @@ class SimplePlanMixin(MixinBase):
         return self._tr_start_coord if which == "start" else self._tr_end_coord
 
     def _set_endpoint(self, which: str, lat: float, lon: float) -> None:
-        self._coord_edit(which).setText(f"{lat:.6f}, {lon:.6f}")
+        _show_coord(self._coord_edit(which), lat, lon)
         self._status_label.setText(f"{which.capitalize()} point set.")
         self._refresh_plan_map()
         self._maybe_autosave()

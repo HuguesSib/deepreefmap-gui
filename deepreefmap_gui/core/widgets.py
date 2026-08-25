@@ -775,9 +775,27 @@ def page_scroll_area(inner: QWidget) -> QScrollArea:
     return area
 
 
-def tabular_columns(view: QTableWidget | QTreeWidget) -> None:
-    """Give a view's cells tabular figures, so digits line up down every column."""
-    view.setFont(tabular(view.font()))
+class TabularFiguresDelegate(QStyledItemDelegate):
+    """Draws one column's cells with tabular figures.
+
+    Per column rather than on the whole view: the feature also widens the
+    hyphen, which is what a time range wants and what a name like
+    "Vatu-i-Ra North" does not.
+    """
+
+    def initStyleOption(self, option: QStyleOptionViewItem, index) -> None:  # noqa: N802
+        super().initStyleOption(option, index)
+        option.font = tabular(option.font)
+
+
+def tabular_columns(view: QTableWidget | QTreeWidget, columns: Sequence[int]) -> None:
+    """Give the named columns tabular figures, so their digits line up down the view."""
+    delegate = TabularFiguresDelegate(view)
+    # Held on the view: PySide6 drops a delegate nothing else references, and
+    # the column then paints with a deleted C++ object behind it.
+    view.tabular_delegate = delegate  # type: ignore[attr-defined]
+    for column in columns:
+        view.setItemDelegateForColumn(column, delegate)
 
 
 def configure_tree(

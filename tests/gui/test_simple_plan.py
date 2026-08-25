@@ -753,3 +753,60 @@ def test_selecting_a_transect_shows_its_site(window):
     select_row(w, 0)
 
     assert w._tr_site_combo.currentData() == str(site.id)
+
+
+def test_the_details_form_is_shut_until_a_transect_is_picked(window) -> None:
+    """Expected behaviour: nothing selected, no form.
+
+    Standing open it took a third of the page to show empty fields, and the map
+    and the cover chart either side of it had to give up the width for them.
+    """
+    window._set_simple_section("transects")
+
+    assert not window._transect_details.isVisibleTo(window)
+
+
+def test_picking_a_transect_opens_the_form_on_it(window, out_root) -> None:
+    from deepreefmap_gui.survey.models import Transect
+
+    store = window._survey_store()
+    store.add_transect(Transect(name="Namena Reef East", length_m=30.0))
+    window._refresh_transect_list()
+    window._set_simple_section("transects")
+    window._transect_list.setCurrentItem(window._transect_list.topLevelItem(0))
+
+    assert window._transect_details.isVisibleTo(window)
+    assert window._tr_name_input.text() == "Namena Reef East"
+
+
+def test_new_transect_opens_the_form(window) -> None:
+    window._set_simple_section("transects")
+    window._on_transect_new()
+
+    assert window._transect_details.isVisibleTo(window)
+
+
+def test_closing_the_form_keeps_the_transect_selected(window, out_root) -> None:
+    """Done with the form is not done with the transect: the list is still where
+    the eye is, and the cover chart beside it is still about the same line."""
+    from deepreefmap_gui.survey.models import Transect
+
+    store = window._survey_store()
+    store.add_transect(Transect(name="Namena Reef East", length_m=30.0))
+    window._refresh_transect_list()
+    window._set_simple_section("transects")
+    window._transect_list.setCurrentItem(window._transect_list.topLevelItem(0))
+    window._close_transect_details()
+
+    assert not window._transect_details.isVisibleTo(window)
+    assert window._transect_list.currentItem() is not None
+
+
+def test_a_coordinate_field_shows_its_latitude_rather_than_its_longitude(window) -> None:
+    """A field a few pixels short scrolls to the caret, which parked it on the
+    longitude and cut the latitude's sign and degrees off the left."""
+    window._set_simple_section("transects")
+    window._set_endpoint("start", -17.110200, 179.092100)
+
+    assert window._tr_start_coord.cursorPosition() == 0
+    assert window._tr_start_coord.toolTip() == "-17.110200, 179.092100"

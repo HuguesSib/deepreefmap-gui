@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
 )
 
-from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     SortableItem,
@@ -25,6 +24,7 @@ from deepreefmap_gui.core.widgets import (
     enable_sorting,
     fitted_column_widths,
     install_column_sizer,
+    tabular_columns,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
@@ -196,10 +196,10 @@ class RunTable(QTableWidget):
         # apart by their two ends, so dropping the tail of GX_VIDEO_1_OF_2.MP4
         # loses exactly the character that identifies it.
         self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        # Tabular figures, so a column of counts, sizes and timestamps lines its
-        # digits up. Inter's proportional "1" is 3px narrower than its "0", which
-        # is enough to make a right-aligned column read as ragged.
-        self.setFont(tabular(self.font()))
+        # Tabular figures on the figures alone: a column of counts, sizes and
+        # timestamps lines its digits up, while the names keep the proportional
+        # hyphen the feature would otherwise widen.
+        tabular_columns(self, (*_NUMERIC_COLUMNS, COL_CREATED, COL_RECORDED))
 
         for column in _NUMERIC_COLUMNS:
             item = self.horizontalHeaderItem(column)

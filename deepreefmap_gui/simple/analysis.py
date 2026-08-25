@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.theme import GUTTER, SPACE_SM, SPACE_XS, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
@@ -34,6 +33,7 @@ from deepreefmap_gui.core.widgets import (
     muted_label,
     narrow_combo,
     section_card,
+    tabular_columns,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.cover import COVER_LEVELS, group_color_for_name
@@ -163,9 +163,8 @@ class SimpleAnalysisMixin(MixinBase):
             ["Class", "Cover", "Pass mean", "Std", "CV", "Range"],
         )
         # Largest cover first, matching how the chart ranks its bars.
-        # Tabular figures: a column of percentages read down the page only lines
-        # up when every digit is one width.
-        self._analysis_stats_table.setFont(tabular(self._analysis_stats_table.font()))
+        # Tabular figures on the percentages, not on the class names beside them.
+        tabular_columns(self._analysis_stats_table, range(1, 6))
         enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
         install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS, settings_key="analysis_stats")
         self._analysis_stats_stack = QStackedWidget()
