@@ -28,7 +28,14 @@ from deepreefmap_gui.core.widgets import (
     muted_label,
 )
 from deepreefmap_gui.runs.run_detail import DetailCard
-from deepreefmap_gui.runs.video_rows import NEW_SECTION_GLYPH, SectionList, apply_link_state
+from deepreefmap_gui.runs.video_rows import (
+    ARCHIVE_CLIP,
+    ARCHIVE_CLIP_TOOLTIP,
+    NEW_SECTION_GLYPH,
+    SectionList,
+    apply_link_state,
+    archive_button,
+)
 from deepreefmap_gui.survey.catalogue import (
     LINK_LINKED,
     LINK_MISSING,
@@ -111,17 +118,6 @@ class VideoDetailPanel(DetailCard):
         self.link_btn.clicked.connect(self._emit_reveal)
         self.add_title_button(self.link_btn)
 
-        # On request only, so a metered field uplink is never spent by accident.
-        self.archive_btn = QToolButton()
-        self.archive_btn.setText("Archive")
-        self.archive_btn.setAccessibleName("Archive this clip")
-        self.archive_btn.setProperty("quiet", "true")
-        self.archive_btn.setToolTip(
-            "Send this clip's original file to the registry's archive. Needs a server connection."
-        )
-        self.archive_btn.clicked.connect(self._emit_archive)
-        self.add_title_button(self.archive_btn)
-
         # What a person knows about the clip: camera, rig position, review.
         self.details_btn = QToolButton()
         self.details_btn.setText("Details")
@@ -143,6 +139,13 @@ class VideoDetailPanel(DetailCard):
         heading_row.setSpacing(SPACE_SM)
         heading_row.addWidget(muted_label("Passes cut from this clip"))
         heading_row.addStretch(1)
+        # Beside the pass rows' own actions rather than in the card's title: the
+        # same glyph in the same place as the pass pane's upload button, and the
+        # same place the clip's own row carries it. On request only, so a metered
+        # field uplink is never spent by accident.
+        self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
+        self.archive_btn.clicked.connect(self._emit_archive)
+        heading_row.addWidget(self.archive_btn)
         # Cutting a section belongs to the list it adds to, not to the bottom of
         # the card: the same + the clip's own row carries, in the same blue.
         self.queue_btn = QToolButton()

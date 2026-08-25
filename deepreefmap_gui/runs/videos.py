@@ -239,6 +239,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.hide_requested.connect(self._on_video_hide)
         self._video_list.delete_unused_requested.connect(self._on_video_delete_unused)
         self._video_list.delete_requested.connect(self._on_video_delete)
+        self._video_list.archive_requested.connect(self._archive_video)
         self._video_list.section_activated.connect(self._select_section)
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
@@ -565,6 +566,7 @@ class VideoLibraryMixin(MixinBase):
             hidden=self._hidden_clip_ids.__contains__,
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
+        self._refresh_clip_archive_affordance()
         self._refresh_video_chips()
         self._refresh_video_actions()
         self._refresh_video_detail()
@@ -613,6 +615,7 @@ class VideoLibraryMixin(MixinBase):
 
     def _paint_archive_badges(self) -> None:
         """Repaint the archive badges from a fresh probe, on the cards showing."""
+        self._paint_clip_row_archive_buttons()
         detail = getattr(self, "_video_detail", None)
         if detail is not None and detail.entry is not None:
             detail.set_archive_state(self._archive_state_for_video(detail.entry.video.id))
@@ -846,6 +849,44 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail.paint_archive_states(self._archive_state_for_run, self._archive_note_for_run)
         self._section_detail.setVisible(True)
         self._maybe_refresh_archive_badges()
+
+    def _refresh_clip_archive_affordance(self) -> None:
+        """Offer the clip rows their archive button only once there is a server.
+
+        Called wherever the server's state is read: a button that sends a clip
+        nowhere is worse than no button.
+        """
+        listing = getattr(self, "_video_list", None)
+        if listing is None:
+            return
+        listing.set_server_connected(self._server_is_connected())
+        self._paint_clip_row_archive_buttons()
+
+    def _server_is_connected(self) -> bool:
+        from deepreefmap_gui.server import state as server_state
+
+        try:
+            return server_state.read_state(self._try_survey_store()).connected
+        except Exception:
+            logger.exception("Could not read the server state")
+            return False
+
+    def _paint_clip_row_archive_buttons(self) -> None:
+        """Dress every clip row's archive glyph as what the registry holds of it."""
+        from deepreefmap_gui.runs.video_rows import ARCHIVE_CLIP_TOOLTIP, paint_archive_button
+
+        listing = getattr(self, "_video_list", None)
+        if listing is None:
+            return
+        for row in listing.rows().values():
+            entry = row.entry
+            if entry is None:
+                continue
+            paint_archive_button(
+                row.archive_btn,
+                self._archive_state_for_video(entry.video.id),
+                ARCHIVE_CLIP_TOOLTIP,
+            )
 
     def _session_name_for(self, batch_id) -> str | None:
         if batch_id is None:

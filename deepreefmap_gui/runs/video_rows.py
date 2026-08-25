@@ -71,6 +71,7 @@ from deepreefmap_gui.core.icons import (
     play_icon,
     status_dot_icon,
     trash_icon,
+    upload_icon,
 )
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
@@ -93,6 +94,7 @@ from deepreefmap_gui.core.theme import (
     SUCCESS,
     TEXT_DIM,
     TEXT_MUTED,
+    WARNING,
     WINDOW_TEXT,
 )
 from deepreefmap_gui.core.widgets import (
@@ -189,8 +191,10 @@ DISCLOSURE_WIDTH = ICON_SM + SPACE_XS
 # the nesting read without drawing a connecting line for it.
 SECTION_INDENT = SPACE_SM + DISCLOSURE_WIDTH + SPACE_SM + ICON_SM
 
-# The play, cut and delete buttons that close every clip row.
+# The play, cut and delete buttons that close every clip row, plus the archive
+# button when there is a server to press it against.
 TRAILING_BUTTONS_WIDTH = ICON_SM * 3 + SPACE_XS * 6
+ARCHIVE_BUTTON_WIDTH = ICON_SM + SPACE_XS * 2
 
 UNASSIGNED_NAME = "Unassigned"
 
@@ -393,8 +397,11 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
     return max(0, clip - section)
 
 
-def clip_name_width(available: int, char_width: int) -> int:
+def clip_name_width(available: int, char_width: int, *, archiving: bool = False) -> int:
     """How wide the clip name column is in a row ``available`` px across.
+
+    ``archiving`` is whether the rows are carrying their archive button, which
+    only appears once there is a server to send a clip to.
 
     The figures and the buttons take theirs first, then the name and the passes
     strip share what is left by weight, each held above its floor. The strip is
@@ -402,10 +409,46 @@ def clip_name_width(available: int, char_width: int) -> int:
     always add up to the row exactly.
     """
     fixed = char_width * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
-    spent = fixed + DISCLOSURE_WIDTH + ICON_SM + TRAILING_BUTTONS_WIDTH + SPACE_SM * 10
+    trailing = TRAILING_BUTTONS_WIDTH + (ARCHIVE_BUTTON_WIDTH if archiving else 0)
+    spent = fixed + DISCLOSURE_WIDTH + ICON_SM + trailing + SPACE_SM * 10
     slack = max(0, available - spent - SECTIONS_MIN_WIDTH)
     share = slack * NAME_WEIGHT // (NAME_WEIGHT + SECTIONS_WEIGHT)
     return max(char_width * NAME_MIN_CHARS, share)
+
+
+ARCHIVE_CLIP = "Send this clip to the server"
+ARCHIVE_CLIP_TOOLTIP = (
+    "Send this clip's original file to the registry's archive. On request only, "
+    "so a metered field uplink is never spent by accident."
+)
+# What the registry holds of a clip, as the glyph says it. The same vocabulary
+# the run rows use, so one icon means one thing across the app.
+ARCHIVE_FACES = {
+    "archived": "Already on the server.",
+    "uploading": "Sending to the server...",
+    "failed": "The registry could not verify the upload. Press to send it again.",
+}
+
+
+def archive_button(name: str, tooltip: str) -> QToolButton:
+    """The upload glyph, as a row action rather than a labelled button."""
+    return icon_button(upload_icon(), name, tooltip)
+
+
+def paint_archive_button(button: QToolButton, state: str | None, tooltip: str) -> None:
+    """Dress an archive button as what the registry holds, if it has been asked."""
+    told = ARCHIVE_FACES.get(state or "")
+    if told is None:
+        button.setIcon(upload_icon(color=QColor(DEFAULT_INK)))
+        button.setToolTip(tooltip)
+        return
+    # A tick for content already up, the upload glyph in the colour of what is
+    # still to do.
+    if state == "archived":
+        button.setIcon(check_icon())
+    else:
+        button.setIcon(upload_icon(color=QColor(ERROR if state == "failed" else WARNING)))
+    button.setToolTip(told)
 
 
 def _fixed_width(label: QLabel, chars: int, *, figures: bool = False) -> None:
@@ -684,6 +727,7 @@ class VideoRow(QWidget):
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
     delete_requested = Signal(str)
+    archive_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -757,6 +801,14 @@ class VideoRow(QWidget):
         self.new_section_btn = _quiet_button(NEW_SECTION_GLYPH, "Cut a new pass", "Cut a new pass")
         self.new_section_btn.clicked.connect(lambda: self._emit(self.new_section_requested))
         row.addWidget(self.new_section_btn)
+
+        # Beside the row's other actions rather than in the detail pane's title:
+        # sending a clip up is something done to the clip, like playing it or
+        # cutting from it. Hidden until there is a server to send it to.
+        self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
+        self.archive_btn.setVisible(False)
+        self.archive_btn.clicked.connect(lambda: self._emit(self.archive_requested))
+        row.addWidget(self.archive_btn)
 
         # Live whatever the clip's state: the handler is what refuses, and the
         # tooltip carries the reason. A disabled button shows no tooltip.
@@ -1181,6 +1233,15 @@ class SectionRow(QWidget):
             self.strip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             row.addWidget(self.strip, 1)
 
+        # Nothing to press: a pass is not archived, its runs are. It reserves the
+        # width the clip row's archive button takes so the two strips keep ending
+        # on the same pixel, which is what makes a position along one mean the
+        # same as along the other.
+        self._archive_gap = QWidget()
+        self._archive_gap.setFixedWidth(ARCHIVE_BUTTON_WIDTH)
+        self._archive_gap.setVisible(False)
+        row.addWidget(self._archive_gap)
+
         self.cart_btn = icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
         self.cart_btn.clicked.connect(self._on_cart_clicked)
         row.addWidget(self.cart_btn)
@@ -1216,6 +1277,10 @@ class SectionRow(QWidget):
         if self.strip is None:
             return
         self._strip_lead.setFixedWidth(section_strip_lead(self, width))
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Reserve the clip rows' archive slot, so both strips still line up."""
+        self._archive_gap.setVisible(connected)
 
     @property
     def pass_id(self) -> str:
@@ -1709,6 +1774,7 @@ class VideoLibraryList(QScrollArea):
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
     delete_requested = Signal(str)
+    archive_requested = Signal(str)
     section_activated = Signal(str)
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
@@ -1743,6 +1809,7 @@ class VideoLibraryList(QScrollArea):
         self._sections_by_video: dict[str, list[SectionRow]] = {}
         self._expanded: set[str] = set()
         self._name_width = 0
+        self._archiving = False
         self._header: VideoListHeader | None = None
         self._selected: str | None = None
         self._selected_section: str | None = None
@@ -1785,6 +1852,24 @@ class VideoLibraryList(QScrollArea):
         super().resizeEvent(event)
         self._apply_name_width()
 
+    def set_server_connected(self, connected: bool) -> None:
+        """Show or hide the archive button on every clip row, and its pass rows' gap.
+
+        Both together, always: the clip and pass strips are aligned from the
+        constants the rows are built from, so a button on one and not the other
+        pulls the two out of step.
+        """
+        if connected == self._archiving:
+            return
+        self._archiving = connected
+        for row in self._rows.values():
+            row.archive_btn.setVisible(connected)
+        for rows in self._sections_by_video.values():
+            for section in rows:
+                section.set_server_connected(connected)
+        self._name_width = -1
+        self._apply_name_width()
+
     def _apply_name_width(self) -> None:
         """Give the clip name its share of the row, and the strip the remainder.
 
@@ -1794,7 +1879,9 @@ class VideoLibraryList(QScrollArea):
         available = self.viewport().width()
         if available <= 0:
             return
-        width = clip_name_width(available, self.fontMetrics().averageCharWidth())
+        width = clip_name_width(
+            available, self.fontMetrics().averageCharWidth(), archiving=self._archiving
+        )
         if width == self._name_width:
             return
         self._name_width = width
@@ -1944,9 +2031,11 @@ class VideoLibraryList(QScrollArea):
         row.hide_requested.connect(self.hide_requested)
         row.delete_unused_requested.connect(self.delete_unused_requested)
         row.delete_requested.connect(self.delete_requested)
+        row.archive_requested.connect(self.archive_requested)
         row.activated.connect(self._on_activated)
         row.clicked.connect(self._on_clicked)
         row.expand_toggled.connect(self._set_expanded)
+        row.archive_btn.setVisible(self._archiving)
         self._body_layout.addWidget(row)
         self._rows[video_id] = row
 
@@ -1959,6 +2048,7 @@ class VideoLibraryList(QScrollArea):
             section.reassign_requested.connect(self.section_reassign)
             section.delete_requested.connect(self.section_delete)
             section.open_transect_requested.connect(self.section_open_transect)
+            section.set_server_connected(self._archiving)
             self._body_layout.addWidget(section)
             self._sections.setdefault(str(pass_.id), []).append(section)
             sections.append(section)
