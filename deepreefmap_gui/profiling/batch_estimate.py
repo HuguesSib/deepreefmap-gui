@@ -63,6 +63,11 @@ class PassSpec:
     def pixels(self) -> int:
         return max(1, self.width * self.height)
 
+    @property
+    def mode(self) -> str:
+        """What this pass will and will not run, in the manifest's own spelling."""
+        return "geometry_only" if self.seg_model == "__skip__" else "semantic"
+
 
 @dataclass(frozen=True)
 class PassPrediction:
@@ -120,7 +125,7 @@ def _predict_from(
 ) -> float | None:
     """A whole run from priors alone: every stage's estimate, nothing measured yet."""
     estimator = RunEtaEstimator(
-        frames=spec.frames, priors=priors, expected_points=expected_points
+        frames=spec.frames, priors=priors, expected_points=expected_points, mode=spec.mode
     )
     return estimator.total_remaining_s(0.0)
 

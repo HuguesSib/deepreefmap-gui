@@ -120,3 +120,38 @@ def test_cloud_span_survives_an_ortho_first_report() -> None:
     viewer.mark_outputs_ready("/tmp/out", [])
 
     assert "cloud" in durations_from_marks(clock.marks)
+
+
+def test_the_save_span_opens_when_the_viewer_gets_the_data() -> None:
+    """The viewer's setup runs alongside the writes, not after them.
+
+    Opening the span on the first write left the hand-off outside it, so a prior
+    of seconds was fitted for a wait of about a minute.
+    """
+    clock = _Clock()
+    viewer = _MarkingViewer(None, clock)
+    viewer.set_stage("outputs", "running", "Computing PCA projection")
+    viewer.set_data(xyz=None)
+    handed_off = clock.marks["save"]
+    viewer.set_stage("outputs", "running", "Saving semantic cloud")
+    viewer.mark_outputs_ready("/tmp/out", [])
+    assert clock.marks["save"] == handed_off
+    assert durations_from_marks(clock.marks)["save_view"] > 0
+
+
+def test_a_branch_that_opens_no_span_does_not_swallow_the_stage_before_it() -> None:
+    """Geometry-only writes its outputs without any ortho or save message.
+
+    Its cloud span then has a begin and no end, and is dropped -- taking the wall
+    clock it covered out of the profile and making every run predicted from that
+    key too fast.
+    """
+    from deepreefmap_gui.profiling.instrumentation import RunInstrumentation
+
+    instr = RunInstrumentation.__new__(RunInstrumentation)
+    instr.marks = {"start": 0.0, "preprocess": 1.0, "mapping": 2.0, "cloud": 3.0, "end": 30.0}
+    instr.backfill_unopened_stages()
+    durations = durations_from_marks(instr.marks)
+    assert durations["cloud"] == 27.0
+    assert durations["ortho"] == 0.0
+    assert durations["save_view"] == 0.0

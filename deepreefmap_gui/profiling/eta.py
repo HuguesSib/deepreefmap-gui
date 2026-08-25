@@ -35,9 +35,14 @@ STAGES: tuple[StageSpec, ...] = (
     StageSpec("startup", "Startup", FIXED, 1.0, plain="Getting ready"),
     StageSpec("preprocess", "Preprocess", FRAMES, 18.0, plain="Reading the video"),
     StageSpec("mapping", "Mapping", FRAMES, 25.0, plain="Working out the 3D shape"),
-    StageSpec("cloud", "Cloud", POINTS_NLOGN, 13.0, plain="Building the point cloud"),
+    StageSpec("cloud", "Cloud", POINTS_NLOGN, 15.0, plain="Building the point cloud"),
     StageSpec("ortho", "Ortho", POINTS, 22.0, plain="Building the flat map"),
-    StageSpec("save_view", "Save + view", POINTS, 7.0, plain="Saving"),
+    # One stage, not two: the orchestrator hands the cloud to the viewer before
+    # it writes the ortho and the manifest, so the viewer's indexing and upload
+    # run alongside those writes rather than after them. Timing them separately
+    # would charge the same wall clock twice. Weight is the aggregated share of
+    # the eight fine phases that fold onto it.
+    StageSpec("save_view", "Save + view", POINTS, 19.0, plain="Saving"),
     # The scene .zarr.zip now stores only the cloud index, so this is the index
     # build plus a ~30 MB write. Measured at 0.5s against runs of 186-585s on
     # this machine; it was 3.6-15.8s while the file also carried every frame.
@@ -46,6 +51,15 @@ STAGES: tuple[StageSpec, ...] = (
 )
 
 _STAGE_BY_KEY = {s.key: s for s in STAGES}
+
+# Stages a run in a given mode provably never executes. A geometry-only pass
+# writes its cloud and returns without building an ortho or opening a viewer
+# (orchestrator's geometry branch), so those stages are not merely unrecorded --
+# they cost nothing, and estimating them from the weight fallback adds minutes to
+# a figure the user waits against.
+STAGES_ABSENT_IN_MODE: dict[str, tuple[str, ...]] = {
+    "geometry_only": ("ortho", "save_view"),
+}
 
 # Fine per-step phase keys (gui/runs/progress.py) folded onto the coarse stages above.
 _PHASE_TO_STAGE = {
@@ -251,6 +265,10 @@ class RunEtaEstimator:
     priors: dict[str, float] = field(default_factory=dict)
     points: int | None = None
     expected_points: int | None = None
+    # `semantic` or `geometry_only`. A geometry-only run builds no ortho and
+    # opens no viewer, so those stages cost nothing rather than falling to the
+    # weight fallback, which invents minutes for work that never runs.
+    mode: str | None = None
     _runs: dict[str, _StageRun] = field(default_factory=dict)
     _order: list[str] = field(default_factory=list)
 
@@ -382,6 +400,8 @@ class RunEtaEstimator:
         return max(MIN_CALIBRATION, min(MAX_CALIBRATION, statistics.median(ratios)))
 
     def _prior_estimate(self, spec: StageSpec, now: float) -> float | None:
+        if spec.key in STAGES_ABSENT_IN_MODE.get(self.mode or "", ()):
+            return 0.0
         driver = self._driver_value(spec)
         const = self.priors.get(spec.key)
         if const is not None and driver is not None:

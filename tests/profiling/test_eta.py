@@ -485,3 +485,17 @@ def test_an_indeterminate_head_is_not_charged_to_the_fraction_after_it() -> None
     remaining = est.current_stage_remaining(now=45.0)
     assert remaining is not None
     assert remaining < 20.0
+
+
+def test_a_geometry_only_run_is_not_charged_for_the_ortho_it_never_builds() -> None:
+    # Its stages are absent from history because they never ran, and the weight
+    # fallback then manufactures minutes for work the pass does not do.
+    priors = {"preprocess": 1.0, "mapping": 2.0}
+    semantic = RunEtaEstimator(frames=100, priors=priors, expected_points=1_000_000)
+    geometry = RunEtaEstimator(
+        frames=100, priors=priors, expected_points=1_000_000, mode="geometry_only"
+    )
+    rows = {r.key: r for r in geometry.stage_rows(now=0.0)}
+    assert rows["ortho"].seconds == 0.0
+    assert rows["save_view"].seconds == 0.0
+    assert geometry.total_remaining_s(0.0) < semantic.total_remaining_s(0.0)

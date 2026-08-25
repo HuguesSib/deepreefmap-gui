@@ -390,11 +390,15 @@ class ProgressBarsMixin(MixinBase):
             # point-driven stages of a long pass as a median-length one.
             expected_points = expected_points_for(key, spec.frames)
             frames = spec.frames
+            mode = spec.mode
         except Exception:
             priors = {}
             expected_points = None
             frames = 0
-        return RunEtaEstimator(frames=frames, priors=priors, expected_points=expected_points)
+            mode = None
+        return RunEtaEstimator(
+            frames=frames, priors=priors, expected_points=expected_points, mode=mode
+        )
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
         """Progress readouts belong to a run in flight; idle shows none of them."""
@@ -481,7 +485,7 @@ class ProgressBarsMixin(MixinBase):
         if visible is not None:
             eta_text = f"{format_remaining(visible)} left"
         elif est.learning():
-            eta_text = "no timings for these models yet — learning from this run"
+            eta_text = "no timings for these models yet, learning from this run"
         elif est.is_finishing(now):
             eta_text = "finishing…"
         else:

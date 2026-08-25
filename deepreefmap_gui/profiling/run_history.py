@@ -473,6 +473,11 @@ def record_run_from_manifest(
                 # Recorded so a VRAM peak can be matched to the batch size it was
                 # measured at; the segmentation term scales with it.
                 "preprocess_batch_size",
+                # `semantic` or `geometry_only`. A geometry-only run executes no
+                # ortho at all, and without knowing that, a stage absent from
+                # every stored run falls to the weight fallback and manufactures
+                # minutes for work that never happens.
+                "mode",
             )
             if manifest.get(k) is not None
         }

@@ -21,6 +21,10 @@ STAGE_SPANS: tuple[tuple[str, str, str], ...] = (
     ("mapping", "cloud", "mapping"),
     ("cloud", "ortho", "cloud"),
     ("ortho", "save", "ortho"),
+    # Opened when the cloud is handed to the viewer, which is before the ortho
+    # and manifest writes, not after: the viewer's setup runs alongside them.
+    # Bracketing it from the first write instead left the whole hand-off outside
+    # the span the stage's prior is fitted from.
     ("save", "end", "save_view"),
     ("end", "scene_end", "scene_save"),
 )
@@ -64,6 +68,26 @@ class RunInstrumentation:
 
     def mark(self, name: str) -> None:
         self.marks[name] = time.monotonic()
+
+    def backfill_unopened_stages(self) -> None:
+        """Close spans the run never opened, at the mark that follows them.
+
+        The geometry-only branch writes its outputs without emitting any message
+        that opens the ortho or save marks, so those spans have a begin and no
+        end and `durations_from_marks` drops them -- taking the wall clock they
+        covered out of the profile entirely and making every run predicted from
+        that key too fast. A zero-width span says the stage did not run, which is
+        true, and keeps the sum of the stages equal to the run.
+        """
+        chain = [STAGE_SPANS[0][0], *(end for _b, end, _s in STAGE_SPANS)]
+        for i, name in enumerate(chain):
+            if name in self.marks:
+                continue
+            # Only between two marks that exist: a gap at the tail is a stage
+            # still running, which close_open_stage owns.
+            later = next((chain[j] for j in range(i + 1, len(chain)) if chain[j] in self.marks), None)
+            if later is not None and any(chain[j] in self.marks for j in range(i)):
+                self.marks[name] = self.marks[later]
 
     def close_open_stage(self) -> None:
         """End the stage still in flight, so a run that died is measured up to there.
@@ -194,6 +218,13 @@ class _MarkingViewer:
             self._inner.update_progress(*a, **k)
 
     def set_data(self, **k):
+        # The hand-off to the viewer, and the start of everything the user waits
+        # through under "Saving": the ortho and manifest writes on this thread,
+        # and the viewer's indexing and upload on the GUI thread, which run
+        # alongside them. Opening the span on the first write instead left the
+        # hand-off outside it and fitted a prior of seconds for a wait of about a
+        # minute.
+        self._mark_once("save")
         self.data = k
         if self._inner is not None:
             self._inner.set_data(**k)
@@ -426,6 +457,9 @@ def instrumented_reconstruction(
         # keeps them. Only when there are any: an absent key reads as clean.
         if proxy.warnings:
             extra["quality_warnings"] = list(proxy.warnings)
+        # A branch that wrote its outputs without opening a span leaves that span
+        # with no end, and the stage before it with no duration at all.
+        instr.backfill_unopened_stages()
         extra.update(_run_identity_extra(output_dir, kwargs, run_started_at))
         # Fold the run name, survey block and timings in before the scene file is
         # written: the scene embeds the manifest and is read back in place of it,
