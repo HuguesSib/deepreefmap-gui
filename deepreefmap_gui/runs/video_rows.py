@@ -24,7 +24,6 @@ from PySide6.QtCore import (
     QEvent,
     QPointF,
     QRectF,
-    QSize,
     Qt,
     QTimer,
     QUrl,
@@ -101,6 +100,7 @@ from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     EmptyState,
     SectionHeader,
+    icon_button,
     muted_label,
     secondary_label,
 )
@@ -497,19 +497,6 @@ def apply_link_state(button: QToolButton, link_state: str, ink: QColor | None = 
     else:
         button.setIcon(QIcon())
         button.setToolTip("Show in folder")
-
-
-def icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
-    """The same button drawn from the icon layer rather than from a character."""
-    button = QToolButton()
-    button.setIcon(icon)
-    button.setIconSize(QSize(ICON_SM, ICON_SM))
-    button.setAccessibleName(name)
-    button.setToolTip(tooltip)
-    button.setProperty("quiet", "true")
-    button.setProperty("pad", "none")
-    button.setProperty("dead", "false")
-    return button
 
 
 def set_button_dead(button: QToolButton, dead: bool) -> None:

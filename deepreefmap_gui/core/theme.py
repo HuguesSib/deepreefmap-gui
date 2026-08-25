@@ -155,6 +155,18 @@ SPLIT_MIN_TOTAL = 400
 # this app is driven in the field.
 CONTROL_HEIGHT = 28
 
+# One square target for every icon-only button, so a row of them lines up with
+# the text controls beside it. Call sites go through core.widgets.icon_button
+# rather than spelling a size, and any button pinned to a size sets pad="none"
+# first: the global button padding measures 46px wide on its own, which a
+# narrower fixed width silently clips the glyph out of.
+ICON_BUTTON = CONTROL_HEIGHT
+
+# Every page is laid out to fit this without scrolling sideways. Distinct from
+# the window's resize floor in app.py, which is how small a window may be
+# dragged, not the width the layouts are designed against.
+MIN_WINDOW_WIDTH = 1280
+
 # Row padding in the item views, apart from the spacing scale above. A row is
 # padded against the rows either side of it rather than against a panel edge, so
 # it wants a tighter step than SPACE_XS: rows are the densest surface the app

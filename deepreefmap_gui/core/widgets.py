@@ -7,11 +7,22 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRectF,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
@@ -22,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
     QStyledItemDelegate,
@@ -35,6 +47,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
+from deepreefmap_gui.core.icons import ICON_SM
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BORDER,
@@ -658,6 +672,131 @@ def confirm(parent: QWidget | None, title: str, text: str) -> bool:
     return answer == QMessageBox.StandardButton.Yes
 
 
+def icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
+    """The one way to build a button that is a glyph and nothing else.
+
+    ``pad="none"`` is what makes it right: the global button padding measures
+    46px on its own, so a glyph button that keeps it is either far wider than
+    its row needs or, pinned narrower, clipped. Left to size itself, because the
+    clip and pass rows align their pass strips against these widths.
+    """
+    button = QToolButton()
+    button.setIcon(icon)
+    button.setIconSize(QSize(ICON_SM, ICON_SM))
+    button.setAccessibleName(name)
+    button.setToolTip(tooltip)
+    button.setProperty("quiet", "true")
+    button.setProperty("pad", "none")
+    button.setProperty("dead", "false")
+    return button
+
+
+def unpad(button: QWidget) -> None:
+    """Strip the global button padding from a control about to be pinned to a size.
+
+    For the buttons that must stay a ``QPushButton`` -- the CTA styling has no
+    ``QToolButton`` rule -- so ``icon_button`` above cannot be used. Call before
+    the ``setFixedSize``, or the button measures 46x28 and draws its glyph
+    clipped inside whatever smaller box it was given.
+    """
+    if button.property("pad") == "none":
+        return
+    button.setProperty("pad", "none")
+    style = button.style()
+    style.unpolish(button)
+    style.polish(button)
+
+
+def narrow_combo(combo: QComboBox, chars: int) -> None:
+    """Let a combo shrink below the width of what it holds.
+
+    A ``QComboBox`` reports its widest item as its minimum, so one long transect
+    name sets the floor for the whole page. ``Ignored`` is what actually removes
+    that floor; the contents length only stops the hint tracking the model. The
+    combo clips its own label rather than eliding it, so the current text goes
+    on the tooltip as well.
+    """
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(chars)
+    combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+    combo.currentTextChanged.connect(combo.setToolTip)
+    combo.setToolTip(combo.currentText())
+
+
+class ElidingLabel(QLabel):
+    """A label that shortens its text to the width it was given.
+
+    ``QLabel`` clips rather than elides, so a name too long for its pane loses
+    its tail with nothing to say it did. This keeps the whole string, draws as
+    much of it as fits, and carries the rest in the tooltip.
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._apply_elide()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def _apply_elide(self) -> None:
+        shown = self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideRight, max(0, self.width())
+        )
+        if shown != self.text():
+            super().setText(shown)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_elide()
+
+
+def page_scroll_area(inner: QWidget) -> QScrollArea:
+    """A page that scrolls down and never sideways.
+
+    Horizontal scroll on a whole page is always a layout that did not fit, so it
+    is refused here rather than offered. This only hides the bar: the child is
+    still laid out at its ``minimumSizeHint``, so a page routed through this must
+    hold widgets that can actually shrink, or the overflow becomes clipping
+    nothing can reach.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setWidget(inner)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return area
+
+
+def tabular_columns(view: QTableWidget | QTreeWidget) -> None:
+    """Give a view's cells tabular figures, so digits line up down every column."""
+    view.setFont(tabular(view.font()))
+
+
+def configure_tree(
+    tree: QTreeWidget, headers: Sequence[str], *, alternating: bool = True
+) -> None:
+    """`configure_table`'s counterpart, so a tree reads under the same defaults."""
+    tree.setHeaderLabels(list(headers))
+    tree.header().setDefaultAlignment(
+        Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+    )
+    tree.setUniformRowHeights(True)
+    tree.setAllColumnsShowFocus(True)
+    tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    tree.setAlternatingRowColors(alternating)
+    tree.setTextElideMode(Qt.TextElideMode.ElideRight)
+    tree.setWordWrap(False)
+
+
 def configure_table(
     table: QTableWidget, headers: Sequence[str], *, alternating: bool = True
 ) -> None:
@@ -683,11 +822,15 @@ def configure_table(
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setAlternatingRowColors(alternating)
+    # Right, everywhere. A name is identified by its start; the two-ended elide
+    # is for file names and paths, which set it on themselves.
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
+    table.setWordWrap(False)
 
 
 # --- Column widths ---------------------------------------------------------
 
-# No column narrower than this, whatever its content measures.
+# No column narrower than this, unless its spec asks for narrower on purpose.
 MIN_SECTION_WIDTH = 64
 
 
@@ -709,6 +852,18 @@ class ColumnSpec:
     optional: Sequence[tuple[int, int]] = ()
 
 
+def section_floor(spec: ColumnSpec) -> int:
+    """The narrowest section a spec permits.
+
+    A column holding one glyph -- a reveal button, a drag handle -- is a
+    legitimate 32px, and raising it to `MIN_SECTION_WIDTH` would overspend the
+    viewport by the difference at every window width. The spec's own smallest
+    fixed width wins, and the budget below is clamped to the same number, so
+    what `fitted_column_widths` hands out is what the header will draw.
+    """
+    return min([MIN_SECTION_WIDTH, *spec.fixed.values()])
+
+
 def fitted_column_widths(available: int, spec: ColumnSpec) -> dict[int, int]:
     """How a viewport of ``available`` px divides between the columns it can hold.
 
@@ -720,10 +875,16 @@ def fitted_column_widths(available: int, spec: ColumnSpec) -> dict[int, int]:
     Columns left out are absent from the result, not zero-width. On a window too
     narrow to hold even the mandatory ones at their floors the floors win and the
     table scrolls, because a column shrunk past reading is not a column.
+
+    Every width returned clears ``section_floor``, so nothing here is a number
+    the header will silently raise: a share budgeted at 56px and drawn at 64px
+    is 8px of horizontal scroll on a table that was supposed to fit.
     """
-    widths = dict(spec.fixed)
-    spent = sum(spec.fixed.values()) + sum(spec.minimums.values())
-    for column, width in spec.optional:
+    floor = section_floor(spec)
+    widths = {c: max(w, floor) for c, w in spec.fixed.items()}
+    spent = sum(widths.values()) + sum(max(m, floor) for m in spec.minimums.values())
+    for column, asked in spec.optional:
+        width = max(asked, floor)
         if spent + width > available:
             break
         widths[column] = width
@@ -736,7 +897,7 @@ def fitted_column_widths(available: int, spec: ColumnSpec) -> dict[int, int]:
             (
                 column
                 for column, weight in flexing.items()
-                if slack * weight // weight_total < spec.minimums[column]
+                if slack * weight // weight_total < max(spec.minimums[column], floor)
             ),
             None,
         )
@@ -744,8 +905,8 @@ def fitted_column_widths(available: int, spec: ColumnSpec) -> dict[int, int]:
             for column, weight in flexing.items():
                 widths[column] = slack * weight // weight_total
             break
-        widths[clamped] = spec.minimums[clamped]
-        slack = max(0, slack - spec.minimums[clamped])
+        widths[clamped] = max(spec.minimums[clamped], floor)
+        slack = max(0, slack - widths[clamped])
         del flexing[clamped]
     return widths
 
@@ -778,7 +939,7 @@ class ColumnSizer(QObject):
 
         header = self._header()
         header.setStretchLastSection(False)
-        header.setMinimumSectionSize(MIN_SECTION_WIDTH)
+        header.setMinimumSectionSize(section_floor(spec))
         for column in range(self._column_count()):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
         # A widened column has to be reachable, so the scrollbar is offered.
@@ -794,6 +955,10 @@ class ColumnSizer(QObject):
         self._refit_timer.setInterval(0)
         self._refit_timer.timeout.connect(self.apply)
         view.installEventFilter(self)
+        # The viewport too, not only the view: a vertical scrollbar arriving with
+        # the rows takes 10px off the viewport without resizing the view, so the
+        # columns stay 10px too wide and the horizontal bar appears beside it.
+        view.viewport().installEventFilter(self)
         self._restore()
         self.apply()
 
@@ -839,6 +1004,18 @@ class ColumnSizer(QObject):
         header = self._header()
         self._applying = True
         try:
+            # A column the spec never mentions is not a column: hidden, and
+            # resized to nothing, because a hidden section still counts its
+            # stored width towards the header's length and so towards the
+            # scrollbar this exists to avoid.
+            floor = header.minimumSectionSize()
+            for column in range(self._column_count()):
+                if column in widths or column in dict(spec.optional):
+                    continue
+                self._set_hidden(column, True)
+                header.setMinimumSectionSize(0)
+                header.resizeSection(column, 0)
+                header.setMinimumSectionSize(floor)
             for column, _width in spec.optional:
                 self._set_hidden(column, column not in widths)
             for column, width in widths.items():
@@ -904,7 +1081,7 @@ class ColumnSizer(QObject):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Resize:
             try:
-                if watched is self._view:
+                if watched in (self._view, self._view.viewport()):
                     self._refit_timer.start()
             except (AttributeError, RuntimeError):
                 # Reached after the view it fits has been torn down, when there
