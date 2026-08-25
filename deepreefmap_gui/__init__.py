@@ -96,9 +96,9 @@ Several features answer to two or three names. Prefer the first in prose, commen
   dive, which models are on it, what it is doing while it runs. Its first view is **Readiness**.
   The file is `simple/setup.py`; the mixin is `SimpleMachineMixin` in `simple/machine.py`, the
   label's old name.
-- **Pass**, not clip or video, for a cutout of a video; the UI also says **section**. The
-  README's glossary defines the whole vocabulary (section, run, session, cart, order); here is
-  how it maps to code. A run's `batch_id` names its session, the pass's own `batch_id` only its
+- **Pass**, not clip, video or section, for a cutout of a video, in code and in the UI
+  alike. The README's glossary defines the whole vocabulary (pass, run, session, cart,
+  order); here is how it maps to code. A run's `batch_id` names its session, the pass's own `batch_id` only its
   origin. The **cart** is `SurveyStore.current_cart` (the newest un-started session) and
   membership is the `batch_item` table, so one pass can be ordered in many sessions. The
   session's class is still `SurveyBatch` and its column `survey_batch`: the schema name is

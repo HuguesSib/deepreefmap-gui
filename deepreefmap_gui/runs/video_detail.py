@@ -4,7 +4,7 @@ Footage outlives the runs cut from it: a card copied off the camera is a fact of
 the day's diving whether or not anything has been processed from it yet. This is
 the pane that says so, beside the list on the Videos page.
 
-It lists the sections cut from the clip; picking one fills the section card
+It lists the passes cut from the clip; picking one fills the pass card
 below with what became of that cut.
 """
 
@@ -149,13 +149,13 @@ class VideoDetailPanel(DetailCard):
         heading_row = QHBoxLayout()
         heading_row.setContentsMargins(0, 0, 0, 0)
         heading_row.setSpacing(SPACE_SM)
-        heading_row.addWidget(muted_label("Sections cut from this clip"))
+        heading_row.addWidget(muted_label("Passes cut from this clip"))
         heading_row.addStretch(1)
         # Cutting a section belongs to the list it adds to, not to the bottom of
         # the card: the same + the clip's own row carries, in the same blue.
         self.queue_btn = QToolButton()
         self.queue_btn.setText(NEW_SECTION_GLYPH)
-        self.queue_btn.setAccessibleName("New section")
+        self.queue_btn.setAccessibleName("New pass")
         self.queue_btn.setProperty("quiet", "true")
         self.queue_btn.setProperty("pad", "none")
         self.queue_btn.clicked.connect(self.queue_requested)
@@ -238,7 +238,7 @@ class VideoDetailPanel(DetailCard):
     ) -> None:
         """Describe one clip. ``transect_name`` resolves a pass's transect id.
 
-        ``assets`` is the rest of the library, passed through so a section cut
+        ``assets`` is the rest of the library, passed through so a pass cut
         across chapters can still find the files its frames come from.
         """
         self.title.setText(entry.video.file_name)
@@ -271,7 +271,7 @@ class VideoDetailPanel(DetailCard):
         self._entry = entry
 
     def select_section(self, pass_id: str | None) -> None:
-        """Highlight the section the page is showing below, or none."""
+        """Highlight the pass the page is showing below, or none."""
         self.pass_list.set_selected(pass_id)
 
     def clear(self) -> None:

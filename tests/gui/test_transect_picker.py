@@ -1,4 +1,4 @@
-"""Filing a section: the map, the list, the direction, and a new transect."""
+"""Filing a pass: the map, the list, the direction, and a new transect."""
 
 import pytest
 from _factories import make_transect
@@ -26,7 +26,7 @@ def store(tmp_path):
 
 
 def test_a_section_can_be_filed_nowhere(store):
-    """Unassigned stays a valid answer: a section is a cutout of a video first."""
+    """Unassigned stays a valid answer: a pass is a cutout of a video first."""
     store.add_transect(make_transect("T1"))
     dialog = TransectPickerDialog(None, store)
 

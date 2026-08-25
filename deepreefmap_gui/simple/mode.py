@@ -141,7 +141,7 @@ _DESTINATION_LABELS = {
 _DESTINATION_TIPS = {
     "transects": "The lines you survey, and what repeat passes of each one found.",
     "videos": "The footage itself: every clip, when it was shot, and what has been cut from it.",
-    "process": "The cart: sections queued for the next session, and the batch as it runs.",
+    "process": "The cart: passes queued for the next session, and the batch as it runs.",
     "browse": "Every run so far, grouped however you need to read it.",
 }
 
@@ -274,7 +274,7 @@ class InterfaceShellMixin(MixinBase):
 
     def _idle_status_text(self) -> str:
         return (
-            "Ready. Add videos under Videos, cut sections to process, and mark "
+            "Ready. Add videos under Videos, cut passes to process, and mark "
             "out transects to compare them against."
         )
 

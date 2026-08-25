@@ -1,4 +1,4 @@
-"""The Videos page's row widgets: the section strip, a clip row, a section row,
+"""The Videos page's row widgets: the pass strip, a clip row, a pass row,
 and the list they sit in."""
 
 from __future__ import annotations
@@ -64,10 +64,10 @@ pytestmark = pytest.mark.usefixtures("qapp")
 
 
 def make_entry(*, windows=((0.0, 30.0),), runs_per_pass=(), duration_s=120.0, asset=None, **video):
-    """One clip with a section per window, and however many runs each has had.
+    """One clip with a pass per window, and however many runs each has had.
 
     ``asset`` reuses an existing clip, so a later entry can stand for the same
-    footage after another section has been cut from it.
+    footage after another pass has been cut from it.
     """
     asset = asset if asset is not None else make_video(duration_s=duration_s, **video)
     passes = [
@@ -134,7 +134,7 @@ def test_a_clip_nothing_has_been_cut_from_says_so_rather_than_sitting_empty() ->
 
 
 def test_a_clip_of_unknown_length_gets_no_spans_and_says_so() -> None:
-    """Expected behaviour: no section is invented from a length nobody read."""
+    """Expected behaviour: no pass is invented from a length nobody read."""
     entry = make_entry(duration_s=None)
     strip = make_strip(entry)
 
@@ -354,7 +354,7 @@ def test_sections_stay_hidden_until_their_clip_is_opened() -> None:
 
 
 def test_an_open_clip_stays_open_across_a_refresh() -> None:
-    """Expected behaviour: a scan lands every few seconds, and a section list
+    """Expected behaviour: a scan lands every few seconds, and a pass list
     that shut itself each time could never be read."""
     entry = make_entry(windows=((0.0, 30.0),))
     listing = make_list(entry)
@@ -416,7 +416,7 @@ def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None
 
 
 def test_an_unfiled_section_invites_a_transect_rather_than_showing_a_blank() -> None:
-    """Expected behaviour: not an error. A section processes unfiled, so the
+    """Expected behaviour: not an error. A pass processes unfiled, so the
     chip is an invitation in the accent colour."""
     entry = make_entry(windows=((0.0, 30.0),))
     listing = make_list(entry)
@@ -551,11 +551,11 @@ def test_the_pane_list_holds_one_compact_row_per_section() -> None:
 
 
 def test_a_section_spanning_two_clips_is_filled_under_both() -> None:
-    """Scenario: a swim the camera split at 4 GB is one section over two clips,
+    """Scenario: a swim the camera split at 4 GB is one pass over two clips,
     so it gets a row under each. Keyed by pass id alone, only the last row
-    answered to the id and the first was left blank, with no section to act on.
+    answered to the id and the first was left blank, with no pass to act on.
 
-    Expected behaviour: both rows describe the section, and neither emits an
+    Expected behaviour: both rows describe the pass, and neither emits an
     empty id at the page.
     """
     from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -587,7 +587,7 @@ def test_a_section_spanning_two_clips_is_filled_under_both() -> None:
 
 
 def test_an_unfilled_row_asks_the_page_for_nothing() -> None:
-    """A row the list has built and not filled knows no section, and an empty
+    """A row the list has built and not filled knows no pass, and an empty
     id reaching the page is an unhandled error in front of the user."""
     row = SectionRow()
     seen: list[str] = []
@@ -715,7 +715,7 @@ def test_the_clip_menu_offers_to_put_back_a_clip_that_is_already_hidden() -> Non
 
 
 def test_only_the_sections_nothing_was_made_from_can_be_swept_up() -> None:
-    """Expected behaviour: a section standing for a run that happened stays."""
+    """Expected behaviour: a pass standing for a run that happened stays."""
     row = VideoRow()
 
     row.set_entry(make_entry(windows=((0.0, 30.0),), runs_per_pass=(("succeeded",),)), no_name)
@@ -800,7 +800,7 @@ def test_the_list_says_it_takes_a_drop() -> None:
 
 def test_a_section_of_a_clip_of_unknown_length_still_gets_a_row() -> None:
     """Expected behaviour: the strip cannot place it, which is no reason to
-    leave the section itself off the page."""
+    leave the pass itself off the page."""
     entry = make_entry(windows=((0.0, 30.0),), duration_s=None)
 
     listing = make_list(entry)
@@ -984,7 +984,7 @@ def test_the_heading_stays_over_the_column_it_names(qapp) -> None:
 # --- Where a section sits along its clip ------------------------------------
 
 def _clip_and_sections(qapp, width=1400, duration_s=120.0, windows=((10.0, 40.0),)):
-    """One clip row with its sections open under it, laid out at a real width."""
+    """One clip row with its passes open under it, laid out at a real width."""
     from PySide6.QtWidgets import QVBoxLayout, QWidget
 
     entry = make_entry(windows=windows, duration_s=duration_s)
@@ -1011,7 +1011,7 @@ def _clip_and_sections(qapp, width=1400, duration_s=120.0, windows=((10.0, 40.0)
 def test_a_section_strip_shares_its_clip_s_time_axis(qapp, width) -> None:
     """Scenario: a clip is expanded, at three window widths.
 
-    Expected behaviour: the section's bar starts and ends on the same pixels as
+    Expected behaviour: the pass's bar starts and ends on the same pixels as
     its clip's, so a position along one means the same as along the other. This
     is the guard for the next column added to either row.
     """
@@ -1041,7 +1041,7 @@ def test_a_section_strip_carries_only_its_own_span(qapp) -> None:
 
 
 def test_a_clip_of_unknown_length_gives_its_sections_no_strip(qapp) -> None:
-    """The row is the section, so neither "nothing cut from this" nor "length
+    """The row is the pass, so neither "nothing cut from this" nor "length
     unknown" is a statement it can make about itself."""
     _listing, _clip, sections, _host = _clip_and_sections(qapp, duration_s=0.0)
 
@@ -1188,7 +1188,7 @@ def test_picking_a_section_lets_go_of_every_clip() -> None:
     _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
     _click(listing, ids[1], Qt.KeyboardModifier.ControlModifier)
 
-    listing.set_selected_section("a-section")
+    listing.set_selected_section("a-pass")
 
     assert listing.selection() == set()
     assert listing.selected is None

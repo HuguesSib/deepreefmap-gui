@@ -46,9 +46,9 @@ def test_the_record_becomes_the_choice_once_data_is_gone(qapp):
 
 def test_what_is_kept_is_spelled_out(qapp):
     dialog = DeleteDataDialog(
-        scope(keeps=("Sections and their trims", "Clips in the library"))
+        scope(keeps=("Passes and their trims", "Clips in the library"))
     )
     text = " ".join(label.text() for label in dialog.findChildren(QLabel))
     assert "Kept either way" in text
-    assert "Sections and their trims" in text
+    assert "Passes and their trims" in text
     assert "Clips in the library" in text

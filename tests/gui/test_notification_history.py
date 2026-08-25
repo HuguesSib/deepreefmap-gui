@@ -39,7 +39,7 @@ def test_the_log_lists_what_was_reported(reported):
 
 
 def test_every_section_a_message_is_filed_against_has_a_where(window):
-    """A section with no label renders a blank Where cell, saying nothing."""
+    """A pass with no label renders a blank Where cell, saying nothing."""
     from deepreefmap_gui.models.cache_ui import MODELS_SECTION
     from deepreefmap_gui.notify.history_ui import _SECTION_LABELS
     from deepreefmap_gui.server.state import SERVER_SECTION

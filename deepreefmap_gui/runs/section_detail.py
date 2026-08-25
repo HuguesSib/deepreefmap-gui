@@ -1,6 +1,6 @@
-"""What one section of a clip is, and which sessions have run it.
+"""What one pass of a clip is, and which sessions have run it.
 
-A section outlives any one attempt at it: the same cutout can be processed in
+A pass outlives any one attempt at it: the same cutout can be processed in
 several sessions, and comparing those repeats is the point of processing it more
 than once. The clip pane says what footage exists; this says what has been asked
 of one piece of it.
@@ -67,7 +67,7 @@ _ARCHIVE_FACES = {
 
 
 def section_window(pass_: TransectPass) -> str:
-    """The section's own name: where it starts and stops in the clip."""
+    """The pass's own name: where it starts and stops in the clip."""
     end = pass_.end_s
     tail = "end" if end is None else f"{int(end) // 60}:{int(end) % 60:02d}"
     return f"{int(pass_.begin_s) // 60}:{int(pass_.begin_s) % 60:02d}–{tail}"
@@ -85,9 +85,9 @@ def _short_date(stamp: str | None) -> str:
 
 
 class RunRow(QWidget):
-    """One session's attempt at this section, with its own archive control.
+    """One session's attempt at this pass, with its own archive control.
 
-    The trailing button follows the section rows' icon-button convention (cart,
+    The trailing button follows the pass rows' icon-button convention (cart,
     trim, delete): one glyph wearing the probe's answer, with the words in the
     tooltip. A run that cannot be archived keeps the glyph in the disabled ink
     and says why in the tooltip rather than hiding it, and the press does
@@ -183,7 +183,7 @@ class RunRow(QWidget):
 
 
 class SectionDetailPanel(DetailCard):
-    """A titled card describing one section and the sessions that ran it."""
+    """A titled card describing one pass and the sessions that ran it."""
 
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
@@ -196,7 +196,7 @@ class SectionDetailPanel(DetailCard):
         super().__init__(parent)
         layout = self.body
 
-        layout.addWidget(muted_label("Sessions this section has run in"))
+        layout.addWidget(muted_label("Sessions this pass has run in"))
 
         self.run_list = QListWidget()
         self.run_list.setAlternatingRowColors(True)
@@ -229,7 +229,7 @@ class SectionDetailPanel(DetailCard):
         self._run_rows: list[RunRow] = []
 
     def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
-        """Everything the menu offers on this section, in one list.
+        """Everything the menu offers on this pass, in one list.
 
         A None key is a separator.
         """
@@ -237,7 +237,7 @@ class SectionDetailPanel(DetailCard):
             ("retrim", "Adjust trim…", self._emit_retrim),
             ("reassign", "Change transect…", self._emit_reassign),
             (None, "", None),
-            ("delete", "Delete section", self._emit_delete),
+            ("delete", "Delete pass", self._emit_delete),
         )
 
     def _fill_section_actions(self, menu: QMenu) -> dict[str, QAction]:
@@ -289,7 +289,7 @@ class SectionDetailPanel(DetailCard):
         in_cart: bool,
         output_bytes: int = 0,
     ) -> None:
-        """Describe one section. ``session_name`` resolves a run's batch id."""
+        """Describe one pass. ``session_name`` resolves a run's batch id."""
         self.title.setText(section_window(pass_))
         self.set_status(status, STATUS_COLORS.get(status, TEXT_MUTED))
         # Transect and direction on one row, as one link. They are set together
@@ -345,7 +345,7 @@ class SectionDetailPanel(DetailCard):
         delete = self.menu_actions["delete"]
         delete.setEnabled(not runs)
         delete.setToolTip(
-            "This section has runs. Delete them in Browse first."
+            "This pass has runs. Delete them in Browse first."
             if runs
             else "Remove this cut. The clip itself is left alone."
         )

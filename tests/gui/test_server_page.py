@@ -1,4 +1,4 @@
-"""The Server section in the shell: what it says, and what a sync does to it.
+"""The Server pass in the shell: what it says, and what a sync does to it.
 
 No test here reaches the network. The registry is a fake object standing in for
 `SyncClient`, so the real engine, the real store and the real signals run.
@@ -195,8 +195,8 @@ def one_note(window, fingerprint: str):
 def test_the_server_page_is_a_setup_view_not_a_section(window):
     """Scenario: the Server page lives on Setup's segmented control.
 
-    Expected behaviour: no section, pill or header button of its own; the old
-    section name still routes there because persisted notifications carry it.
+    Expected behaviour: no pass, pill or header button of its own; the old
+    pass name still routes there because persisted notifications carry it.
     """
     assert SERVER_SECTION in MACHINE_VIEWS
     assert SERVER_SECTION not in SIMPLE_SECTIONS

@@ -1,11 +1,11 @@
-"""Filing a section: which transect it belongs to, and which way it was swum.
+"""Filing a pass: which transect it belongs to, and which way it was swum.
 
 A transect is a place, so it is picked on a map rather than out of a combo box.
 The map is the same widget the Transects page draws, holding the same overlays,
 which is the whole of why this dialog can stay small: everything the small map
 does not do is one click away on the page it borrows from.
 
-A transect stays optional. A section is first a cutout of a video, and it
+A transect stays optional. A pass is first a cutout of a video, and it
 processes perfectly well without ever being filed.
 """
 
@@ -59,12 +59,12 @@ LIST_WIDTH = 240
 
 DRAW_HINT = "Click the start of the tape on the map, then its end."
 DRAW_HINT_END = "Now click the end of the tape."
-DRAW_HINT_DONE = "Save transect files it, and this section with it."
+DRAW_HINT_DONE = "Save transect files it, and this pass with it."
 
 # What the map is, said where the map is. Nothing else on this dialog announces
 # that it can be clicked, and a map that only responds once a button has been
 # pressed reads as a picture until then.
-MAP_HINT = "Transects are the lines on this map. Click one to file this section against it."
+MAP_HINT = "Transects are the lines on this map. Click one to file this pass against it."
 MAP_HINT_EMPTY = "No transects yet. New transect… draws one on the map."
 
 # A choice made here is not a commitment. Said plainly, because filing a section
@@ -72,7 +72,7 @@ MAP_HINT_EMPTY = "No transects yet. New transect… draws one on the map."
 # page that is one click away.
 EDIT_LATER_NOTE = (
     "Both can be changed later: a transect's ends, depth and notes on the "
-    "Transects page, and which transect this section belongs to from Videos."
+    "Transects page, and which transect this pass belongs to from Videos."
 )
 
 NEW_TRANSECT_TOOLTIP = (
@@ -92,7 +92,7 @@ OPEN_PAGE_TOOLTIP = (
 OPEN_PAGE_EMPTY_LABEL = "Transects page ↗"
 OPEN_PAGE_EMPTY_TOOLTIP = (
     "Leave this dialog and open the Transects page, where transects are drawn "
-    "or imported. This section is kept, unfiled, and can be filed afterwards."
+    "or imported. This pass is kept, unfiled, and can be filed afterwards."
 )
 
 
@@ -119,7 +119,7 @@ def direction_label(direction: str, transect: Transect | None) -> str:
 
 
 class TransectPickerDialog(QDialog):
-    """Pick the transect a section belongs to, and the direction it was swum.
+    """Pick the transect a pass belongs to, and the direction it was swum.
 
     Answers through ``choice()``: (transect_id | None, direction), the same
     contract the call sites had before there was a map in here.
@@ -147,7 +147,7 @@ class TransectPickerDialog(QDialog):
         # from Cancel to the caller. This is what tells them apart, so a section
         # cut but not yet filed can be kept rather than lost on the trip.
         self.left_for_page = False
-        self.setWindowTitle("File this section")
+        self.setWindowTitle("File this pass")
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()

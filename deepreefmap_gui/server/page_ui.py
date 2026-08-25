@@ -97,7 +97,7 @@ ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web in
 
 REFERENCE_NOTE = (
     "Sites and campaigns are edited in the web interface. Here they are chosen: "
-    "a transect names its site on the Transects page, and a section names its "
+    "a transect names its site on the Transects page, and a pass names its "
     "campaign when it is filed."
 )
 ONBOARDED_BY = "Onboarded by"
@@ -155,7 +155,7 @@ class ConflictNotifier:
 
     The engine posts from the worker thread and the notification centre belongs to
     the GUI one, so everything goes through `_sig_notify`, the one route a worker
-    has to the bell. The section is stamped here: a conflict is read on the Server
+    has to the bell. The pass is stamped here: a conflict is read on the Server
     page, so pressing the notification has to land there.
     """
 
@@ -206,7 +206,7 @@ class ProgressTransport:
 
 
 class ServerPageMixin(MixinBase):
-    """DeepReefMapWindow methods for the Server section and the sync it runs."""
+    """DeepReefMapWindow methods for the Server pass and the sync it runs."""
 
     _server_syncing: bool = False
     _server_archiving: bool = False
@@ -907,7 +907,7 @@ class ServerPageMixin(MixinBase):
     def _refresh_sync_badge(self) -> None:
         """Re-read the registry state for the badge, off the thread painting it.
 
-        The read is a credential file plus one COUNT per authored section, but
+        The read is a credential file plus one COUNT per authored pass, but
         it still leaves the GUI thread: a store can sit on a mount that has
         gone away, and the badge refreshes on a timer.
         """

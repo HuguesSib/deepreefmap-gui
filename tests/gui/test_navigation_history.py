@@ -1,6 +1,6 @@
 """Getting back to where a link took you from.
 
-Scenario: the Transect + section button on a cart row jumps to that section
+Scenario: the Transect + pass button on a cart row jumps to that pass
 under Videos. That is the right thing to do, and until now there was no way
 back: the mouse's back button did nothing, and there was no history in the app
 at all.
@@ -47,14 +47,14 @@ def test_arriving_where_you_already_are_is_not_a_step():
 def test_the_selection_is_part_of_where_you_were():
     history = NavigationHistory()
     history.push(Place("process"))
-    history.push(Place("videos", "section-1"))
+    history.push(Place("videos", "pass-1"))
 
     assert history.back() == Place("process")
-    assert history.forward() == Place("videos", "section-1")
+    assert history.forward() == Place("videos", "pass-1")
 
 
 def test_a_place_that_is_gone_is_dropped_rather_than_returned_to():
-    """A deleted section must not cost two presses to get past."""
+    """A deleted pass must not cost two presses to get past."""
     history = NavigationHistory()
     history.push(Place("process"))
     history.push(Place("videos", "deleted"))

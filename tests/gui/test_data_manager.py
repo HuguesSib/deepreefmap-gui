@@ -869,7 +869,7 @@ def test_add_to_cart_requeues_a_finished_run(out_root, make_window):
 
 def test_add_to_cart_adopts_an_adhoc_run_unassigned(out_root, make_window):
     """A run the database has never seen becomes a pass with no transect --
-    a section is a cutout first, filing it is optional."""
+    a pass is a cutout first, filing it is optional."""
     write_run(out_root, "loose", begin_s=10.0, end_s=50.0)
     window = make_window()
     select_run(window, row_of(window, "loose"))

@@ -1,10 +1,10 @@
-"""What a section is called, as opposed to what its folder is called.
+"""What a pass is called, as opposed to what its folder is called.
 
-Generated when a section is staged and editable from then on. Independent of the
-run directory, which stays unique and filesystem-safe: renaming a section never
+Generated when a pass is staged and editable from then on. Independent of the
+run directory, which stays unique and filesystem-safe: renaming a pass never
 moves a directory.
 
-Names are unique. Two sections called the same thing cannot be told apart in the
+Names are unique. Two passes called the same thing cannot be told apart in the
 row that reports one of them failing.
 """
 
@@ -19,13 +19,13 @@ _SUFFIXED = re.compile(r"^(?P<stem>.*?)(?: (?P<n>\d+))?$")
 
 
 def default_label(*, transect_name: str | None, clip_name: str, number: int) -> str:
-    """The name a section starts with: where it was swum, and which pass it is.
+    """The name a pass starts with: where it was swum, and which pass it is.
 
-    A section with no transect is named after its clip, which is the only thing
+    A pass with no transect is named after its clip, which is the only thing
     it has to be recognised by. The number counts passes of the same subject, so
     two swims of one transect do not arrive with one name between them.
     """
-    stem = (transect_name or "").strip() or Path(clip_name).stem or "Section"
+    stem = (transect_name or "").strip() or Path(clip_name).stem or "Pass"
     return f"{stem} pass {number:02d}"
 
 
@@ -35,7 +35,7 @@ def unique_label(wanted: str, taken: set[str]) -> str:
     Counts from an existing suffix rather than appending, so "Reef 2" becomes
     "Reef 3" and not "Reef 2 2".
     """
-    cleaned = " ".join(wanted.split()) or "Section"
+    cleaned = " ".join(wanted.split()) or "Pass"
     if cleaned not in taken:
         return cleaned
     match = _SUFFIXED.match(cleaned)
@@ -48,7 +48,7 @@ def unique_label(wanted: str, taken: set[str]) -> str:
 
 
 def pass_label(pass_, *, transect_name: str | None, clip_name: str, number: int) -> str:
-    """A section's own name, or the generated one when it has never been named."""
+    """A pass's own name, or the generated one when it has never been named."""
     return pass_.label.strip() or default_label(
         transect_name=transect_name, clip_name=clip_name, number=number
     )

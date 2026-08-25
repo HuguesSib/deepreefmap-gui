@@ -145,7 +145,7 @@ _GROUP_HINTS = {
 # want processed is one you take out of the cart, and the pass itself, its clip
 # and its runs all stay.
 _DELETE_HINT = (
-    "Take this pass out of the session. The section and its video are kept, "
+    "Take this pass out of the session. The pass and its video are kept, "
     "and it can be added to a cart again."
 )
 
@@ -209,7 +209,7 @@ def _rough_batch_time(total_seconds: float | None) -> str | None:
     """A plain "about N hours" for a session that has not started yet.
 
     Takes the predicted total rather than a pass count: a queue of thirty-second
-    sections and a queue of ten-minute ones are not the same evening, and
+    passes and a queue of ten-minute ones are not the same evening, and
     counting passes said they were.
     """
     if not total_seconds:
@@ -612,7 +612,7 @@ class SimpleBatchMixin(MixinBase):
             "Clip",
             "Recorded",
             "Length",
-            "Transect + section",
+            "Transect + pass",
             "Settings",
             "Status",
             "",
@@ -681,7 +681,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_table_stack.addWidget(
             EmptyState(
                 "No videos in this session",
-                "Cut sections from your clips in Browse to queue them here.",
+                "Cut passes from your clips in Browse to queue them here.",
             )
         )
         passes_card, passes_layout = section_card("Passes")
@@ -780,8 +780,8 @@ class SimpleBatchMixin(MixinBase):
         re-reads the cart between passes, so a row removed before it starts is
         one the session no longer processes.
 
-        The three section cells never freeze. They edit nothing here: they open
-        the section under Videos, which is worth doing while a batch runs.
+        The three pass cells never freeze. They edit nothing here: they open
+        the pass under Videos, which is worth doing while a batch runs.
         """
         for widget in (
             self._survey_batch_name,
@@ -1332,7 +1332,7 @@ class SimpleBatchMixin(MixinBase):
         table.setSpan(index, 0, 1, table.columnCount())
 
     def _section_cell_text(self, row: _PassRow) -> str:
-        """The section on one line: where it was swum, which way, and what of it.
+        """The pass on one line: where it was swum, which way, and what of it.
 
         One button rather than three, because the three are one thing and they
         go to one place. Split across three cells the window was also the one
@@ -1344,7 +1344,7 @@ class SimpleBatchMixin(MixinBase):
         ))
 
     def _section_cell(self, row: _PassRow) -> QPushButton:
-        """The section, as a cell that opens the section rather than editing it.
+        """The pass, as a cell that opens the pass rather than editing it.
 
         A transect, a direction and a window are facts about the swim, and the
         swim is described under Videos.
@@ -1386,7 +1386,7 @@ class SimpleBatchMixin(MixinBase):
                 f"{self._row_label(row)}. Right-click the row to rename it.",
                 _clip_tooltip(row.videos),
                 f"Recorded {_clip_time(row.video.mtime)}",
-                f"Section runs {_span_length(row.end_s - row.begin_s)} of "
+                f"Pass runs {_span_length(row.end_s - row.begin_s)} of "
                 f"{_span_length(row.total_duration_s())}",
             ))
         )
@@ -1404,7 +1404,7 @@ class SimpleBatchMixin(MixinBase):
         length_item.setFlags(length_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         length_item.setForeground(QColor(TEXT_MUTED))
         length_item.setToolTip(
-            f"Section length. The clip it is cut from runs "
+            f"Pass length. The clip it is cut from runs "
             f"{_span_length(row.total_duration_s())}."
         )
         table.setItem(index, _COL_LENGTH, length_item)
@@ -1493,7 +1493,7 @@ class SimpleBatchMixin(MixinBase):
         if imported:
             parts.append(
                 f"Imported {len(imported)} clip{'' if len(imported) == 1 else 's'}. "
-                "Cut sections from them in Browse to process them."
+                "Cut passes from them in Browse to process them."
             )
         if relinked:
             parts.append(
@@ -1688,7 +1688,7 @@ class SimpleBatchMixin(MixinBase):
         return next((row for row in self._survey_rows if row.pass_id == pass_id), None)
 
     def _row_label(self, row: _PassRow) -> str:
-        """What this section is called: its own name, or the generated default.
+        """What this pass is called: its own name, or the generated default.
 
         The default is produced on read, so an unnamed row follows the current
         generator rather than carrying an older one.
@@ -1711,9 +1711,9 @@ class SimpleBatchMixin(MixinBase):
         )
 
     def _on_survey_rename(self, index: int) -> None:
-        """Rename a section from the row's menu.
+        """Rename a pass from the row's menu.
 
-        Empty means the derived name back, and a name another section already has
+        Empty means the derived name back, and a name another pass already has
         is refused with the one it got instead.
         """
         from PySide6.QtWidgets import QInputDialog
@@ -1729,8 +1729,8 @@ class SimpleBatchMixin(MixinBase):
             return
         typed, accepted = QInputDialog.getText(
             self,
-            "Rename section",
-            "What this section is called. Clear it for the derived name.",
+            "Rename pass",
+            "What this pass is called. Clear it for the derived name.",
             text=self._row_label(row),
         )
         if not accepted:
@@ -1746,7 +1746,7 @@ class SimpleBatchMixin(MixinBase):
             )
             if pass_.label != wanted:
                 self._status_label.setText(
-                    f"Another section is already called {wanted!r}; "
+                    f"Another pass is already called {wanted!r}; "
                     f"this one is {pass_.label!r}."
                 )
         store.update_pass(pass_)
@@ -2071,7 +2071,7 @@ class SimpleBatchMixin(MixinBase):
         }
 
     def _refresh_row_notices(self) -> None:
-        """Say what is worth a second look about each section, on its own cell.
+        """Say what is worth a second look about each pass, on its own cell.
 
         Three marks, in one place because they compete for the same cell. Red
         and dashed for footage that is not there, which cannot run at all; amber
@@ -2112,7 +2112,7 @@ class SimpleBatchMixin(MixinBase):
                     )
             if row.transect_id in one_way:
                 notes.append(one_way[row.transect_id])
-            notes.append("Click to open this section under Videos.")
+            notes.append("Click to open this pass under Videos.")
             cell.setToolTip("\n".join(notes))
 
     # --- Run gating and execution ---
@@ -2994,7 +2994,7 @@ class SimpleBatchMixin(MixinBase):
                 partial(self._process_rows_again, done),
             )
         # One row at a time: a name identifies one section.
-        menu.addAction("Rename section…", partial(self._on_survey_rename, index))
+        menu.addAction("Rename pass…", partial(self._on_survey_rename, index))
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))

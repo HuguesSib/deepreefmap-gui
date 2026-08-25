@@ -75,7 +75,7 @@ def test_every_column_of_the_cart_is_named(batch_window):
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     ]
-    assert named == ["", "Clip", "Recorded", "Length", "Transect + section",
+    assert named == ["", "Clip", "Recorded", "Length", "Transect + pass",
                      "Settings", "Status", ""]
     # Centred: a heading names a column rather than starting it.
     assert table.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignHCenter
@@ -244,10 +244,10 @@ def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
 
 
 def test_the_section_cell_opens_the_section_under_videos(batch_window, tmp_path, monkeypatch):
-    """Scenario: the section on a cart row is clicked.
+    """Scenario: the pass on a cart row is clicked.
 
     Expected behaviour: nothing is edited here. The Videos page opens on that
-    section, which is the one place a section is described. Transect, direction
+    pass, which is the one place a pass is described. Transect, direction
     and window are one button, because they are one thing and go to one place.
     """
     add_video(batch_window, tmp_path, monkeypatch)
@@ -1496,7 +1496,7 @@ def test_unreadable_clip_metadata_says_so():
 
 
 def test_the_length_is_the_section_not_the_clip(batch_window, tmp_path, monkeypatch):
-    """Two sections of one clip differ by it, and the pass costs what it spans."""
+    """Two passes of one clip differ by it, and the pass costs what it spans."""
     add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4", duration_s=298.0)
     row = batch_window._survey_rows[0]
     row.begin_s, row.end_s = 22.0, 58.0
@@ -1716,7 +1716,7 @@ def test_the_same_clip_picked_twice_imports_once(batch_window, tmp_path, monkeyp
 
 
 def group_headings(window):
-    """The section titles the pass table currently shows, top to bottom."""
+    """The pass titles the pass table currently shows, top to bottom."""
     table = window._survey_pass_table
     return [
         table.item(row, 0).text()
@@ -1960,7 +1960,7 @@ def test_a_running_order_freezes_its_settings_and_keeps_the_rest_open(
 
     Expected behaviour: what the order will run under can no longer change, and
     neither can its order. Taking a row out stays open, because the worker
-    re-reads the cart; so does opening a section under Videos, which edits
+    re-reads the cart; so does opening a pass under Videos, which edits
     nothing here.
     """
     for name in ("GX010001.MP4", "GX010002.MP4"):
@@ -1997,7 +1997,7 @@ def test_a_running_order_freezes_its_settings_and_keeps_the_rest_open(
 def test_passes_queued_mid_run_land_in_the_next_session(
     batch_window, tmp_path, monkeypatch
 ):
-    """Scenario: a batch is running and another section is cut from new footage.
+    """Scenario: a batch is running and another pass is cut from new footage.
 
     Expected behaviour: the pass queues into a fresh session, shown under the
     Next session divider, and the running order is untouched.
@@ -2178,7 +2178,7 @@ def test_going_back_to_the_live_log_stops_offering_the_other_runs_file(qapp, tmp
 
 
 def test_the_session_estimate_reads_each_section_length(batch_window, tmp_path, monkeypatch):
-    """A queue of short sections is not the same evening as a queue of long ones.
+    """A queue of short passes is not the same evening as a queue of long ones.
 
     Costing by pass count answered the same for both, which is what made the
     figure useless for deciding whether to start a batch before dinner.
@@ -2220,7 +2220,7 @@ def test_the_prediction_is_recomputed_only_when_the_queue_changes(
 
 
 def rename(window, row_index, monkeypatch, typed, accepted=True):
-    """Rename a section the way its row's menu does."""
+    """Rename a pass the way its row's menu does."""
     from PySide6.QtWidgets import QInputDialog
 
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: (typed, accepted)))
@@ -2285,7 +2285,7 @@ def test_two_sections_cannot_share_a_name(batch_window, tmp_path, monkeypatch):
 
 
 def test_clearing_the_name_restores_the_generated_one(batch_window, tmp_path, monkeypatch):
-    """An emptied field asks for the default back, not for a nameless section."""
+    """An emptied field asks for the default back, not for a nameless pass."""
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     generated = batch_window._row_label(batch_window._survey_rows[0])
@@ -2323,7 +2323,7 @@ def test_the_clip_and_the_section_take_the_width(batch_window, tmp_path, monkeyp
 def test_a_narrow_window_drops_recorded_before_it_squeezes_a_name(
     batch_window, tmp_path, monkeypatch, qapp
 ):
-    """The clip name and the section window already place the footage in time."""
+    """The clip name and the pass window already place the footage in time."""
     add_video(batch_window, tmp_path, monkeypatch)
     table = batch_window._survey_pass_table
     table.resize(640, 400)
@@ -2347,7 +2347,7 @@ def test_the_facts_a_dropped_column_carried_stay_on_the_row(
     tooltip = table.item(batch_window._table_row_of(0), _COL_VIDEO).toolTip()
 
     assert "Recorded" in tooltip
-    assert "Section runs" in tooltip
+    assert "Pass runs" in tooltip
 
 
 def test_a_repainted_settings_button_does_not_read_as_a_dragged_column(

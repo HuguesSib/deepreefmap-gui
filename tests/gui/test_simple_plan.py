@@ -16,7 +16,7 @@ def type_coord(window, which, text):
 
 def row_texts(window):
     """Every transect row as a tuple of columns. The list is flat: the scope
-    chips above it name what it is showing, so there are no section headings."""
+    chips above it name what it is showing, so there are no pass headings."""
     tree = window._transect_list
     return [
         # The last column is a spacer that absorbs the leftover width.
@@ -357,7 +357,7 @@ def test_in_view_narrows_the_list_to_what_the_map_shows(window):
     """Scenario: two transects far apart, the map on one of them.
 
     Expected behaviour: In view leaves the one on screen, All transects brings
-    the other back. One list either way -- the two used to be separate sections
+    the other back. One list either way -- the two used to be separate passes
     and every on-screen transect appeared in both.
     """
     w = window

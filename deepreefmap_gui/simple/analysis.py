@@ -120,7 +120,7 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_mode_chips = FilterChips(_CHART_MODES)
         self._analysis_mode_chips.setToolTip(
             "Pooled is the count-weighted estimate with the spread across passes. "
-            "Per pass draws each pass on its own, and a bar opens its section."
+            "Per pass draws each pass on its own, and a bar opens its pass."
         )
         self._analysis_mode_chips.set_current(self._analysis_chart_mode)
         self._analysis_mode_chips.changed.connect(self._on_analysis_mode_changed)
@@ -304,10 +304,10 @@ class SimpleAnalysisMixin(MixinBase):
         self._refresh_survey_analysis()
 
     def _on_analysis_series_clicked(self, key: str) -> None:
-        """A clicked pass opens where its section is described.
+        """A clicked pass opens where its pass is described.
 
         Inert in pooled mode: a pooled bar is every pass at once, so there is no
-        one section for it to be about.
+        one pass for it to be about.
         """
         if self._analysis_chart_mode != _MODE_PASSES:
             return

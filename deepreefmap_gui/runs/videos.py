@@ -1,12 +1,12 @@
 """Videos: the footage itself, grouped by the day it was shot.
 
 The destination a dive day starts and ends at. Clips arrive here, are cut into
-sections, get a transect, and go in the cart; afterwards the same rows show what
+passes, get a transect, and go in the cart; afterwards the same rows show what
 came of them. Browse is for finished runs, so a clip appears in exactly one
 place in the app and this is it.
 
 The library it lists comes from ``survey/catalogue.py::video_library``, the
-grouping and the section strips from ``survey/video_groups.py``, and the widgets
+grouping and the pass strips from ``survey/video_groups.py``, and the widgets
 from ``runs/video_rows.py``. What lives here is the page: which clips are shown,
 what the buttons do, and keeping the answers off the thread that paints them.
 """
@@ -119,7 +119,7 @@ _PICK_HINT = "Ctrl-click or shift-click to pick more than one clip."
 # Named for what it does rather than for the "Not processed" chip, whose count
 # is wider: a clip cut into sections and never run reads as part processed and
 # is not swept, because re-importing the file does not bring its trims back.
-_SWEEP_IDLE = "Remove clips with no sections"
+_SWEEP_IDLE = "Remove clips with no passes"
 
 
 def captured_day(stamp: str | None) -> str | None:
@@ -143,7 +143,7 @@ def _delete_label(count: int) -> str:
 
 
 def _sweep_label(count: int) -> str:
-    return _SWEEP_IDLE if count < 1 else f"Remove {_clips_phrase(count)} with no sections"
+    return _SWEEP_IDLE if count < 1 else f"Remove {_clips_phrase(count)} with no passes"
 
 
 def _delete_report(deleted: list[VideoLibraryEntry], refused: int) -> str:
@@ -222,7 +222,7 @@ class VideoLibraryMixin(MixinBase):
         top_row.addWidget(self._video_search)
         self._video_chips = FilterChips(_CLIP_FILTERS)
         self._video_chips.setToolTip(
-            "Where each clip stands: whether every section cut from it has been "
+            "Where each clip stands: whether every pass cut from it has been "
             "processed, and whether any of them failed."
         )
         self._video_chips.changed.connect(self._on_video_filter_changed)
@@ -301,7 +301,7 @@ class VideoLibraryMixin(MixinBase):
         # disappears re-lays the page every time a clip is picked or dropped.
         self._video_detail_stack = QStackedWidget()
         self._video_detail_stack.addWidget(
-            EmptyState("No clip selected", "Pick a clip to see its sections and runs.")
+            EmptyState("No clip selected", "Pick a clip to see its passes and runs.")
         )
         self._video_detail_stack.addWidget(self._video_detail)
         detail.addWidget(self._video_detail_stack)
@@ -333,7 +333,7 @@ class VideoLibraryMixin(MixinBase):
 
         Set outright rather than left to stretch factors: a splitter only
         shares out the space above each pane's minimum, so the detail pane sat
-        at its 260px floor however wide the window got, and the section card's
+        at its 260px floor however wide the window got, and the pass card's
         buttons truncated to fit it.
         """
         if getattr(self, "_video_split_user_sized", False):
@@ -411,7 +411,7 @@ class VideoLibraryMixin(MixinBase):
         """The clips on screen with nothing cut from them and nothing made from them.
 
         Orphans only. Deleting is records-only and adding the file again mints a
-        fresh clip, so a swept orphan is recoverable; the sections cut from a
+        fresh clip, so a swept orphan is recoverable; the passes cut from a
         clip are not, and those trim windows are the user's own work.
 
         Drawn from what is listed, so the count is what is on screen and a
@@ -492,7 +492,7 @@ class VideoLibraryMixin(MixinBase):
             if confirm(
                 self,
                 "Remove clips",
-                f"Remove {_clips_phrase(len(clips))} with no sections from the "
+                f"Remove {_clips_phrase(len(clips))} with no passes from the "
                 f"library? {KEEPS_FILE_NOTE}",
             ):
                 self._delete_clips(clips)
@@ -682,7 +682,7 @@ class VideoLibraryMixin(MixinBase):
             # swim that already happened, not a line anybody is choosing.
             transect = store.get_transect_for_reference(transect_id)
         except Exception:
-            logger.exception("Could not read the transect for a section")
+            logger.exception("Could not read the transect for a pass")
             return None
         return transect.name if transect is not None else None
 
@@ -812,7 +812,7 @@ class VideoLibraryMixin(MixinBase):
         One entry point for all three so they cannot disagree about what is
         selected, and so a span click opens the clip it belongs to.
 
-        Answers False for a section that is no longer there, which is how going
+        Answers False for a pass that is no longer there, which is how going
         back to a deleted one is told from going back to a live one.
         """
         clip = self._clip_for_pass(pass_id)
@@ -830,7 +830,7 @@ class VideoLibraryMixin(MixinBase):
         return True
 
     def _open_section_in_videos(self, pass_id: uuid.UUID) -> None:
-        """Edit a section where a section is defined.
+        """Edit a pass where a pass is defined.
 
         The cart shows a pass's transect, direction and trim but no longer edits
         any of them: they describe the swim, not the plan to process it, and
@@ -840,10 +840,10 @@ class VideoLibraryMixin(MixinBase):
         if not self._select_section(str(pass_id)):
             # The section has gone since whatever offered it was drawn, which a
             # chart or a cart row outliving a delete is how it happens.
-            self._status_label.setText("That section is no longer in the survey.")
+            self._status_label.setText("That pass is no longer in the survey.")
 
     def _pass_by_id(self, store, pass_id: str):
-        """The section an id names, and None when the id names nothing.
+        """The pass an id names, and None when the id names nothing.
 
         The ids come off row widgets, which is a wide enough door that a
         malformed one has to be an answer of None rather than an exception in
@@ -919,14 +919,14 @@ class VideoLibraryMixin(MixinBase):
             self._new_section_from_clip(clip)
 
     def _new_section_from_clip(self, clip: VideoLibraryEntry) -> None:
-        """Cut a section from a clip and file it against a transect.
+        """Cut a pass from a clip and file it against a transect.
 
-        The cart is not touched: making a section and choosing to run it are two
+        The cart is not touched: making a pass and choosing to run it are two
         decisions, and the cart control on the row is where the second is made.
 
-        Scrub first (the window is the section's identity), then the assign step,
+        Scrub first (the window is the pass's identity), then the assign step,
         where a transect is a choice rather than a requirement. A clip that
-        cannot be scrubbed cuts nothing: a section is a window the user chose,
+        cannot be scrubbed cuts nothing: a pass is a window the user chose,
         never a whole clip queued on their behalf.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
@@ -934,24 +934,24 @@ class VideoLibraryMixin(MixinBase):
         duration = clip.video.duration_s or 0.0
         if clip.link_state == LINK_MISSING:
             self._status_label.setText(
-                "Cannot cut a section: the video file is missing. Add it again "
+                "Cannot cut a pass: the video file is missing. Add it again "
                 "from where it lives now."
             )
             return
         if clip.link_state != LINK_LINKED:
             self._status_label.setText(
-                "Cannot cut a section: the video file has not been checked yet."
+                "Cannot cut a pass: the video file has not been checked yet."
             )
             return
         if duration <= 0.0:
             self._status_label.setText(
-                "Cannot cut a section: the clip's length is unknown."
+                "Cannot cut a pass: the clip's length is unknown."
             )
             return
         store = self._try_survey_store()
         if store is None:
             self._status_label.setText(
-                "Cannot cut a section: the survey database is unavailable."
+                "Cannot cut a pass: the survey database is unavailable."
             )
             return
         scrub = VideoScrubDialog(
@@ -966,7 +966,7 @@ class VideoLibraryMixin(MixinBase):
         already = store.pass_with_window(clip.video.id, begin_s, end_s)
         if already is not None:
             self._status_label.setText(
-                f"{clip.video.file_name} already has a section over that window."
+                f"{clip.video.file_name} already has a pass over that window."
             )
             self._select_section(str(already.id))
             return
@@ -998,7 +998,7 @@ class VideoLibraryMixin(MixinBase):
     def _cart_pass_ids(self) -> set[str]:
         """The current cart's passes, read once per repaint.
 
-        Asked per row it was two queries a section, which is a query per section
+        Asked per row it was two queries a pass, which is a query per pass
         of the whole library every time the page repaints.
         """
         store = self._try_survey_store()
@@ -1017,7 +1017,7 @@ class VideoLibraryMixin(MixinBase):
         return str(pass_id_str) in self._cart_pass_ids()
 
     def _missing_clips_for(self, pass_) -> list[str]:
-        """The chapters of a section whose files the last scan could not find.
+        """The chapters of a pass whose files the last scan could not find.
 
         Read off the library's cached link states rather than by stat'ing here:
         the answer is already known, and a drive that has gone to sleep must not
@@ -1033,7 +1033,7 @@ class VideoLibraryMixin(MixinBase):
     def _refresh_cart_marks(self) -> None:
         """Repaint the Videos page after the cart changed somewhere else.
 
-        The cart is shown on every section row, so a pass taken out of it on the
+        The cart is shown on every pass row, so a pass taken out of it on the
         Process page has to stop claiming to be in it here. Cheap: the library
         itself is not re-read, only the rows re-filled from what is cached.
         """
@@ -1042,11 +1042,11 @@ class VideoLibraryMixin(MixinBase):
         self._rebuild_video_list()
 
     def _on_video_pass_to_cart(self, pass_id_str: str) -> None:
-        """The cart control on a section, from a row or the pane's list.
+        """The cart control on a pass, from a row or the pane's list.
 
-        One control, both ways: a section that is not in the cart goes in, and
+        One control, both ways: a pass that is not in the cart goes in, and
         one that is comes out. The button is green while it is in, so clicking
-        the green is how a section is taken back out again.
+        the green is how a pass is taken back out again.
         """
         try:
             pass_id = uuid.UUID(pass_id_str)
@@ -1062,7 +1062,7 @@ class VideoLibraryMixin(MixinBase):
         if pass_id_str in self._cart_pass_ids():
             self._take_pass_out_of_cart(pass_id)
             self._status_label.setText(
-                f"Took the {section_window(pass_)} section out of the cart."
+                f"Took the {section_window(pass_)} pass out of the cart."
             )
             return
         # A section whose footage is not on disk would fail the moment the cart
@@ -1071,18 +1071,18 @@ class VideoLibraryMixin(MixinBase):
         missing = self._missing_clips_for(pass_)
         if missing:
             self._status_label.setText(
-                f"{', '.join(missing)} cannot be found, so this section cannot be "
+                f"{', '.join(missing)} cannot be found, so this pass cannot be "
                 "processed. Add the footage again from where it lives now."
             )
             return
         self._add_pass_to_cart(pass_id)
 
     def _on_section_retrim(self, pass_id: str) -> None:
-        """Move a section's window. The trim is metadata, so it stays editable.
+        """Move a pass's window. The trim is metadata, so it stays editable.
 
-        A section that has already run keeps its runs: each one recorded the
+        A pass that has already run keeps its runs: each one recorded the
         window it actually processed, so the history stays true even once the
-        section is asking for a different one next time.
+        pass is asking for a different one next time.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
@@ -1152,8 +1152,8 @@ class VideoLibraryMixin(MixinBase):
         """The map-and-list dialog both filing steps use, wired to the page.
 
         Its arrow leaves for the Transects page, rejecting the dialog on the way
-        so no choice made in it is half applied. Whether the section survives the
-        trip is the caller's business: a section being reassigned already exists,
+        so no choice made in it is half applied. Whether the pass survives the
+        trip is the caller's business: a pass being reassigned already exists,
         and one being cut is written unfiled rather than thrown away.
         """
         from deepreefmap_gui.simple.transect_picker import TransectPickerDialog
@@ -1163,7 +1163,7 @@ class VideoLibraryMixin(MixinBase):
         return dialog
 
     def _on_section_reassign(self, pass_id: str) -> None:
-        """Change which transect a section belongs to, or its direction."""
+        """Change which transect a pass belongs to, or its direction."""
         store = self._try_survey_store()
         if store is None:
             return
@@ -1190,11 +1190,11 @@ class VideoLibraryMixin(MixinBase):
         self._refresh_survey_batch_tab()
 
     def _on_section_delete(self, pass_id: str) -> None:
-        """Remove a section, unless something was made from it.
+        """Remove a pass, unless something was made from it.
 
-        A section with runs is the record of what those runs processed, so it
+        A pass with runs is the record of what those runs processed, so it
         cannot quietly disappear from under them. Deleting the runs is Browse's
-        job, and doing it there leaves the section deletable here.
+        job, and doing it there leaves the pass deletable here.
         """
         store = self._try_survey_store()
         if store is None:
@@ -1206,13 +1206,13 @@ class VideoLibraryMixin(MixinBase):
         if runs:
             count = f"{len(runs)} run{'' if len(runs) == 1 else 's'}"
             self._status_label.setText(
-                f"This section has {count}. Delete them in Browse first."
+                f"This pass has {count}. Delete them in Browse first."
             )
             return
         if not confirm(
             self,
-            "Delete section",
-            f"Remove the {section_window(pass_)} section from "
+            "Delete pass",
+            f"Remove the {section_window(pass_)} pass from "
             f"{self._video_detail.entry.video.file_name if self._video_detail.entry else 'this clip'}?",
         ):
             return
@@ -1225,10 +1225,10 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail.setVisible(False)
         self._refresh_video_library()
         self._refresh_survey_batch_tab()
-        self._status_label.setText("Section deleted.")
+        self._status_label.setText("Pass deleted.")
 
     def _on_section_run_activated(self, run_dir_name: str) -> None:
-        """Open what this section produced, the same as Open does in Browse."""
+        """Open what this pass produced, the same as Open does in Browse."""
         root = Path(self._out_root_input.text()).expanduser()
         self._load_run_from_dir(root / run_dir_name)
 
@@ -1246,11 +1246,11 @@ class VideoLibraryMixin(MixinBase):
             return
         doomed = [p for p in clip.passes if not store.runs_for_pass(p.id)]
         if not doomed:
-            self._status_label.setText("Every section of this clip has runs.")
+            self._status_label.setText("Every pass of this clip has runs.")
             return
         if not confirm(
             self,
-            "Delete sections",
+            "Delete passes",
             f"Remove {_sections_phrase(len(doomed))} from {clip.video.file_name}? "
             "Nothing has been made from them.",
         ):
@@ -1260,7 +1260,7 @@ class VideoLibraryMixin(MixinBase):
             try:
                 store.delete_pass(pass_.id)
             except ValueError as exc:
-                logger.warning("Could not delete section %s: %s", pass_.id, exc)
+                logger.warning("Could not delete pass %s: %s", pass_.id, exc)
                 continue
             removed += 1
         self._selected_pass_id = None

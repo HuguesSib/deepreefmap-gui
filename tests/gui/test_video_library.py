@@ -368,7 +368,7 @@ def test_hiding_a_clip_takes_it_out_of_the_list_without_touching_the_survey(wind
 
 
 def test_sections_nothing_was_made_from_can_be_swept_off_a_clip(window, monkeypatch):
-    """Expected behaviour: the sweep spares any section a run stands on."""
+    """Expected behaviour: the sweep spares any pass a run stands on."""
     monkeypatch.setattr("deepreefmap_gui.runs.videos.confirm", lambda *a, **k: True)
     store = window._survey_store()
     video = _seed(store, "swept.mp4", passes=3, statuses=("succeeded",))
@@ -423,9 +423,9 @@ def test_a_deleted_clip_stops_counting_as_hidden(window):
 def test_a_new_section_is_cut_scrubbed_and_filed_but_not_carted(
     window, tmp_path, monkeypatch
 ):
-    """The whole reason the page exists: footage in, a filed section out.
+    """The whole reason the page exists: footage in, a filed pass out.
 
-    Expected behaviour: the cart stays as the user left it. Cutting a section
+    Expected behaviour: the cart stays as the user left it. Cutting a pass
     and choosing to run it are two decisions, and only the row's cart control
     makes the second.
     """
@@ -468,7 +468,7 @@ def test_a_new_section_is_cut_scrubbed_and_filed_but_not_carted(
     # over one swim, so it is refused and the existing one is shown instead.
     window._on_video_new_section()
     assert len(store.list_passes()) == 1
-    assert "already has a section" in window._status_label.text()
+    assert "already has a pass" in window._status_label.text()
     assert window._selected_pass_id == str(passes[0].id)
 
 
@@ -584,8 +584,8 @@ def test_a_section_shows_the_sessions_it_has_run_in(window):
 def test_a_cart_row_opens_its_section_here(window):
     """Scenario: the transect, direction or trim of a cart row is clicked.
 
-    Expected behaviour: the Videos page comes forward with that section picked
-    and scrolled to, because this is where a section is described.
+    Expected behaviour: the Videos page comes forward with that pass picked
+    and scrolled to, because this is where a pass is described.
     """
     store = window._survey_store()
     video = _seed(store, "GX010051.MP4")
@@ -604,7 +604,7 @@ def test_the_section_card_files_its_actions_under_one_menu(window):
     """Scenario: four full-width buttons in a 260px pane truncated every label.
 
     Expected behaviour: the occasional actions go under More…, the same shape as
-    Browse, and the cart is not among them: the section's own row carries that
+    Browse, and the cart is not among them: the pass's own row carries that
     control and shows its state on it.
     """
     store = window._survey_store()
@@ -617,7 +617,7 @@ def test_the_section_card_files_its_actions_under_one_menu(window):
     panel = window._section_detail
     assert not hasattr(panel, "cart_btn")
     labels = [a.text() for a in panel.more_btn.menu().actions() if not a.isSeparator()]
-    assert labels == ["Adjust trim…", "Change transect…", "Delete section"]
+    assert labels == ["Adjust trim…", "Change transect…", "Delete pass"]
 
 
 def test_the_filing_fact_opens_the_dialog_that_sets_it(window):
@@ -679,7 +679,7 @@ def test_each_finished_run_row_carries_an_archive_icon(window):
     """Scenario: sending one run's outputs meant finding it in Browse.
 
     Expected behaviour: every finished run row wears the archive icon in the
-    section rows' style, and pressing one offers exactly that run."""
+    pass rows' style, and pressing one offers exactly that run."""
     store = window._survey_store()
     video = _seed(store, "GX010070.MP4")
     pass_ = _cut(store, video)
@@ -861,7 +861,7 @@ def test_a_section_nothing_was_made_from_can_be_deleted(window, monkeypatch):
 
 
 def test_retrimming_writes_the_new_window_back(window, tmp_path, monkeypatch):
-    """The trim is metadata, so it stays editable after a section has been run."""
+    """The trim is metadata, so it stays editable after a pass has been run."""
     from PySide6.QtWidgets import QDialog
 
     store = window._survey_store()
@@ -925,10 +925,10 @@ def test_a_clip_that_is_there_offers_to_be_cut(window, tmp_path):
 
 
 def test_the_clip_pane_lists_sections_as_rows_that_act(window):
-    """Scenario: the pane's sections were text in a list, actionable only by
+    """Scenario: the pane's passes were text in a list, actionable only by
     right click.
 
-    Expected behaviour: one row per section, each carrying the transect chip and
+    Expected behaviour: one row per pass, each carrying the transect chip and
     the three buttons the wide list's rows carry.
     """
     store = window._survey_store()
@@ -987,7 +987,7 @@ def test_the_card_shows_a_missing_file_and_offers_its_folder(window, tmp_path):
     button looked live until the status bar refused it.
 
     Expected behaviour: the broken link is beside the clip's name, clickable,
-    and the section's trim button is marked in the meantime.
+    and the pass's trim button is marked in the meantime.
     """
     store = window._survey_store()
     video = _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
@@ -1013,7 +1013,7 @@ def test_the_card_shows_a_missing_file_and_offers_its_folder(window, tmp_path):
 
 
 def test_a_section_with_no_footage_cannot_be_carted_or_run(window, tmp_path):
-    """Scenario: a section whose clip is on an unplugged drive went into the
+    """Scenario: a pass whose clip is on an unplugged drive went into the
     cart, and the session stopped on it after everything before it had run.
 
     Expected behaviour: the cart refuses it, and a cart that already holds one
@@ -1081,7 +1081,7 @@ def test_both_lists_say_the_same_thing_about_the_cart(window):
 
 def test_picking_a_section_highlights_it_in_both_lists(window):
     """Scenario: the pane filled itself down a second path that neither
-    highlighted the row nor read the cart, so picking a section lit it in the
+    highlighted the row nor read the cart, so picking a pass lit it in the
     list and left the pane's copy of it looking untouched.
 
     Expected behaviour: one filler, so the two cannot disagree.
@@ -1153,11 +1153,11 @@ def test_a_fresh_install_accepts_dropped_clips(window, tmp_path, monkeypatch):
 
 
 def test_leaving_for_the_transects_page_keeps_the_section(window, tmp_path, monkeypatch):
-    """The arrow's tooltip promises the section is kept, unfiled.
+    """The arrow's tooltip promises the pass is kept, unfiled.
 
     Written against the caller rather than the dialog: the dialog sets the flag
     correctly and always did, and a test that only checked the dialog passed
-    while the section was being thrown away.
+    while the pass was being thrown away.
     """
     from PySide6.QtWidgets import QDialog
 
@@ -1193,7 +1193,7 @@ def test_leaving_for_the_transects_page_keeps_the_section(window, tmp_path, monk
 
 
 def test_cancelling_the_picker_still_cuts_nothing(window, tmp_path, monkeypatch):
-    """Keeping the section on the way out must not turn Cancel into a save."""
+    """Keeping the pass on the way out must not turn Cancel into a save."""
     from PySide6.QtWidgets import QDialog
 
     store = window._survey_store()
@@ -1330,7 +1330,7 @@ def test_the_sweep_takes_the_clips_nothing_was_cut_from(window):
     cut = _seed(store, "cut.mp4", passes=1)
     show_videos(window)
 
-    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+    assert window._video_clear_btn.text() == "Remove 1 clip with no passes"
     window._video_clear_btn.click()
     window._video_clear_btn.click()
 
@@ -1344,7 +1344,7 @@ def test_a_clip_with_sections_and_no_runs_is_never_swept(window):
     video = _seed(store, "trimmed.mp4", passes=2)
     show_videos(window)
 
-    assert window._video_clear_btn.text() == "Remove clips with no sections"
+    assert window._video_clear_btn.text() == "Remove clips with no passes"
     assert not window._video_clear_btn.isEnabled()
     assert store.get_video(video.id) is not None
 
@@ -1354,10 +1354,10 @@ def test_the_sweep_counts_only_what_is_on_screen(window):
     _seed(store, "alpha.mp4")
     _seed(store, "beta.mp4")
     show_videos(window)
-    assert window._video_clear_btn.text() == "Remove 2 clips with no sections"
+    assert window._video_clear_btn.text() == "Remove 2 clips with no passes"
 
     window._video_search.setText("alph")
-    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+    assert window._video_clear_btn.text() == "Remove 1 clip with no passes"
 
     window._video_search.setText("")
     window._on_video_filter_changed(VIDEO_PROCESSED)
@@ -1371,7 +1371,7 @@ def test_the_sweep_leaves_a_hidden_clip_where_it_is(window):
     show_videos(window)
     window._on_video_hide(str(hidden.id))
 
-    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+    assert window._video_clear_btn.text() == "Remove 1 clip with no passes"
     window._video_clear_btn.click()
     window._video_clear_btn.click()
 
