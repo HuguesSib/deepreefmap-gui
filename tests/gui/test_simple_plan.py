@@ -2,8 +2,8 @@ import pytest
 from _factories import make_transect
 
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
-from deepreefmap_gui.simple.plan import DRAFT_ID
-from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
+from deepreefmap_gui.simple.plan import DRAFT_ID, SITE_REQUIRED
+from deepreefmap_gui.survey.models import RunRecord, Site, TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
 
@@ -35,8 +35,30 @@ def select_row(window, index):
     tree.setCurrentItem(tree.topLevelItem(index))
 
 
+def pick_site(window, name="Japanese Garden"):
+    """Add a site to the survey and choose it in the transect form."""
+    site = Site(name=name)
+    window._survey_store().add_site(site)
+    window._refresh_site_choices()
+    window._set_form_site(site.id)
+    return site
+
+
+def test_a_transect_is_refused_without_a_site(window):
+    w = window
+    w._tr_name_input.setText("T1")
+    type_coord(w, "start", "-17.5 177.1")
+    type_coord(w, "end", "-17.5005, 177.1005")
+    assert w._survey_store().list_transects() == []
+    assert w._status_label.text() == SITE_REQUIRED
+    pick_site(w)
+    w._maybe_autosave()
+    assert len(w._survey_store().list_transects()) == 1
+
+
 def test_transect_autosaves_once_complete(window):
     w = window
+    pick_site(w)
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5 177.1")
     assert w._survey_store().list_transects() == []
@@ -97,7 +119,8 @@ def test_new_transect_arrives_named_and_ready_to_draw(window):
     Expected behaviour: nothing to name and nothing to arm in between.
     """
     w = window
-    w._survey_store().add_transect(make_transect("Transect 1"))
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect("Transect 1", site_id=site.id))
     w._refresh_transect_list()
     w._on_transect_new()
     assert w._tr_name_input.text() == "Transect 2"
@@ -152,6 +175,7 @@ def test_draft_line_appears_once_both_endpoints_set(window):
     assert not any(t.id == "draft" for t in w._plan_map._transects)
     w._plan_map.map_clicked.emit(-17.5005, 177.1005)
     assert any(t.id == "draft" for t in w._plan_map._transects)
+    pick_site(w)
     w._tr_name_input.setText("T1")
     w._on_transect_save()
     assert not any(t.id == "draft" for t in w._plan_map._transects)
@@ -160,7 +184,8 @@ def test_draft_line_appears_once_both_endpoints_set(window):
 
 def test_duplicate_name_reports_and_keeps_one(window):
     w = window
-    w._survey_store().add_transect(make_transect())
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect(site_id=site.id))
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.6 177.2")
     type_coord(w, "end", "-17.6005 177.2005")
@@ -171,7 +196,8 @@ def test_duplicate_name_reports_and_keeps_one(window):
 
 def test_edit_selected_transect_updates_row(window):
     w = window
-    w._survey_store().add_transect(make_transect())
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect(site_id=site.id))
     w._refresh_transect_list()
     select_row(w, 0)
     assert w._tr_name_input.text() == "T1"
@@ -189,9 +215,7 @@ def test_delete_with_passes_is_blocked(window):
     video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
     store.add_transect(transect)
     store.upsert_video(video)
-    store.add_pass(
-        TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0)
-    )
+    store.add_pass(TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0))
     w._refresh_transect_list()
     select_row(w, 0)
     w._on_transect_delete()
@@ -247,6 +271,7 @@ def test_pick_both_walks_start_then_end(window):
 
 def test_notes_round_trip_through_the_store(window):
     w = window
+    pick_site(w)
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "-17.5005, 177.1005")
@@ -290,7 +315,7 @@ def test_a_selected_transect_is_locked_against_dragging(window):
 
 def test_leaving_edit_mode_saves_and_locks(window):
     w = window
-    transect = make_transect()
+    transect = make_transect(site_id=pick_site(w).id)
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
     select_row(w, 0)
@@ -347,9 +372,7 @@ def test_columns_count_the_passes_and_runs_on_each_transect(window):
 def two_transects(w):
     w._plan_map.resize(400, 300)
     w._survey_store().add_transect(make_transect("Near"))
-    w._survey_store().add_transect(
-        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
-    )
+    w._survey_store().add_transect(make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001))
     w._refresh_transect_list()
 
 
@@ -421,9 +444,7 @@ def test_the_scope_is_offered_only_where_it_filters_something(window):
     chips = w._plan_scope_chips
     assert not chips.isVisibleTo(chips.parentWidget())
 
-    w._survey_store().add_transect(
-        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
-    )
+    w._survey_store().add_transect(make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001))
     w._refresh_transect_list()
     assert chips.isVisibleTo(chips.parentWidget())
 
@@ -568,9 +589,7 @@ def test_a_long_transect_name_never_pushes_the_figures_off_the_table(window, qap
     """
     from deepreefmap_gui.simple.plan import PLAN_COLUMNS
 
-    window._survey_store().add_transect(
-        make_transect("Vatu-i-Ra North Wall repeat 2024-03 deep")
-    )
+    window._survey_store().add_transect(make_transect("Vatu-i-Ra North Wall repeat 2024-03 deep"))
     window.resize(width, 800)
     window.show()
     window._go_to_section("transects")

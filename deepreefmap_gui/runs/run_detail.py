@@ -175,9 +175,7 @@ class DetailCard(QWidget):
         button.setProperty("pad", "none")
         self.title_row.addWidget(button)
 
-    def add_actions(
-        self, primary: QPushButton | None, *secondary: QAbstractButton
-    ) -> None:
+    def add_actions(self, primary: QPushButton | None, *secondary: QAbstractButton) -> None:
         """Close the card with what it is for, and quiet actions pushed right.
 
         Added at the point the pane calls this, so it lands under whatever the
@@ -216,16 +214,10 @@ def _related_text(related: int) -> str:
 
 
 def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
-    """Every fact the run pane shows, always, and in one order.
+    """Every fact the run pane shows, in one fixed order.
 
-    Fixed rather than assembled from whatever the run happens to carry. The pane
-    is arrowed through one run at a time, and a schema that grows a row for a run
-    with points and drops it for one without rewrote itself under the cursor on
-    every keypress -- so the fact you were reading moved as you read it.
-
-    Absent facts say so instead of vanishing, and say it two different ways:
-    a run genuinely has no points, where a manifest written before the
-    provenance block simply never recorded its models.
+    Absent facts say so rather than dropping the row: a run with no points reads
+    differently from a manifest that never recorded its models.
     """
     manifest = entry.manifest
     provenance = dict(provenance_rows(manifest))
@@ -288,9 +280,7 @@ class RunDetailPanel(DetailCard):
         # Ignored horizontally: a pixmap's size hint is its own width, so the
         # thumbnail would otherwise widen the pane to fit itself and shove the
         # run table aside every time a selection changed.
-        self.ortho.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
-        )
+        self.ortho.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.ortho.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ortho.setToolTip("Click to open the ortho at full size")
         self.ortho.clicked.connect(self._open_ortho)
@@ -378,20 +368,24 @@ class RunDetailPanel(DetailCard):
     def entry(self) -> RunEntry | None:
         return self._entry
 
-    def set_archive_state(self, state: str | None) -> None:
-        """Paint the archive's answer, or nothing when nobody has asked it."""
+    def set_archive_state(self, state: str | None, note: str | None = None) -> None:
+        """Paint the archive's answer, or nothing when nobody has asked it.
+
+        ``note`` replaces the state's stock tooltip, for a failure's own words.
+        """
         faces = {
-            "archived": ("Outputs on server ✓", SUCCESS, "Every output archived and verified."),
+            "archived": ("Outputs on server", SUCCESS, "Every output archived and verified."),
             "partial": (
                 "Outputs partly on server",
                 WARN_TEXT,
-                "Some outputs are archived; archive again to send the rest.",
+                "Some outputs are archived. Archive again to send the rest.",
             ),
             "pending": (
                 "Outputs uploading…",
                 WARN_TEXT,
                 "Offered to the registry, not verified yet.",
             ),
+            "uploading": ("Archiving…", WARN_TEXT, "Sending this run's outputs to the registry."),
             "failed": (
                 "Archive failed",
                 ERROR,
@@ -405,7 +399,7 @@ class RunDetailPanel(DetailCard):
         text, colour, tip = face
         self.archive_state.setText(text)
         self.archive_state.setStyleSheet(f"color: {colour};")
-        self.archive_state.setToolTip(tip)
+        self.archive_state.setToolTip(note or tip)
         self.archive_state.setVisible(True)
 
     def _request_archive(self) -> None:
@@ -426,9 +420,7 @@ class RunDetailPanel(DetailCard):
         """Hide the opener where opening means nothing: View mode is already in it."""
         self._open_action_allowed = visible
         self.open_btn.setVisible(
-            visible
-            and self._entry is not None
-            and not (self._entry.incomplete or self._entry.data_missing)
+            visible and self._entry is not None and not (self._entry.incomplete or self._entry.data_missing)
         )
 
     def _request_log(self) -> None:
@@ -467,20 +459,12 @@ class RunDetailPanel(DetailCard):
         self._show_cover(entry.run_dir)
         error = entry.db_run.error if entry.db_run is not None else ""
         if entry.incomplete:
-            self.error.setText(
-                _diagnose_failure(error)
-                if error
-                else "This run did not finish and wrote no manifest."
-            )
+            self.error.setText(_diagnose_failure(error) if error else "This run did not finish and wrote no manifest.")
         elif entry.data_missing:
-            self.error.setText("The output data was removed. Only this record remains.")
+            self.error.setText("The output data was removed.")
         self.error.setVisible(broken)
         self._entry = entry
-        # Disabled and explained rather than dropped: a menu whose items move
-        # between runs is one you have to read before every use.
-        # An incomplete run still has a command worth copying: the run_command.sh
-        # it wrote before it failed is exactly what a diagnosis starts from. A
-        # data-removed run kept no manifest to build one from.
+        # Unavailable actions stay visible, disabled, with the reason in the tooltip.
         copy = self.menu_actions["copy_command"]
         copy.setEnabled(not entry.data_missing)
         copy.setToolTip(
@@ -492,19 +476,13 @@ class RunDetailPanel(DetailCard):
         # nothing to rename.
         rename = self.menu_actions["rename"]
         rename.setEnabled(not broken)
-        rename.setToolTip(
-            "This run has no manifest to carry a name."
-            if broken
-            else "Change what this run is called"
-        )
-        # The registry catalogues artefacts against the run row, so a
-        # folder-only run has nothing to hang them off, and a run whose data
-        # went has nothing left to send.
+        rename.setToolTip("This run has no manifest to carry a name." if broken else "Change what this run is called")
+        # The registry files artefacts against the run row.
         archive = self.menu_actions["archive"]
         if entry.db_run is None:
-            why = "This run is not in the survey database, so the registry has no record to file it under."
+            why = "Not in the survey database."
         elif entry.data_missing:
-            why = "The output data was removed, so there is nothing to send."
+            why = "The output data was removed."
         elif status != "succeeded":
             why = "Only a finished run's outputs can be archived."
         else:
@@ -521,11 +499,7 @@ class RunDetailPanel(DetailCard):
         log = self.menu_actions["show_log"]
         log.setVisible(not broken)
         log.setEnabled(has_log)
-        log.setToolTip(
-            "Show this run's log, including why it stopped"
-            if has_log
-            else "This run wrote no log."
-        )
+        log.setToolTip("Show this run's log, including why it stopped" if has_log else "This run wrote no log.")
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:
@@ -553,15 +527,8 @@ class RunDetailPanel(DetailCard):
     def _rescale_ortho(self) -> None:
         """Letterbox the strip into a band of constant height.
 
-        Driven off this panel's width rather than the label's: the label is
-        width-Ignored so it can never widen the pane, which also means its own
+        Driven off this panel's width: the label is width-Ignored, so its own
         width lags a resize by a layout pass.
-
-        Fitted to the band rather than sized to the image. Reserving exactly the
-        image's height meant a 2000x400 ortho and a 2000x900 one reserved
-        different amounts, so everything below the picture moved as the table was
-        arrowed through. The band is held even when there is no strip to put in
-        it, for the same reason.
         """
         if self._ortho_source is None:
             self.ortho.clear()

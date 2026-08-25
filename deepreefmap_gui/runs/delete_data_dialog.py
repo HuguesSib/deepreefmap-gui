@@ -28,12 +28,7 @@ class DeleteChoice(Enum):
 
 @dataclass(frozen=True)
 class DeleteScope:
-    """What each choice would remove, phrased for one run or a whole session.
-
-    The record's cost is stated outright: a run row is a few kilobytes, so
-    removing it frees nothing and only forgets. The dialog exists to make that
-    trade visible next to the data's real size.
-    """
+    """What each choice would remove, phrased for one run or a whole session."""
 
     title: str
     subject: str
@@ -47,11 +42,7 @@ class DeleteScope:
 
 
 class DeleteDataDialog(QDialog):
-    """Pick what goes. Nothing is touched until Delete is pressed.
-
-    Data is the recommended choice: outputs can be reproduced from the record,
-    where the record cannot be reproduced from anything.
-    """
+    """Pick what goes. Nothing is touched until Delete is pressed."""
 
     def __init__(self, scope: DeleteScope, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -85,9 +76,7 @@ class DeleteDataDialog(QDialog):
         ]
         recommended = DeleteChoice.DATA if scope.data_present else DeleteChoice.METADATA
         for choice, name, detail, enabled in options:
-            layout.addWidget(
-                self._build_option(choice, name, detail, enabled, choice is recommended)
-            )
+            layout.addWidget(self._build_option(choice, name, detail, enabled, choice is recommended))
 
         for note in scope.extra_notes:
             label = QLabel(note)
@@ -95,24 +84,18 @@ class DeleteDataDialog(QDialog):
             label.setStyleSheet(f"color: {TEXT_MUTED};")
             layout.addWidget(label)
         if scope.keeps:
-            keeps = QLabel(
-                "Kept either way:\n" + "\n".join(f"• {line}" for line in scope.keeps)
-            )
+            keeps = QLabel("Kept either way:\n" + "\n".join(f"• {line}" for line in scope.keeps))
             keeps.setWordWrap(True)
             keeps.setStyleSheet(f"color: {TEXT_MUTED};")
             layout.addWidget(keeps)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Delete")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _build_option(
-        self, choice: DeleteChoice, name: str, detail: str, enabled: bool, checked: bool
-    ) -> QWidget:
+    def _build_option(self, choice: DeleteChoice, name: str, detail: str, enabled: bool, checked: bool) -> QWidget:
         holder = QWidget()
         box = QVBoxLayout(holder)
         box.setContentsMargins(0, 0, 0, 0)

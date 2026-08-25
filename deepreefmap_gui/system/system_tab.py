@@ -83,17 +83,13 @@ class SystemPanelMixin(MixinBase):
             self._sys_gauges[key] = (bar, value)
         layout.addLayout(grid)
 
-        # Static machine specs the gauges don't cover (no benchmark: nothing is
-        # run, so the honest thing is to report the hardware, not infer capacity).
+        # Static machine specs the gauges do not cover.
         self._machine_specs_label = QLabel("")
         self._machine_specs_label.setTextFormat(Qt.TextFormat.RichText)
         self._machine_specs_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._machine_specs_label)
 
-        # Recorded-run summary: what past runs actually cost and how close to a
-        # crash each came. A divider plus larger caption make this a section
-        # heading of its own, so the per-group workload titles below read as its
-        # children rather than siblings. The per-run meters are real
+        # Recorded-run summary: peak memory per past run. The meters are
         # QProgressBars rebuilt into the container on entering the view.
         runs_divider = QFrame()
         runs_divider.setFrameShape(QFrame.Shape.HLine)
@@ -104,17 +100,14 @@ class SystemPanelMixin(MixinBase):
         self._recorded_runs_caption.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._recorded_runs_caption)
 
-        # Model-combination filter: history fills up fast, so default to the most
-        # recent run's mapping+segmentation pairing and let the user widen to all.
+        # Model-combination filter, defaulting to the most recent run's pairing.
         self._recorded_runs_filter_row = QWidget()
         filter_layout = QHBoxLayout(self._recorded_runs_filter_row)
         filter_layout.setContentsMargins(0, 3, 0, 0)
         filter_label = muted_label("Model combination")
         filter_layout.addWidget(filter_label)
         self._recorded_runs_filter_combo = QComboBox()
-        self._recorded_runs_filter_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToContents
-        )
+        self._recorded_runs_filter_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._recorded_runs_filter_combo.currentIndexChanged.connect(self._render_recorded_runs)
         filter_layout.addWidget(self._recorded_runs_filter_combo, 1)
         layout.addWidget(self._recorded_runs_filter_row)
@@ -129,8 +122,7 @@ class SystemPanelMixin(MixinBase):
 
         layout.addStretch()
 
-        # 1 Hz gauge tick, run only while the gauges are on screen so an idle
-        # background poll never costs anything.
+        # 1 Hz gauge tick, run only while the gauges are on screen.
         self._sys_timer = QTimer(self)
         self._sys_timer.setInterval(1000)
         self._sys_timer.timeout.connect(self._refresh_system_gauges)
@@ -148,8 +140,7 @@ class SystemPanelMixin(MixinBase):
         if not self._recorded_run_groups:
             self._clear_layout(self._recorded_runs_layout)
             self._recorded_runs_caption.setText(
-                f"{self._RECORDED_RUNS_HEADING}<br>"
-                f"<span style='color:{TEXT_MUTED}'>None yet.</span>"
+                f"{self._RECORDED_RUNS_HEADING}<br><span style='color:{TEXT_MUTED}'>None yet.</span>"
             )
             self._recorded_runs_filter_row.hide()
             return
@@ -207,9 +198,7 @@ class SystemPanelMixin(MixinBase):
             # Under a specific combination every group shares it, so the model
             # subtitle is redundant with the dropdown. Only show it under "All".
             if selected is None:
-                models = " &middot; ".join(
-                    str(params.get(k, "?")) for k in ("mapping_backend", "segmentation_model")
-                )
+                models = " &middot; ".join(str(params.get(k, "?")) for k in ("mapping_backend", "segmentation_model"))
                 subtitle = QLabel(f"<span style='color:{TEXT_MUTED}; font-size:{FONT_SM}'>{models}</span>")
                 subtitle.setTextFormat(Qt.TextFormat.RichText)
                 vbox.addWidget(subtitle)
@@ -224,7 +213,11 @@ class SystemPanelMixin(MixinBase):
             basis = " (whole machine)" if run.get("machine_basis") else ""
             self._add_meter(grid, 0, f"RAM{basis}", ram, total, True)
             self._add_meter(
-                grid, 1, f"Swap{basis}", swap, run["total_swap_bytes"],
+                grid,
+                1,
+                f"Swap{basis}",
+                swap,
+                run["total_swap_bytes"],
                 run.get("swap_recorded", False),
             )
             self._add_meter(grid, 2, "VRAM", run["peak_vram_bytes"], run["gpu_total_vram_bytes"], True)
@@ -291,14 +284,16 @@ class SystemPanelMixin(MixinBase):
         self._set_gauge("cpu", util.cpu_percent, f"{util.cpu_percent:.0f}%")
         if util.swap_percent is not None:
             self._set_gauge(
-                "swap", util.swap_percent,
+                "swap",
+                util.swap_percent,
                 f"{format_bytes(util.swap_used_bytes)} / {format_bytes(util.swap_total_bytes)}",
             )
         else:
             self._set_gauge("swap", None, "none")
         if util.vram_percent is not None:
             self._set_gauge(
-                "vram", util.vram_percent,
+                "vram",
+                util.vram_percent,
                 f"{format_bytes(util.vram_used_bytes)} / {format_bytes(util.vram_total_bytes)}",
             )
         else:

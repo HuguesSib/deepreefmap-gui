@@ -21,8 +21,8 @@ from deepreefmap_gui.core.theme import ERROR
 from deepreefmap_gui.survey.models import Campaign, Site
 from deepreefmap_gui.survey.store import SurveyStore
 
-SITE_NOTE = "A named place on a reef. Transects belong to a site."
-CAMPAIGN_NOTE = "One trip, named as the archive folder is: 2025_10_eritrea."
+SITE_NOTE = "A named place on a reef."
+CAMPAIGN_NOTE = "One trip, named like 2025_10_eritrea."
 
 
 class _CatalogueDialog(QDialog):
@@ -37,9 +37,7 @@ class _CatalogueDialog(QDialog):
         self.error = QLabel("")
         self.error.setWordWrap(True)
         self.error.setStyleSheet(f"color: {ERROR};")
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self._save)
         self.buttons.rejected.connect(self.reject)
 

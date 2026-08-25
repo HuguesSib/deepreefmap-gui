@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QMouseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.icons import (
+    DEFAULT_INK,
     ICON_SM,
     check_icon,
     icon_pixmap,
@@ -39,6 +40,7 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_detail import DetailCard
+from deepreefmap_gui.runs.video_rows import icon_button, set_button_dead
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
 # The href behind the transect-and-direction fact. Both are set in one dialog,
@@ -48,20 +50,19 @@ _FILING_LINK = "filing"
 _NO_SESSION = "No session recorded"
 
 ARCHIVE_RUN = "Archive this run's outputs"
-ARCHIVE_RUN_TOOLTIP = (
-    "Send this run's outputs to the registry's archive. "
-    "The clip's own footage is archived from the clip card."
-)
+ARCHIVE_RUN_TOOLTIP = "Send this run's outputs to the registry's archive."
 # Why the icon is dead on a run that never finished. The other reasons a run
 # cannot be archived (no database row, outputs cleared away) belong to the run
 # card in Browse, which can see them; a row here always has its record.
 ARCHIVE_UNFINISHED = "Only a finished run's outputs can be archived."
+ARCHIVING = "Archiving…"
 
 # What the registry holds of one run, as its icon says it.
 _ARCHIVE_FACES = {
-    "archived": "Outputs on server. Archiving again verifies them and sends nothing new.",
+    "archived": "Outputs on server. Press to verify them again.",
     "partial": "Some outputs are on the server. Press to send the rest.",
     "pending": "Offered to the registry, not verified yet. Press to resume.",
+    "uploading": ARCHIVING,
     "failed": "The registry could not verify an upload. Press to archive again.",
 }
 
@@ -99,9 +100,7 @@ class RunRow(QWidget):
     activated = Signal(str)
     archive_requested = Signal(object)
 
-    def __init__(
-        self, run: RunRecord, text: str, tooltip: str, parent: QWidget | None = None
-    ) -> None:
+    def __init__(self, run: RunRecord, text: str, tooltip: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.run = run
         self._full = text
@@ -120,11 +119,7 @@ class RunRow(QWidget):
         self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row.addWidget(self.label, 1)
         self.setToolTip(tooltip)
-        self.archive_btn = QToolButton()
-        self.archive_btn.setIconSize(QSize(ICON_SM, ICON_SM))
-        self.archive_btn.setAccessibleName(ARCHIVE_RUN)
-        self.archive_btn.setProperty("quiet", "true")
-        self.archive_btn.setProperty("pad", "none")
+        self.archive_btn = icon_button(upload_icon(), ARCHIVE_RUN, ARCHIVE_RUN_TOOLTIP)
         self.archive_btn.clicked.connect(self._on_archive_clicked)
         row.addWidget(self.archive_btn)
         self.set_archive_state(None)
@@ -139,15 +134,19 @@ class RunRow(QWidget):
         """A run that did not finish wrote no outputs to send."""
         return self.run.status == "succeeded"
 
-    def set_archive_state(self, state: str | None) -> None:
-        """Dress the button as what the registry holds of this run, if asked."""
+    def set_archive_state(self, state: str | None, note: str | None = None) -> None:
+        """Dress the button as what the registry holds of this run, if asked.
+
+        ``note`` replaces the state's stock tooltip, for a failure's own words.
+        """
+        set_button_dead(self.archive_btn, not self.archivable)
         if not self.archivable:
             self.archive_btn.setIcon(upload_icon(color=QColor(DISABLED_FG)))
             self.archive_btn.setToolTip(ARCHIVE_UNFINISHED)
             return
         told = _ARCHIVE_FACES.get(state or "")
         if told is None:
-            self.archive_btn.setIcon(upload_icon())
+            self.archive_btn.setIcon(upload_icon(color=QColor(DEFAULT_INK)))
             self.archive_btn.setToolTip(ARCHIVE_RUN_TOOLTIP)
             return
         # A tick for content already up, the upload glyph in the colour of what
@@ -155,10 +154,8 @@ class RunRow(QWidget):
         if state == "archived":
             self.archive_btn.setIcon(check_icon())
         else:
-            self.archive_btn.setIcon(
-                upload_icon(color=QColor(ERROR if state == "failed" else WARNING))
-            )
-        self.archive_btn.setToolTip(told)
+            self.archive_btn.setIcon(upload_icon(color=QColor(ERROR if state == "failed" else WARNING)))
+        self.archive_btn.setToolTip(note or told)
 
     def _on_archive_clicked(self) -> None:
         if self.archivable:
@@ -167,9 +164,7 @@ class RunRow(QWidget):
     def _apply_elide(self) -> None:
         """Fit the line to the label, from the middle: the session names it and
         the outcome and date end it, so both ends carry something."""
-        shown = self.label.fontMetrics().elidedText(
-            self._full, Qt.TextElideMode.ElideMiddle, self.label.width()
-        )
+        shown = self.label.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, self.label.width())
         if shown != self.label.text():
             self.label.setText(shown)
 
@@ -268,10 +263,15 @@ class SectionDetailPanel(DetailCard):
     def run_rows(self) -> list[RunRow]:
         return list(self._run_rows)
 
-    def paint_archive_states(self, state_for_run: Callable[[object], str | None]) -> None:
+    def paint_archive_states(
+        self,
+        state_for_run: Callable[[object], str | None],
+        note_for_run: Callable[[object], str | None] | None = None,
+    ) -> None:
         """Dress each run row's archive icon from the probe's answers."""
         for row in self._run_rows:
-            row.set_archive_state(state_for_run(row.run.id))
+            note = None if note_for_run is None else note_for_run(row.run.id)
+            row.set_archive_state(state_for_run(row.run.id), note)
 
     def _on_fact_link(self, href: str) -> None:
         if href == _FILING_LINK:
@@ -345,9 +345,7 @@ class SectionDetailPanel(DetailCard):
         delete = self.menu_actions["delete"]
         delete.setEnabled(not runs)
         delete.setToolTip(
-            "This pass has runs. Delete them in Browse first."
-            if runs
-            else "Remove this cut. The clip itself is left alone."
+            "This pass has runs. Delete them in Browse first." if runs else "Delete this pass from the clip."
         )
         self._pass = pass_
 

@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QScrollArea,
     QStackedWidget,
     QToolButton,
@@ -41,7 +40,6 @@ from deepreefmap_gui.core.theme import (
     GUTTER,
     SPACE_SM,
     SPACE_XS,
-    TEXT_MUTED,
     UPDATE,
     WARNING,
 )
@@ -189,9 +187,7 @@ class SimpleMachineMixin(MixinBase):
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setToolTip(_VIEW_TIPS[view])
-            button.setStyleSheet(
-                segmented_qss(first=index == 0, last=index == len(MACHINE_VIEWS) - 1)
-            )
+            button.setStyleSheet(segmented_qss(first=index == 0, last=index == len(MACHINE_VIEWS) - 1))
             button.clicked.connect(partial(self._set_machine_view, view))
             group.addButton(button)
             switch.addWidget(button)
@@ -247,10 +243,6 @@ class SimpleMachineMixin(MixinBase):
         outer.setSpacing(GUTTER)
 
         card, card_layout = section_card()
-        caption = QLabel("The version installed here, and any newer one available.")
-        caption.setWordWrap(True)
-        caption.setStyleSheet(f"color: {TEXT_MUTED};")
-        card_layout.addWidget(caption)
         self._machine_updates_host = QWidget()
         host_layout = QVBoxLayout(self._machine_updates_host)
         host_layout.setContentsMargins(0, 0, 0, 0)

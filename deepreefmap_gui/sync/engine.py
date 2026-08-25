@@ -63,9 +63,7 @@ logger = logging.getLogger(__name__)
 # The sections this device authors, the only ones a watermark or a pending count
 # means anything for. The rest travel as ancestors of what changed: the registry
 # reads them and refuses to write them, so no answer ever advances them.
-AUTHORED_SECTIONS: tuple[str, ...] = tuple(
-    name for name in SYNC_SECTIONS if name in contract.PUSH_SECTIONS
-)
+AUTHORED_SECTIONS: tuple[str, ...] = tuple(name for name in SYNC_SECTIONS if name in contract.PUSH_SECTIONS)
 
 # Machine-local sync position. The cursor is the registry's own monotonic
 # server_seq; a watermark is the newest updated_at that section has had accepted.
@@ -551,9 +549,7 @@ class SyncEngine:
             runs_without_passes=_held_ids(held["runs"], HELD_FOR_PARENT),
             transects_without_sites=_held_ids(held["transects"], HELD_FOR_PARENT),
             behind_set_aside=tuple(
-                row_id
-                for name in HELD_SECTIONS
-                for row_id in _held_ids(held[name], HELD_BEHIND_SET_ASIDE)
+                row_id for name in HELD_SECTIONS for row_id in _held_ids(held[name], HELD_BEHIND_SET_ASIDE)
             ),
             set_aside_cleared=tuple(cleared),
             set_aside_discarded=tuple(discarded),
@@ -606,9 +602,7 @@ class SyncEngine:
         """Keep the newest QUARANTINE_MAX, so a registry colliding on everything
         cannot grow the blob until the database is the problem instead."""
         kept = list(entries)[-QUARANTINE_MAX:]
-        self._store.set_sync_state(
-            QUARANTINE_KEY, json.dumps(kept, sort_keys=True) if kept else None
-        )
+        self._store.set_sync_state(QUARANTINE_KEY, json.dumps(kept, sort_keys=True) if kept else None)
 
     def _offer_set_aside_again(
         self,
@@ -708,9 +702,7 @@ class SyncEngine:
             unknown=wire.unknown_sections(raw),
             refused=tuple(sorted(set(offered) - set(raw))),
         )
-        incoming = {
-            name: wire.rows_from_wire(raw[name]) for name in SYNC_SECTIONS if raw.get(name)
-        }
+        incoming = {name: wire.rows_from_wire(raw[name]) for name in SYNC_SECTIONS if raw.get(name)}
         # The set-aside rows travel through the page with it: each section's are
         # offered again as it comes round, and whatever this page adds joins them
         # before the lot is written back inside the page's own transaction.
@@ -726,9 +718,7 @@ class SyncEngine:
             incoming["transects"] = [
                 row
                 for row in transects
-                if self._transect_lands(
-                    row, arriving_sites, stranded, held["transects"], attempts["transects"]
-                )
+                if self._transect_lands(row, arriving_sites, stranded, held["transects"], attempts["transects"])
             ]
         # Cover lives in the run directories, so a pulled cover row has nowhere to
         # land. It is the registry's own aggregate of what this device produced.
@@ -760,16 +750,12 @@ class SyncEngine:
             incoming["runs"] = [
                 row
                 for row in runs
-                if self._run_lands(
-                    row, landing, deleted, stranded, held["runs"], attempts["runs"], outcome
-                )
+                if self._run_lands(row, landing, deleted, stranded, held["runs"], attempts["runs"], outcome)
             ]
 
         blocked: dict[uuid.UUID, str] = {}
         for name in SYNC_SECTIONS:
-            rows = self._behind_a_blocked_parent(
-                name, incoming.get(name) or [], blocked, held, attempts
-            )
+            rows = self._behind_a_blocked_parent(name, incoming.get(name) or [], blocked, held, attempts)
             if rows:
                 arriving = {uuid.UUID(str(row["id"])) for row in rows}
                 pending = self._unpushed_ids(name) & arriving
@@ -778,16 +764,12 @@ class SyncEngine:
                 outcome.kept.extend(result.skipped)
                 outcome.collided.extend(result.collided)
                 unwritten = (
-                    set(result.skipped)
-                    | {c.row_id for c in result.collided}
-                    | _unreadable_ids(result.unreadable)
+                    set(result.skipped) | {c.row_id for c in result.collided} | _unreadable_ids(result.unreadable)
                 )
                 outcome.overwritten.extend(sorted(pending - unwritten, key=str))
                 written.setdefault(name, set()).update(arriving - unwritten)
                 aside = _add_set_aside(aside, result.collided)
-            aside = self._offer_set_aside_again(
-                name, aside, outcome, written.get(name, set())
-            )
+            aside = self._offer_set_aside_again(name, aside, outcome, written.get(name, set()))
             blocked.update(self._cannot_be_named(name, aside, held))
         self._write_quarantine(aside)
         held["pass_videos"] = self._adopt_chapter_order(unattached, chapters)
@@ -866,11 +848,7 @@ class SyncEngine:
         kept: list[dict[str, Any]] = []
         for row in rows:
             waiting_for = next(
-                (
-                    blocked[parent]
-                    for parent in self._store.points_at(section, row)
-                    if parent in blocked
-                ),
+                (blocked[parent] for parent in self._store.points_at(section, row) if parent in blocked),
                 "",
             )
             if not waiting_for:
@@ -1055,14 +1033,10 @@ class SyncEngine:
             if not models:
                 continue
             sections[name] = (
-                wire.run_rows_to_wire(models, self._out_root)
-                if name == "runs"
-                else wire.rows_to_wire(name, models)
+                wire.run_rows_to_wire(models, self._out_root) if name == "runs" else wire.rows_to_wire(name, models)
             )
             if name == "passes":
-                sections[wire.PASS_VIDEOS] = [
-                    row for model in models for row in wire.pass_video_rows(model)
-                ]
+                sections[wire.PASS_VIDEOS] = [row for model in models for row in wire.pass_video_rows(model)]
         cover = self._cover_rows(closure)
         if cover:
             sections[wire.COVER_ROWS] = cover
@@ -1104,72 +1078,58 @@ class SyncEngine:
             self._post(
                 SECTION_NOT_UNDERSTOOD,
                 "The registry sent data this version cannot read",
-                f"It sent a section called {named}. Everything that came before it "
-                "was kept, and the sync stopped there rather than passing over it, "
-                "so nothing is lost. Update this app to take the rest.",
+                f"Section {named} is unknown to this version. Update the app to sync the rest.",
             )
         if report.stalled:
             self._post(
                 PULL_STALLED,
                 "The registry stopped answering the pull",
-                "It said more rows were waiting but kept answering with the same "
-                "page, so the sync broke off rather than asking forever. "
-                "Everything that arrived was kept. Try again later; a registry "
-                "doing this repeatedly is misbehaving.",
+                "It kept repeating one page, so the sync stopped. Try again later.",
             )
         if report.refused_sections:
             named = ", ".join(report.refused_sections)
             self._post(
                 SECTION_REFUSED,
                 "The registry sent data this sync was not reading",
-                f"It sent {named}, which this sync had not asked for. Those rows "
-                "were ignored whole and nothing here changed.",
+                f"Unrequested section {named} was ignored.",
             )
         accepted = [d for d in report.decided if d.status == "applied"]
         if accepted:
             self._post(
                 CHANGE_ACCEPTED,
                 f"The console accepted {len(accepted)} change(s) proposed from here",
-                "They are in the survey now, and the rows have come down with them.",
+                "They are in the survey now.",
             )
         dismissed = [d for d in report.decided if d.status == "dismissed"]
         if dismissed:
             self._post(
                 CHANGE_DISMISSED,
                 f"The console dismissed {len(dismissed)} change(s) proposed from here",
-                "The registry's version stands. The values sent from here are kept "
-                "in the registry's ledger; ask in the web console if they mattered.",
+                "The registry's version stands. The sent values remain in its ledger.",
             )
         if report.overwritten:
             self._post(
                 CONFLICT_OVERWRITTEN,
                 f"The registry replaced {len(report.overwritten)} edited row(s)",
-                "Somebody edited these rows more recently, so their version won. "
-                "Whatever was typed here since the last sync is no longer in the survey.",
+                "A newer edit elsewhere replaced what was typed here since the last sync.",
             )
         if report.passes_without_videos:
             self._post(
                 PASS_WITHOUT_VIDEOS,
                 f"{len(report.passes_without_videos)} section(s) arrived with no footage",
-                "The registry holds these sections with no clips listed against them, "
-                "and a section without footage cannot be recorded here. They are kept "
-                "aside and tried again on every sync, so nothing needs doing.",
+                "No clips are listed against them. They are retried on every sync.",
             )
         if report.runs_without_passes:
             self._post(
                 RUN_WITHOUT_PASS,
                 f"{len(report.runs_without_passes)} result(s) arrived with no section",
-                "The registry has not sent the sections these results belong to yet. "
-                "They are kept aside and tried again on every sync, so nothing needs "
-                "doing.",
+                "Their sections have not arrived yet. They are retried on every sync.",
             )
         if report.transects_without_sites:
             self._post(
                 TRANSECT_WITHOUT_SITE,
                 f"{len(report.transects_without_sites)} transect(s) arrived before their site",
-                "The registry has not sent the sites these lines belong to yet. "
-                "They are kept aside and tried again on every sync, so nothing "
-                "needs doing.",
+                "Their sites have not arrived yet. They are retried on every sync.",
             )
         taken = [row for row in report.collided if row.holder is not None]
         if taken:
@@ -1177,11 +1137,8 @@ class SyncEngine:
             self._post(
                 PULL_NAME_TAKEN,
                 f"{len(taken)} record(s) from the registry could not be taken",
-                f"A record here still carries the same name: {named}. The "
-                "registry's copy was set aside and nothing on this laptop "
-                "changed. Give one of the two a different name, here or in the "
-                "web console, and the copy kept here goes in on the next sync. "
-                "Until then the two records differ.",
+                f"A record here has the same name: {named}. "
+                "Rename one, here or in the web console, and the next sync takes it.",
             )
         unacceptable = [row for row in report.collided if row.holder is None]
         if unacceptable:
@@ -1190,52 +1147,33 @@ class SyncEngine:
             self._post(
                 PULL_ROW_REFUSED,
                 f"{len(unacceptable)} record(s) from the registry could not be recorded",
-                "This survey's own rules would not take them, and it was not a "
-                "name another record here is using. They were set aside whole "
-                "and nothing on this laptop changed. Their ids are in the log, "
-                "and a corrected record comes down on its own.",
+                "This survey's rules would not take them. Their ids are in the log.",
             )
         if report.behind_set_aside:
             self._post(
                 PULL_PARENT_SET_ASIDE,
-                f"{len(report.behind_set_aside)} row(s) are waiting on a record "
-                "this laptop set aside",
-                "The record they belong to did arrive. It is in this laptop's "
-                "set-aside list rather than in the survey, because this database "
-                "would not take it, and these rows cannot go in without it. "
-                "Neither is given up on. The notice about that record says what "
-                "stopped it, and clearing that brings them all in on the next "
-                "sync.",
+                f"{len(report.behind_set_aside)} row(s) are waiting on a record this laptop set aside",
+                "Their record is in the set-aside list. Clearing that notice brings them in on the next sync.",
             )
         if report.set_aside_discarded:
             self._post(
                 SET_ASIDE_DISCARDED,
-                f"{len(report.set_aside_discarded)} record(s) set aside earlier "
-                "were discarded",
-                "They were kept aside because this database would not take them, "
-                "and the copies here have been edited since. The newer edit wins, "
-                "so the registry's copies are no longer being kept and nothing on "
-                "this laptop changed. If the registry's version was the right one, "
-                "make the change again in the web console.",
+                f"{len(report.set_aside_discarded)} record(s) set aside earlier were discarded",
+                "The copies here were edited since, and the newer edit wins. "
+                "Redo the change in the web console if the registry's version was right.",
             )
         if report.runs_pass_deleted:
             self._post(
                 RUN_PASS_DELETED,
                 f"{len(report.runs_pass_deleted)} result(s) belong to a deleted section",
-                "The sections these results were processed from have been removed "
-                "from the registry. Nothing on this device changed. Ask whoever "
-                "deleted them whether the results should have gone too.",
+                "Their sections were removed from the registry. Results here are untouched.",
             )
         if report.given_up:
-            logger.warning(
-                "Giving up on held rows: %s", ", ".join(str(row_id) for row_id in report.given_up)
-            )
+            logger.warning("Giving up on held rows: %s", ", ".join(str(row_id) for row_id in report.given_up))
             self._post(
                 HELD_GIVEN_UP,
-                f"{len(report.given_up)} row(s) have been waiting since the last "
-                f"{HELD_ATTEMPTS} syncs",
-                "The registry has not sent what they belong to, so they are no "
-                "longer being tried for. Their ids are in the log.",
+                f"{len(report.given_up)} row(s) have been waiting since the last {HELD_ATTEMPTS} syncs",
+                "The registry never sent what they belong to. Their ids are in the log.",
             )
         if report.unreadable:
             for named, why in report.unreadable:
@@ -1243,9 +1181,7 @@ class SyncEngine:
             self._post(
                 UNREADABLE_ROW,
                 f"{len(report.unreadable)} row(s) arrived in a shape this app cannot read",
-                "They were left out and everything else on the page was kept. Their "
-                "ids are in the log. A corrected row comes down on its own, so this "
-                "clears itself once the registry holds one.",
+                "They were left out; their ids are in the log. A corrected row from the registry clears this.",
             )
 
     def _report_push_conflicts(self, report: PushReport) -> None:
@@ -1254,62 +1190,50 @@ class SyncEngine:
             self._post(
                 PUSH_UNACCOUNTED,
                 "The registry did not account for everything sent",
-                f"Its answer did not say what happened to every row in {named}, "
-                "so those rows are treated as unsent and go again on the next "
-                "sync. Nothing is lost, but until the registry answers for them "
-                "this repeats; a registry doing it every sync is misbehaving.",
+                f"Its answer skipped rows in {named}. They go again on the next sync.",
             )
         downloadable, stranded = report.skipped_by_direction()
         if downloadable:
             self._post(
                 CONFLICT_DISCARDED,
                 f"The registry already held {len(downloadable)} row(s) newer than ours",
-                "Those edits were not accepted. The next sync brings the registry's "
-                "version down, which is what the survey will show.",
+                "Those edits were not accepted. The next sync brings the registry's version down.",
             )
         if stranded:
             self._post(
                 CONFLICT_STRANDED,
                 f"The registry already held {len(stranded)} row(s) newer than ours",
-                "Those edits were not accepted, and this app does not download "
-                "these rows, so the two records now differ. Make the change in "
-                "the web console if it should stand.",
+                "Those edits were not accepted, and this app does not download these rows. "
+                "Make the change in the web console.",
             )
         conflicted = report.conflicted
         if conflicted:
             self._post(
                 PUSH_CONFLICTED,
                 f"The registry would not record {len(conflicted)} row(s) sent from here",
-                "Its database refused them, which is nearly always a name another "
-                "record there already carries. They did not land, and sending "
-                "them again cannot change that. Rename them here, or find the "
-                "record already using the name in the web console.",
+                "Its database refused them, usually a name already in use there. "
+                "Rename them here, or find the existing record in the web console.",
             )
         refused = report.refused
         if refused:
             self._post(
                 CONFLICT_REFUSED,
                 f"The registry refused {len(refused)} row(s) recorded by another device",
-                "These rows were first uploaded from somewhere else, so edits to "
-                "them made here never land. Make the change in the web console, "
-                "or on the device that recorded them.",
+                "They were first uploaded from another device. Make the change in the web console or on that device.",
             )
         proposed = report.proposed
         if proposed:
             self._post(
                 CHANGE_PROPOSED,
                 f"{len(proposed)} change(s) made here await the console",
-                "The console has the last word on these rows: it validated, edited "
-                "or deleted them. The changes were kept there as proposals, and "
-                "the next sync brings the console's version down. Nothing is lost.",
+                "The console validated, edited or deleted these rows. "
+                "The changes are kept there as proposals; the next sync brings the console's version down.",
             )
 
     def _post(self, fingerprint: str, title: str, body: str) -> None:
         logger.info("%s: %s", fingerprint, title)
         if self._notify is not None:
-            self._notify.post(
-                fingerprint=fingerprint, title=title, body=body, severity=WARNING, scope=SURVEY
-            )
+            self._notify.post(fingerprint=fingerprint, title=title, body=body, severity=WARNING, scope=SURVEY)
 
 
 def set_aside_rows(store: SurveyStore) -> list[dict[str, Any]]:
@@ -1332,9 +1256,7 @@ def set_aside_rows(store: SurveyStore) -> list[dict[str, Any]]:
     return [dict(entry) for entry in blob if isinstance(entry, Mapping)]
 
 
-def _add_set_aside(
-    aside: Sequence[Mapping[str, Any]], collided: Sequence[Collision]
-) -> list[dict[str, Any]]:
+def _add_set_aside(aside: Sequence[Mapping[str, Any]], collided: Sequence[Collision]) -> list[dict[str, Any]]:
     """The set-aside list with this section's refusals in it, one entry per row.
 
     A row that collides again moves to the end, which is what makes the trim
@@ -1387,9 +1309,7 @@ def _set_aside_ids(aside: Iterable[Mapping[str, Any]], section: str) -> list[uui
 def _held_ids(entries: Mapping[str, Any], waiting_for: str) -> tuple[uuid.UUID, ...]:
     """The held rows of one section that are waiting on the named thing."""
     return tuple(
-        uuid.UUID(key)
-        for key, entry in entries.items()
-        if entry.get("waiting_for", HELD_FOR_PARENT) == waiting_for
+        uuid.UUID(key) for key, entry in entries.items() if entry.get("waiting_for", HELD_FOR_PARENT) == waiting_for
     )
 
 
@@ -1428,9 +1348,7 @@ def _read_held(blob: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 }
     chapters = blob.get(wire.PASS_VIDEOS)
     if isinstance(chapters, Mapping):
-        held[wire.PASS_VIDEOS] = {
-            key: list(rows) for key, rows in chapters.items() if isinstance(rows, list)
-        }
+        held[wire.PASS_VIDEOS] = {key: list(rows) for key, rows in chapters.items() if isinstance(rows, list)}
     return held
 
 
@@ -1445,9 +1363,7 @@ def _attempts(entries: Mapping[str, Any]) -> dict[str, int]:
     return {key: entry["attempts"] for key, entry in entries.items()}
 
 
-def _with_held(
-    entries: Mapping[str, Any], arriving: Iterable[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+def _with_held(entries: Mapping[str, Any], arriving: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Held rows and this page's, one per id, the page's copy winning."""
     rows = {key: entry["row"] for key, entry in entries.items()}
     rows.update({str(row["id"]): dict(row) for row in arriving})
@@ -1463,9 +1379,7 @@ def _chapters_by_pass(
     being held for it.
     """
     rows: dict[str, dict[str, Any]] = {
-        str(row["id"]): dict(row)
-        for chapters in held[wire.PASS_VIDEOS].values()
-        for row in chapters
+        str(row["id"]): dict(row) for chapters in held[wire.PASS_VIDEOS].values() for row in chapters
     }
     rows.update({str(row["id"]): dict(row) for row in arriving})
     by_pass: dict[str, list[dict[str, Any]]] = {}
@@ -1570,10 +1484,7 @@ def _page_cursor(payload: Mapping[str, Any]) -> int | None:
 def _push_outcomes(response: Mapping[str, Any]) -> dict[str, SectionPush]:
     outcomes = {}
     for name, outcome in wire.push_outcomes(response).items():
-        acks = tuple(
-            (row_id, seq)
-            for row_id, seq in zip(_ids(outcome["acks"]), outcome["acks"].values(), strict=True)
-        )
+        acks = tuple((row_id, seq) for row_id, seq in zip(_ids(outcome["acks"]), outcome["acks"].values(), strict=True))
         outcomes[name] = SectionPush(
             received=outcome["received"],
             applied=len(acks) if acks or "applied" not in outcome else outcome["applied"],
@@ -1610,9 +1521,7 @@ def _decisions(page: Mapping[str, Any]) -> list[Decision]:
     return decisions
 
 
-def _our_edits(
-    outcomes: Mapping[str, SectionPush], edited: Mapping[str, set[uuid.UUID]]
-) -> dict[str, SectionPush]:
+def _our_edits(outcomes: Mapping[str, SectionPush], edited: Mapping[str, set[uuid.UUID]]) -> dict[str, SectionPush]:
     """The same outcomes with every skip that was not a local edit dropped.
 
     A document carries the ancestors of what changed and re-offers the row sitting
@@ -1626,18 +1535,10 @@ def _our_edits(
         name: SectionPush(
             received=outcome.received,
             applied=outcome.applied,
-            skipped=tuple(
-                row_id for row_id in outcome.skipped if row_id in edited.get(name, ())
-            ),
-            refused=tuple(
-                row_id for row_id in outcome.refused if row_id in edited.get(name, ())
-            ),
-            conflicted=tuple(
-                row_id for row_id in outcome.conflicted if row_id in edited.get(name, ())
-            ),
-            proposed=tuple(
-                row_id for row_id in outcome.proposed if row_id in edited.get(name, ())
-            ),
+            skipped=tuple(row_id for row_id in outcome.skipped if row_id in edited.get(name, ())),
+            refused=tuple(row_id for row_id in outcome.refused if row_id in edited.get(name, ())),
+            conflicted=tuple(row_id for row_id in outcome.conflicted if row_id in edited.get(name, ())),
+            proposed=tuple(row_id for row_id in outcome.proposed if row_id in edited.get(name, ())),
             acks=outcome.acks,
         )
         for name, outcome in outcomes.items()
@@ -1656,11 +1557,7 @@ def _accounted(outcome: SectionPush, sent: int) -> bool:
     registry of misbehaving while it was answering perfectly clearly.
     """
     settled = (
-        outcome.applied
-        + len(outcome.skipped)
-        + len(outcome.refused)
-        + len(outcome.conflicted)
-        + len(outcome.proposed)
+        outcome.applied + len(outcome.skipped) + len(outcome.refused) + len(outcome.conflicted) + len(outcome.proposed)
     )
     return outcome.received == sent and settled == sent
 

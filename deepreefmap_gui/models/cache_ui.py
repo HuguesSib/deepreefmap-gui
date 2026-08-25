@@ -41,9 +41,8 @@ from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 if TYPE_CHECKING:
     from deepreefmap_gui.models.cache import ModelInfo
 
-# The section key the model library is registered under, and where a message
-# about a missing weight sends a reader who presses the notification. Setup's
-# own name would reopen whichever of its views was last on screen.
+# Section key the model library is registered under; missing-weight messages
+# send the reader here.
 MODELS_SECTION = "models"
 
 
@@ -77,8 +76,6 @@ class ModelManagementMixin(MixinBase):
 
     def _flash_model_row(self, label: QWidget) -> None:
         prev = label.styleSheet()
-        # Derived from WARNING rather than restated in decimal, which is what
-        # rgba(232, 160, 74, 60) was.
         flash = QColor(WARNING)
         flash.setAlpha(60)
         label.setStyleSheet(
@@ -122,9 +119,7 @@ class ModelManagementMixin(MixinBase):
         else:
             self._download_model(model_name)
 
-    def _update_model_status_button(
-        self, btn: QPushButton, selected_name: str
-    ) -> None:
+    def _update_model_status_button(self, btn: QPushButton, selected_name: str) -> None:
         if selected_name in self._downloading:
             pct = int(btn.property("downloadPercent") or 0)
             self._apply_downloading_style(btn, selected_name, pct)
@@ -145,9 +140,7 @@ class ModelManagementMixin(MixinBase):
         elif info.gated and self._hf_auth_user is None:
             btn.setText("")
             btn.setIcon(lock_icon(ICON_SM))
-            btn.setToolTip(
-                f"{selected_name} is gated. Click to log in to Hugging Face."
-            )
+            btn.setToolTip(f"{selected_name} is gated. Click to log in to Hugging Face.")
             btn.setStyleSheet("")
         else:
             from deepreefmap_gui.models.cache import ModelStatus, model_status
@@ -161,9 +154,7 @@ class ModelManagementMixin(MixinBase):
                 btn.setToolTip(f"{selected_name} not downloaded. Click to download.")
             btn.setStyleSheet("")
 
-    def _apply_downloading_style(
-        self, btn: QPushButton, model_name: str, percent: int
-    ) -> None:
+    def _apply_downloading_style(self, btn: QPushButton, model_name: str, percent: int) -> None:
         # Render the inline status button as a cancel control (✕) with a
         # left-to-right green fill that tracks download percent. Clamp the
         # gradient stop just inside [0, 1] so qlineargradient stays well-formed
@@ -218,13 +209,9 @@ class ModelManagementMixin(MixinBase):
     def _update_models_button_status(self) -> None:
         """Refresh the per-dropdown model status icons."""
         if hasattr(self, "_seg_status_btn") and hasattr(self, "_seg_combo"):
-            self._update_model_status_button(
-                self._seg_status_btn, self._seg_combo.currentText()
-            )
+            self._update_model_status_button(self._seg_status_btn, self._seg_combo.currentText())
         if hasattr(self, "_map_status_btn") and hasattr(self, "_map_combo"):
-            self._update_model_status_button(
-                self._map_status_btn, self._map_combo.currentText()
-            )
+            self._update_model_status_button(self._map_status_btn, self._map_combo.currentText())
 
     def _refresh_model_status(self) -> None:
         from deepreefmap_gui.models.cache import all_known_models, check_hf_auth, is_model_cached
@@ -288,26 +275,22 @@ class ModelManagementMixin(MixinBase):
         if auth_user:
             if can_gated:
                 self._hf_auth_label.setText(f"Logged in to Hugging Face as <b>{auth_user}</b>")
-                self._hf_auth_label.setToolTip(
-                    f"Signed in to Hugging Face as {auth_user}. Click Log out to remove the saved token."
-                )
+                self._hf_auth_label.setToolTip(f"Signed in as {auth_user}. Log out removes the saved token.")
                 self._hf_auth_icon.setText(f'<span style="color:{SUCCESS}; font-weight:bold">●</span>')
                 self._hf_auth_icon.setToolTip("Signed in to Hugging Face")
             else:
                 self._hf_auth_label.setText(
-                    f'Logged in as <b>{auth_user}</b>. '
-                    f'<span style="color:{WARNING}">Token lacks gated repo access. '
-                    f'Edit your token at '
-                    f'<a href="https://huggingface.co/settings/tokens" style="color:{WARNING}">'
-                    f'huggingface.co/settings/tokens</a> and enable '
-                    f'"Read access to contents of all public gated repos".</span>'
+                    f"Logged in as <b>{auth_user}</b>. "
+                    f'<span style="color:{WARNING}">Token lacks gated repo access '
+                    f'(<a href="https://huggingface.co/settings/tokens" style="color:{WARNING}">'
+                    f"edit token</a>).</span>"
                 )
                 self._hf_auth_label.setTextFormat(Qt.TextFormat.RichText)
                 self._hf_auth_label.setOpenExternalLinks(True)
                 self._hf_auth_label.setToolTip(
-                    "Your fine-grained token does not have the 'Read access to contents of all "
-                    "public gated repos you can access' permission. Edit the token on "
-                    "huggingface.co/settings/tokens to enable it."
+                    "<ul><li>Open huggingface.co/settings/tokens</li>"
+                    "<li>Edit the token</li>"
+                    "<li>Enable 'Read access to contents of all public gated repos'</li></ul>"
                 )
                 self._hf_auth_icon.setText(f'<span style="color:{WARNING}; font-weight:bold">!</span>')
                 self._hf_auth_icon.setToolTip("Token missing gated repo permission")
@@ -315,26 +298,16 @@ class ModelManagementMixin(MixinBase):
             self._hf_auth_btn.setEnabled(True)
         else:
             required = self._required_model_names()
-            gated_required = [
-                info.name for info, _cached in model_states
-                if info.gated and info.name in required
-            ]
+            gated_required = [info.name for info, _cached in model_states if info.gated and info.name in required]
             label = "Not logged in to Hugging Face"
             if gated_required:
-                label += (
-                    f'  <span style="color:{WARNING}">(needed for '
-                    f'{", ".join(gated_required)})</span>'
-                )
+                label += f'  <span style="color:{WARNING}">(needed for {", ".join(gated_required)})</span>'
             self._hf_auth_label.setText(label)
             self._hf_auth_label.setToolTip(
-                "Some gated models need a Hugging Face account. "
-                "Click Log in… to paste an access token from huggingface.co/settings/tokens."
+                "Gated models need a Hugging Face token.\nLog in… takes one from huggingface.co/settings/tokens."
             )
             self._hf_auth_icon.setText(f'<span style="color:{WARNING}; font-weight:bold">!</span>')
-            self._hf_auth_icon.setToolTip(
-                "Hugging Face login required to download gated models. "
-                "Click Log in… to paste an access token."
-            )
+            self._hf_auth_icon.setToolTip("Login required for gated models")
             self._hf_auth_btn.setText("Log in...")
             self._hf_auth_btn.setEnabled(True)
 
@@ -371,13 +344,10 @@ class ModelManagementMixin(MixinBase):
                 )
                 meta_parts.append(f'<span style="color:{TEXT_DIM}; font-size:{FONT_XS}">{size_text}</span>')
             if info.release_date:
-                meta_parts.append(
-                    f'<span style="color:{TEXT_DIM}; font-size:{FONT_XS}">({info.release_date})</span>'
-                )
+                meta_parts.append(f'<span style="color:{TEXT_DIM}; font-size:{FONT_XS}">({info.release_date})</span>')
             if info.name in required:
                 meta_parts.append(
-                    f'<span style="color:{WARNING}; '
-                    f'font-size:{FONT_XS}; font-weight:{WEIGHT_BOLD}">REQUIRED</span>'
+                    f'<span style="color:{WARNING}; font-size:{FONT_XS}; font-weight:{WEIGHT_BOLD}">REQUIRED</span>'
                 )
             if meta_parts:
                 name_html += "<br>" + "&nbsp;".join(meta_parts)
@@ -454,10 +424,7 @@ class ModelManagementMixin(MixinBase):
             bar.setFixedWidth(150)
             return bar
 
-        # A cache that exists but fails verification (interrupted/cancelled
-        # download: config.json landed, weights or the custom loader did not).
-        # Distinct from "never downloaded" so the row can prompt a repair
-        # instead of a silent re-download that reads as "nothing happened".
+        # A cache that exists but fails verification offers Repair, not Download.
         from deepreefmap_gui.models.cache import ModelStatus, model_status
 
         partial_reason = ""
@@ -482,10 +449,7 @@ class ModelManagementMixin(MixinBase):
             icon.setToolTip(f"download incomplete: {partial_reason}")
         elif info.gated and not auth_user:
             icon.setText(f'<span style="color:{WARNING}; font-weight:bold">!</span>')
-            icon.setToolTip(
-                "Hugging Face login required for this gated model. "
-                "Click Log in… above to paste an access token."
-            )
+            icon.setToolTip("Gated model. Log in above.")
         else:
             icon.setText(f'<span style="color:{TEXT_DIM}">○</span>')
             icon.setToolTip("not downloaded")
@@ -512,16 +476,9 @@ class ModelManagementMixin(MixinBase):
             btn = QPushButton(btn_text)
             btn.setFixedWidth(110)
             if partial_reason:
-                # Re-download fills in the missing files. Flag it orange so an
-                # incomplete cache doesn't masquerade as a fresh download.
-                btn.setToolTip(
-                    f"Cached files are incomplete ({partial_reason}). Click to re-download."
-                )
+                btn.setToolTip(f"Incomplete download ({partial_reason}). Click to re-download.")
                 btn.setStyleSheet(f"QPushButton {{ color: {WARNING}; }}")
             elif prior_error:
-                # Surface the failure at the row so it survives the next
-                # status refresh, instead of disappearing from the shared
-                # status bar the moment the user clicks anywhere else.
                 btn.setToolTip(f"Previous download failed: {prior_error}\nClick to retry.")
                 btn.setStyleSheet(f"QPushButton {{ color: {WARNING}; }}")
             model_name = info.name
@@ -616,7 +573,6 @@ class ModelManagementMixin(MixinBase):
                 else:
                     message = f"No cached revisions found for {model_name}."
                 if result.kept_repos:
-                    # Otherwise a delete that frees nothing looks like a failure.
                     message += f" Kept the files shared with {result.kept_summary()}."
                 self._sig_status_text.emit(message)
             except Exception as exc:
@@ -690,9 +646,6 @@ class ModelManagementMixin(MixinBase):
             try:
                 prefetch_model(info, progress_cb=_progress)
                 self._sig_status_text.emit(f"Model {model_name} downloaded.")
-                # A download is walked away from, and the status bar is gone by
-                # the time anybody looks. Whether a model arrived is exactly what
-                # a laptop about to lose its connection needs to be able to check.
                 self._sig_notify.emit(
                     {
                         "fingerprint": "models.downloaded",
@@ -733,6 +686,4 @@ class ModelManagementMixin(MixinBase):
         # Re-render any matching form buttons so they show the "…" cancelling
         # tooltip immediately, without waiting for the next progress tick.
         for btn in self._form_status_buttons_for(model_name):
-            self._apply_downloading_style(
-                btn, model_name, int(btn.property("downloadPercent") or 0)
-            )
+            self._apply_downloading_style(btn, model_name, int(btn.property("downloadPercent") or 0))

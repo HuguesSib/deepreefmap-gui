@@ -21,11 +21,7 @@ from deepreefmap_gui.survey.catalogue import FacetGroup, entry_status, session_s
 
 
 def _outcome(entries: list) -> tuple[str, str]:
-    """A session's verdict, taken from the worst of its runs.
-
-    One failure is the thing worth knowing about a day's work, so it outranks
-    any number of successes rather than being averaged away by them.
-    """
+    """A session's verdict, taken from the worst of its runs."""
     statuses = [entry_status(entry) for entry in entries]
     if not statuses:
         return "Nothing processed", "queued"
@@ -51,23 +47,16 @@ class SessionDetailPanel(DetailCard):
         layout.addWidget(muted_label("Passes processed in this session"))
         self.pass_list = QListWidget()
         self.pass_list.setAlternatingRowColors(True)
-        # The pane is narrow and the row is three facts joined; elide rather
-        # than grow a horizontal scrollbar, which hides the outcome at the end
-        # of the line behind a drag.
+        # Elide rather than scroll: the outcome sits at the end of the line.
         self.pass_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.pass_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.pass_list, 1)
 
         self.audit_btn = QPushButton("Settings used…")
-        self.audit_btn.setToolTip(
-            "What each run in this session actually ran under, and how it differed "
-            "from the standard settings."
-        )
+        self.audit_btn.setToolTip("The settings each run used, against the standard.")
         self.audit_btn.clicked.connect(self.audit_requested)
         self.delete_btn = QPushButton("Delete…")
-        self.delete_btn.setToolTip(
-            "Remove this session's output data, its records, or both"
-        )
+        self.delete_btn.setToolTip("Remove this session's output data, its records, or both")
         self.delete_btn.clicked.connect(self.delete_requested)
         self.add_actions(self.audit_btn, self.delete_btn)
 
@@ -88,11 +77,7 @@ class SessionDetailPanel(DetailCard):
         self.set_status(label, STATUS_COLORS.get(status_key, TEXT_MUTED))
 
         rows = [("Covered", session_summary(group))]
-        # The settings are a property of the session, not of each run in it, so
-        # naming them once here is what makes the whole group comparable. Taken
-        # from a run rather than the store: the store holds what the session was
-        # configured with, the manifest holds what it actually ran under, and
-        # only the second is true of the numbers below.
+        # From a run's manifest, which holds what the session actually ran under.
         preset = next(
             (
                 e.manifest.get("survey", {}).get("preset_name")
@@ -112,9 +97,7 @@ class SessionDetailPanel(DetailCard):
         for entry in sorted(entries, key=lambda e: e.sort_key):
             status = entry_status(entry)
             name = entry.transect_name or "No transect"
-            item = QListWidgetItem(
-                f"{name}  ·  {entry.video_name or 'unknown video'}  ·  {status}"
-            )
+            item = QListWidgetItem(f"{name}  ·  {entry.video_name or 'unknown video'}  ·  {status}")
             item.setIcon(status_dot_icon(STATUS_COLORS.get(status, TEXT_MUTED)))
             self.pass_list.addItem(item)
 

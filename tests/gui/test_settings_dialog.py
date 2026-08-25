@@ -73,21 +73,16 @@ def test_only_machine_settings_are_written_back(window, monkeypatch, machine_pre
     allow-listed setting describes the computer, so it survives a restart."""
     import yaml
 
-
     def change():
         window._batch_size_spin.setValue(1)
         window._grid_bins_spin.setValue(1234)
 
     edit_in_dialog(window, monkeypatch, change)
     assert window._survey_preset["preprocess_batch_size"] == 1
-    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {
-        "preprocess_batch_size": 1
-    }
+    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {"preprocess_batch_size": 1}
 
 
-def test_an_organisation_setting_changes_for_this_batch_only(
-    window, monkeypatch, machine_preset_path
-):
+def test_an_organisation_setting_changes_for_this_batch_only(window, monkeypatch, machine_preset_path):
     """Scenario: a curious diver changes the method in the run settings dialog.
 
     Expected behaviour: this session runs what they typed, but nothing is written
@@ -104,12 +99,10 @@ def test_an_organisation_setting_changes_for_this_batch_only(
     assert not machine_preset_path.exists()
     label = window._survey_preset_label.text()
     assert "Changed for this session only" in label
-    assert "go back to standard next launch" in label
+    assert "Back to standard next launch" in label
 
 
-def test_restore_standard_settings_drops_the_machine_override(
-    window, monkeypatch, machine_preset_path
-):
+def test_restore_standard_settings_drops_the_machine_override(window, monkeypatch, machine_preset_path):
     standard = window._active_preset.org.settings["preprocess_batch_size"]
     edit_in_dialog(window, monkeypatch, lambda: window._batch_size_spin.setValue(1))
     assert machine_preset_path.exists()
@@ -185,10 +178,7 @@ def test_cancel_restores_a_custom_processing_size(window, monkeypatch):
 def test_the_dialog_offers_ok_cancel_and_reset(window):
     dialog = RunSettingsDialog(window, window._setup_page, per_run_widgets(window))
     box = dialog.findChild(QDialogButtonBox)
-    offered = {
-        box.standardButton(button)
-        for button in box.buttons()
-    }
+    offered = {box.standardButton(button) for button in box.buttons()}
     assert offered == {
         QDialogButtonBox.StandardButton.Ok,
         QDialogButtonBox.StandardButton.Cancel,
@@ -252,7 +242,5 @@ def test_custom_processing_size_round_trips(window):
 def test_crop_width_zero_means_disabled(window):
     window._crop_width.setValue(0.0)
     assert window._collect_preset_from_form()["transect_crop_width"] is None
-    window._populate_form_from_preset(
-        {**window._collect_preset_from_form(), "transect_crop_width": 1.5}
-    )
+    window._populate_form_from_preset({**window._collect_preset_from_form(), "transect_crop_width": 1.5})
     assert window._crop_width.value() == 1.5

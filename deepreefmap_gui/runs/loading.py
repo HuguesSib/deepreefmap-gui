@@ -212,7 +212,7 @@ class RunLoadingMixin(MixinBase):
 
         if self._load_cancelled or not scene_file_pending(result):
             return False
-        self._status_label.setText("Building scene file for faster reloads…")
+        self._status_label.setText("Building scene file…")
         generate_scene_file_async(
             run_dir,
             result,
@@ -280,7 +280,10 @@ class RunLoadingMixin(MixinBase):
             mr = result.mapping_result
             if fb is not None and mr is not None and result.geometry_xyz is not None:
                 self._viewer.load_geometry_scene(
-                    fb, mr, result.geometry_xyz, result.geometry_rgb,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass; geometry arrays optional
+                    fb,
+                    mr,
+                    result.geometry_xyz,
+                    result.geometry_rgb,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass; geometry arrays optional
                 )
                 self._show_viewer_controls()
                 self._set_semantic_only_controls_visible(False)
@@ -292,7 +295,10 @@ class RunLoadingMixin(MixinBase):
             mr = result.mapping_result
             if fb is not None and mr is not None:
                 self._viewer.load_scene_data_indexed(
-                    fb, mr, result.final_cloud_index, self._classes_config,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass
+                    fb,
+                    mr,
+                    result.final_cloud_index,
+                    self._classes_config,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass
                 )
                 _t2 = _time.monotonic()
                 logger.info("[timing] load_scene_data_indexed: %.3fs", _t2 - _t1)
@@ -333,15 +339,12 @@ class RunLoadingMixin(MixinBase):
             and (ortho_cloud is None or len(ortho_cloud) == 0)
         ):
             from deepreefmap.pointcloud.final_cloud_index import reconstruct_cloud_from_index
+
             ortho_cloud = reconstruct_cloud_from_index(result.final_cloud_index)
             ortho_classes = result.classes_config
 
         # Build the live ortho preview BEFORE finalising.
-        if (
-            result.mode != GEOMETRY_ONLY_MODE
-            and ortho_cloud is not None
-            and len(ortho_cloud) > 1
-        ):
+        if result.mode != GEOMETRY_ONLY_MODE and ortho_cloud is not None and len(ortho_cloud) > 1:
             try:
                 from deepreefmap.postproc.ortho_outputs import build_ortho_outputs
 
@@ -356,9 +359,7 @@ class RunLoadingMixin(MixinBase):
                     crop=_manifest_transect_crop(result.manifest),
                     progress=_ortho_load_progress,
                 )
-                self._set_ortho_sources(
-                    ortho_cloud, outputs.grid, ortho_classes
-                )
+                self._set_ortho_sources(ortho_cloud, outputs.grid, ortho_classes)
                 self._cover_label.setText(self._format_cover_html(outputs.cover))
                 self._cover_sunburst.set_cover(outputs.cover, ortho_classes)
             except Exception:
@@ -402,14 +403,11 @@ class RunLoadingMixin(MixinBase):
         # the cloud is actually on screen rather than when it was asked for.
         self._enter_view_mode(run_dir)
 
-
     def _add_run_warning(self, message: str) -> None:
         if message in self._run_warnings:
             return
         self._run_warnings.append(message)
-        html = "<b>Quality warnings:</b><br>" + "<br>".join(
-            f"• {w}" for w in self._run_warnings
-        )
+        html = "<b>Quality warnings:</b><br>" + "<br>".join(f"• {w}" for w in self._run_warnings)
         self._warnings_label.setText(html)
         self._warnings_label.setVisible(True)
         self._refresh_run_warnings_view()

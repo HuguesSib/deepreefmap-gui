@@ -42,8 +42,7 @@ SERVER_SECTION = "server"
 LAST_SYNC_KEY = "sync.last_sync_at"
 
 # What the last sync said when it failed, cleared by the next success. The
-# status-bar badge repaints from disk on a timer, so a failure that is not
-# written here vanishes on its next repaint and the badge claims all is well.
+# status-bar badge repaints from this key on a timer.
 SYNC_ERROR_KEY = "sync.last_error"
 
 # In QSettings rather than the survey, because what this laptop calls itself is
@@ -67,49 +66,34 @@ SECTION_LABELS = {
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."
 
-# Read before a first sync: what connecting shares, and what the registry may
-# decide from its side. Shown until this survey has synced once, then the page
-# stops lecturing. Every claim here is pinned to the wire by
-# tests/server/test_disclaimer.py, so the words cannot quietly drift from what
-# actually travels.
+# Shown until this survey has synced once. Each claim is pinned to the wire by
+# tests/server/test_disclaimer.py.
 DISCLAIMER_TITLE = "What syncing shares"
 DISCLAIMER = (
-    "Syncing sends the survey records made here: sites, campaigns, transects, "
-    "clips, passes, and runs with their settings, software versions, timings "
-    "and cover numbers. Footage and run outputs never travel with a sync: they "
-    "go only when Archive to server is pressed.",
-    "Each sync also reports what this machine is: software versions, platform, "
-    "hardware totals, free space on the survey disk, and the name of the "
-    "preset it runs under. No file paths, and nothing about what this laptop "
-    "is otherwise doing.",
-    "Presets, sites, campaigns and transects come down from the registry: one "
-    "edited or deleted in the web console replaces or removes the copy here, "
-    "and the app says so when that overwrites an edit made on this laptop. The "
-    "registry can also assign this device a default preset, which is followed "
-    "until a choice made here or an administrator's settings file outranks it.",
-    "The clips, passes and runs recorded here come back down as the console "
-    "leaves them: curated, validated or deleted. A change made here to a row "
-    "the console has validated or made is kept in the registry as a proposal "
-    "for a curator, and the app says what became of it. A sync writes nothing "
-    "on this laptop but the survey itself, and never deletes or changes "
-    "footage or run outputs.",
+    "• Sends the sites, campaigns, transects, clips, passes and runs recorded "
+    "here, with each run's settings and cover. Footage and run outputs go only "
+    "with Archive to server.",
+    "• Reports this machine's software versions, platform, hardware totals, "
+    "free space on the survey disk and preset name. No file paths.",
+    "• Presets, sites, campaigns and transects come down from the console: one "
+    "edited or deleted there replaces or removes the copy here, and the app says "
+    "when that overwrites an edit made here. The console can also assign a "
+    "default preset. Clips, passes and runs come back as the console leaves them. "
+    "An edit here to a row the console validated or edited becomes a proposal, "
+    "and the app reports its outcome.",
+    "• Writes nothing on this laptop but the survey database. Never deletes or changes footage or run outputs.",
 )
 
-# Said when the registry held sections back because this build never asked for
-# them. Their names would mean nothing to a diver, so it counts them instead.
+# Said when the registry held back sections this build never asked for.
 OMITTED_SECTIONS = (
     "The registry keeps {kinds} kind(s) of record this version of the app cannot read. "
-    "Everything else synced. Update the app when you are next at a desk."
+    "Everything else synced. Update the app."
 )
 
-# Said after any failure that leaves work undone. True of all of them: a push is
-# one transaction, and both halves resume from where they stopped.
-RETRY_LATER = "Nothing was lost. The next sync sends whatever this one did not."
+# Said after any failure that leaves work undone.
+RETRY_LATER = "The next sync sends whatever this one did not."
 
-# Said when one half of a sync worked and the other did not. Which half is the
-# fact worth stating: a diver told only that the sync failed assumes the day's
-# records are still stuck on the laptop, and being wrong about that in either
-# direction is worse than the failure itself.
+# Said when one half of a sync worked and the other did not.
 PUSH_LANDED = "Everything recorded on this laptop was still sent."
 PULL_LANDED = "Everything the registry had for this survey still arrived."
 
@@ -195,9 +179,7 @@ def half_note(outcome: SyncOutcome | None) -> str:
     return ""
 
 
-def read_state(
-    store: SurveyStore | None, device_name: str = "", enrolled_by: str = ""
-) -> ServerState:
+def read_state(store: SurveyStore | None, device_name: str = "", enrolled_by: str = "") -> ServerState:
     """The whole Server page in one read. Never raises: a fault is a field."""
     try:
         held = credentials.load()
@@ -229,9 +211,7 @@ def set_aside_names(store: SurveyStore | None) -> tuple[str, ...]:
     """
     if store is None:
         return ()
-    return tuple(
-        str(entry.get("name") or entry.get("id") or "") for entry in set_aside_rows(store)
-    )
+    return tuple(str(entry.get("name") or entry.get("id") or "") for entry in set_aside_rows(store))
 
 
 def read_cursor(store: SurveyStore | None) -> int | None:

@@ -1,9 +1,4 @@
-"""What a transect's runs are, and the way through to the transect itself.
-
-Short on purpose. Grouping by transect is a filter over the archive, not a
-second place to read a transect: where it lies, what tape was laid and what its
-repeat passes agree on all belong to Transects.
-"""
+"""What a transect's runs are, and the way through to the transect itself."""
 
 from __future__ import annotations
 
@@ -23,9 +18,7 @@ class TransectDetailPanel(DetailCard):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        note = muted_label(
-            "Cover, repeat passes and the map are on this transect under Transects."
-        )
+        note = muted_label("Open in Transects for cover, passes and the map.")
         note.setWordWrap(True)
         self.body.addWidget(note)
         self.body.addStretch(1)
@@ -38,20 +31,14 @@ class TransectDetailPanel(DetailCard):
         statuses = [entry_status(e) for e in entries]
         failed = sum(1 for s in statuses if s == "failed")
         if failed:
-            self.set_status(
-                f"{failed} of {len(statuses)} failed", STATUS_COLORS.get("failed", TEXT_MUTED)
-            )
+            self.set_status(f"{failed} of {len(statuses)} failed", STATUS_COLORS.get("failed", TEXT_MUTED))
         elif statuses:
-            self.set_status(
-                f"{len(statuses)} processed", STATUS_COLORS.get("succeeded", TEXT_MUTED)
-            )
+            self.set_status(f"{len(statuses)} processed", STATUS_COLORS.get("succeeded", TEXT_MUTED))
         else:
             self.set_status("Nothing processed yet", TEXT_MUTED)
 
         self.title.setText(group.title)
-        # Passes rather than runs on the second row: a rerun makes another run of
-        # the same pass, so the two counts differ and the difference is the
-        # repeatability data.
+        # A rerun is another run of the same pass, so the two counts differ.
         passes = len(group.children) or len(entries)
         self.facts.set_rows(
             [

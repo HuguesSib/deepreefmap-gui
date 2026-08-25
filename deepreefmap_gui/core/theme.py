@@ -237,10 +237,7 @@ def _chevron_file(direction: str, color: str, size: int = 16) -> str:
     a URL, and this project ships no icon resources, so the arrows are painted
     once into the cache dir and referenced from there.
     """
-    cache = Path(
-        QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-        or "."
-    )
+    cache = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation) or ".")
     cache.mkdir(parents=True, exist_ok=True)
     path = cache / f"chevron-{direction}-{color.lstrip('#')}-{size}.png"
     # A scaled screen wants more pixels than the stylesheet asks for. Qt's image
@@ -334,6 +331,7 @@ def bar_qss(chunk: str) -> str:
         f"QProgressBar {{ background:{GROOVE}; border:none; border-radius:3px; }}"
         f" QProgressBar::chunk {{ background:{chunk}; border-radius:3px; }}"
     )
+
 
 # Layered on top of Fusion + the palette for the few things the palette alone
 # doesn't make consistent. Additive: existing per-widget stylesheets still
@@ -466,6 +464,14 @@ QToolButton[bare="true"] {{
 }}
 QToolButton[bare="true"]:hover {{
     background-color: transparent;
+}}
+
+/* A row control that cannot act right now. Enabled, so its tooltip can say
+   why, but the pointer gets no hover fill to suggest a press would do anything. */
+QToolButton[dead="true"]:hover {{
+    background-color: transparent;
+    color: {DISABLED_FG};
+    border-color: {BORDER};
 }}
 
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,

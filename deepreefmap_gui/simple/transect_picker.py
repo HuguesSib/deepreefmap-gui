@@ -50,7 +50,7 @@ from deepreefmap_gui.survey.store import SurveyStore
 TRANSECT_ID_ROLE = Qt.ItemDataRole.UserRole
 
 UNASSIGNED_LABEL = "Unassigned"
-UNASSIGNED_NOTE = "Processes and shows up in Browse, but is not part of any transect."
+UNASSIGNED_NOTE = "Not part of any transect. Processes unscaled."
 
 # The map is a means of choosing here, not a page of its own, so it gets the
 # smaller half of a dialog rather than the larger half of a window.
@@ -59,41 +59,24 @@ LIST_WIDTH = 240
 
 DRAW_HINT = "Click the start of the tape on the map, then its end."
 DRAW_HINT_END = "Now click the end of the tape."
-DRAW_HINT_DONE = "Save transect files it, and this pass with it."
+DRAW_HINT_DONE = "Save transect files this pass against it."
 
-# What the map is, said where the map is. Nothing else on this dialog announces
-# that it can be clicked, and a map that only responds once a button has been
-# pressed reads as a picture until then.
-MAP_HINT = "Transects are the lines on this map. Click one to file this pass against it."
+# Said where the map is: nothing else on the dialog announces it can be clicked.
+MAP_HINT = "Click a transect on the map to file this pass."
 MAP_HINT_EMPTY = "No transects yet. New transect… draws one on the map."
 
-# A choice made here is not a commitment. Said plainly, because filing a section
-# is the step people hesitate over, and both halves of it are undoable from a
-# page that is one click away.
-EDIT_LATER_NOTE = (
-    "Both can be changed later: a transect's ends, depth and notes on the "
-    "Transects page, and which transect this pass belongs to from Videos."
-)
+EDIT_LATER_NOTE = "Both can be changed later, under Transects or Videos."
 
 NEW_TRANSECT_TOOLTIP = (
-    "Draw a transect on the map: click its start, then its end. The tape length "
-    "and the name can be typed beside it."
+    "Draw a transect on the map: click its start, then its end. The tape length and the name can be typed beside it."
 )
 
 OPEN_PAGE_LABEL = "Open in Transects ↗"
-OPEN_PAGE_TOOLTIP = (
-    "Leave this dialog and show the transect on the Transects page, where the "
-    "ends can be dragged and the depth and notes filled in."
-)
+OPEN_PAGE_TOOLTIP = "Show this transect on the Transects page."
 
-# With nothing picked the arrow still goes somewhere, and says so: the page is
-# where transects are imported from a CSV or GPX file, which is how most surveys
-# get theirs. The section is kept unfiled rather than discarded on the way.
+# With nothing picked the arrow still opens the page, where transects are imported.
 OPEN_PAGE_EMPTY_LABEL = "Transects page ↗"
-OPEN_PAGE_EMPTY_TOOLTIP = (
-    "Leave this dialog and open the Transects page, where transects are drawn "
-    "or imported. This pass is kept, unfiled, and can be filed afterwards."
-)
+OPEN_PAGE_EMPTY_TOOLTIP = "Open the Transects page. This pass is kept unfiled."
 
 
 QUALITY_LABELS = {
@@ -107,7 +90,7 @@ QUALITY_LABELS = {
 
 
 def direction_label(direction: str, transect: Transect | None) -> str:
-    """"Forward", and the heading it means once there is a line to mean it on."""
+    """ "Forward", and the heading it means once there is a line to mean it on."""
     shown = direction.capitalize()
     ends = None if transect is None else transect.end_points()
     if ends is None:
@@ -175,10 +158,7 @@ class TransectPickerDialog(QDialog):
         side.addWidget(self.list, 1)
 
         self.direction = QComboBox()
-        self.direction.setToolTip(
-            "Which way the tape was swum. It is what tells two passes of one "
-            "transect apart when their results are compared."
-        )
+        self.direction.setToolTip("Which way the tape was swum.")
         direction_row = QFormLayout()
         direction_row.setContentsMargins(0, 0, 0, 0)
         direction_row.addRow("Direction", self.direction)
@@ -193,10 +173,7 @@ class TransectPickerDialog(QDialog):
         # The trip this pass was recorded on, remembered as the default for the
         # next. A campaign the registry does not list yet is made here.
         self.campaign = QComboBox()
-        self.campaign.setToolTip(
-            "The campaign this pass was recorded on. Remembered as the "
-            "default for the next pass."
-        )
+        self.campaign.setToolTip("The campaign this pass was recorded on. Remembered as the default for the next pass.")
         campaign_row = QHBoxLayout()
         campaign_row.setContentsMargins(0, 0, 0, 0)
         campaign_row.setSpacing(SPACE_SM)
@@ -236,9 +213,7 @@ class TransectPickerDialog(QDialog):
         top.addLayout(side)
         layout.addLayout(top)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -330,9 +305,7 @@ class TransectPickerDialog(QDialog):
         self.length_input = QDoubleSpinBox()
         self.length_input.setRange(0.0, 10_000.0)
         self.length_input.setSuffix(" m")
-        self.length_input.setToolTip(
-            "The tape reading. Without it the transect's runs are not scaled."
-        )
+        self.length_input.setToolTip("The tape reading. Without it the transect's runs are not scaled.")
         form.addRow("Tape length", self.length_input)
         self.error = QLabel("")
         self.error.setWordWrap(True)
@@ -397,10 +370,7 @@ class TransectPickerDialog(QDialog):
             self.error.setText(str(exc))
             return
         except sqlite3.IntegrityError:
-            self.error.setText(
-                f"A transect named {self.name_input.text().strip()!r} already "
-                "exists on that site."
-            )
+            self.error.setText(f"A transect named {self.name_input.text().strip()!r} already exists on that site.")
             return
         self._end_new_transect()
         self._fill(selected=transect.id)
@@ -439,13 +409,9 @@ class TransectPickerDialog(QDialog):
         self.list.blockSignals(True)
         try:
             self.list.clear()
-            self._add_row(
-                UNASSIGNED_LABEL, "Not filed against any line", "", UNASSIGNED_NOTE
-            )
+            self._add_row(UNASSIGNED_LABEL, "Not filed against any line", "", UNASSIGNED_NOTE)
             for transect in self._transects:
-                self._add_row(
-                    transect.name, self._subtitle(transect), str(transect.id), ""
-                )
+                self._add_row(transect.name, self._subtitle(transect), str(transect.id), "")
         finally:
             self.list.blockSignals(False)
         self._select(str(selected) if selected is not None else "")
@@ -506,9 +472,7 @@ class TransectPickerDialog(QDialog):
         try:
             self.direction.clear()
             for name in PASS_DIRECTIONS:
-                self.direction.addItem(
-                    direction_arrow_icon(name), direction_label(name, transect), name
-                )
+                self.direction.addItem(direction_arrow_icon(name), direction_label(name, transect), name)
             # Last, so a swim nobody noted the direction of can be filed as such
             # rather than as forward by default.
             self.direction.addItem(DIRECTION_UNRECORDED, None)
@@ -522,9 +486,7 @@ class TransectPickerDialog(QDialog):
             return
         transect = self.selected_transect()
         self.open_btn.setText(OPEN_PAGE_LABEL if transect else OPEN_PAGE_EMPTY_LABEL)
-        self.open_btn.setToolTip(
-            OPEN_PAGE_TOOLTIP if transect else OPEN_PAGE_EMPTY_TOOLTIP
-        )
+        self.open_btn.setToolTip(OPEN_PAGE_TOOLTIP if transect else OPEN_PAGE_EMPTY_TOOLTIP)
         self.map_hint.setText(MAP_HINT if self._transects else MAP_HINT_EMPTY)
         # The standing note always says the choice is reversible; being
         # unassigned is the extra thing worth saying when nothing is picked.

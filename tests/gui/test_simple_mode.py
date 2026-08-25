@@ -281,7 +281,7 @@ def test_every_problem_reaches_the_bell_at_once(window):
 
     titles = [n.title for n in window._notify.active()]
     assert "17 runs belong to no transect" in titles
-    assert any(t.startswith("A transect is half-entered") for t in titles)
+    assert any(t.startswith("A transect draft needs") for t in titles)
     assert window._notify_bell._unread == len(titles)
 
 

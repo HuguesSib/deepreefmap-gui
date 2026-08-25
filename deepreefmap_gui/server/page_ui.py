@@ -95,15 +95,9 @@ NOT_CONNECTED_HINT = "Paste a connect code to join a registry."
 DEVICE_CARD = "This device"
 ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web interface."
 
-REFERENCE_NOTE = (
-    "Sites and campaigns are edited in the web interface. Here they are chosen: "
-    "a transect names its site on the Transects page, and a pass names its "
-    "campaign when it is filed."
-)
+REFERENCE_NOTE = "Sites and campaigns are edited in the web interface and chosen here."
 ONBOARDED_BY = "Onboarded by"
-# Records the registry holds that could not be taken, listed on the page because
-# the notification that announced them has long since scrolled away and the two
-# copies go on differing until somebody renames one of them.
+# Records the registry holds that could not be taken, by name.
 SET_ASIDE = "Not taken"
 
 CONNECT = "Connect to server"
@@ -111,12 +105,8 @@ RECONNECT = "Connect again"
 SYNC_NOW = "Sync now"
 DISCONNECT = "Disconnect"
 
-# Said beside the button as well as on it: the two things confused here are
-# forgetting a token and revoking a device.
-DISCONNECT_NOTE = (
-    "Disconnect only forgets the token on this laptop. It does not revoke the device: "
-    "that is done in the registry's web interface."
-)
+# Said beside the button as well as on it.
+DISCONNECT_NOTE = "Forgets the token on this laptop. Revoke the device in the web interface."
 
 SESSION_RUNNING = "Wait for the current session to finish, then sync."
 
@@ -124,10 +114,7 @@ PULLING = "Pulling changes (page {page})…"
 SENDING = "Sending {rows} row(s)…"
 
 ARCHIVE_NOW = "Archive to server"
-ARCHIVE_TOOLTIP = (
-    "Send the original clips and every finished run's outputs to the registry's "
-    "archive. Nothing is sent until this is pressed."
-)
+ARCHIVE_TOOLTIP = "Send original clips and finished run outputs to the registry's archive."
 PLANNING_ARCHIVE = "Working out what to archive…"
 CANCEL_ARCHIVE = "Cancel archive"
 CANCELLING_ARCHIVE = "Finishing the file in flight…"
@@ -135,13 +122,10 @@ CANCELLING_ARCHIVE = "Finishing the file in flight…"
 # same fingerprint updating in place is the right shape for a retry.
 ARCHIVE_FAILED = "archive.upload_failed"
 
-# Said when an archive is asked for on a laptop that never enrolled. The sync
-# button hides then, but the Browse cards still offer their Archive actions.
+# Said when an archive is asked for on a laptop that never enrolled.
 ARCHIVE_NOT_CONNECTED = "Connect this laptop to a registry before archiving."
 
-# The upload gauge. Permille steps because a whole-survey queue is tens of
-# gigabytes, and a percent of that moves once a minute at best. The width is
-# the model library's download bar, so the app's two gauges are one size.
+# The upload gauge: permille steps, and the width of the model download bar.
 GAUGE_STEPS = 1000
 GAUGE_WIDTH = 150
 
@@ -216,6 +200,10 @@ class ServerPageMixin(MixinBase):
     # The archive flow between its two workers: the client the plan was built
     # for, and the plan awaiting confirmation or upload.
     _archive_client: Any | None = None
+    # The run a row-level press is archiving, and how its row is dressed until
+    # the registry is asked again: run id to (state, tooltip note).
+    _archive_focus_run: str | None = None
+    _archive_run_faces: dict[str, tuple[str, str | None]] = {}
     _archive_plan_pending: ArchivePlan | None = None
     # What the last sync found the resolved server preset still missing, kept
     # for the notice strip's Download now press.
@@ -260,9 +248,7 @@ class ServerPageMixin(MixinBase):
 
         self._server_device_card, device_layout = section_card(DEVICE_CARD)
         self._server_device_label = QLabel("")
-        self._server_device_label.setStyleSheet(
-            f"font-size: {FONT_LG}; font-weight: {WEIGHT_SEMIBOLD};"
-        )
+        self._server_device_label.setStyleSheet(f"font-size: {FONT_LG}; font-weight: {WEIGHT_SEMIBOLD};")
         self._server_device_label.setWordWrap(True)
         device_layout.addWidget(self._server_device_label)
         attribution = muted_label(ATTRIBUTION_NOTE)
@@ -347,8 +333,7 @@ class ServerPageMixin(MixinBase):
 
         self._server_sync_btn = QPushButton(SYNC_NOW)
         self._server_sync_btn.setToolTip(
-            "Take everything the registry has for this survey, then offer everything "
-            "edited here."
+            "Take everything the registry has for this survey, then offer everything edited here."
         )
         self._server_sync_btn.clicked.connect(self._on_sync_now)
         row.addWidget(self._server_sync_btn)
@@ -370,9 +355,7 @@ class ServerPageMixin(MixinBase):
         """Re-read the credential and the sync position, and paint them."""
         if not hasattr(self, "_server_facts"):
             return
-        state = read_state(
-            self._try_survey_store(), self._server_device_name(), self._server_enrolled_by()
-        )
+        state = read_state(self._try_survey_store(), self._server_device_name(), self._server_enrolled_by())
         connected = state.connected
         self._server_empty.setVisible(not connected)
         # Before enrolment and up to the first sync, whichever comes first for
@@ -407,10 +390,7 @@ class ServerPageMixin(MixinBase):
             self._server_device_facts.set_rows(_device_rows(state))
             self._server_facts.set_rows(_fact_rows(state))
             self._server_waiting.set_rows(
-                [
-                    (SECTION_LABELS.get(section, section), str(count))
-                    for section, count in state.pending.items()
-                ]
+                [(SECTION_LABELS.get(section, section), str(count)) for section, count in state.pending.items()]
             )
         reference = _reference_rows(self._try_survey_store()) if connected else []
         self._server_reference_card.setVisible(bool(reference))
@@ -616,27 +596,22 @@ class ServerPageMixin(MixinBase):
         """Offer one clip, from its own card. Same worker, a plan of one."""
         from deepreefmap_gui.sync import archive
 
-        self._archive_with_plan(
-            lambda store, _out_root: archive.archive_plan_for_video(store, video_id)
-        )
+        self._archive_with_plan(lambda store, _out_root: archive.archive_plan_for_video(store, video_id))
 
     def _archive_run(self, run_id: object) -> None:
         """Offer one run's outputs, from its own card."""
         from deepreefmap_gui.sync import archive
 
-        if run_id is None:
+        if run_id is None or self._server_archiving:
             return
-        # The planning, progress and summary widgets live on the Server page,
-        # so a press from Browse lands there first rather than reporting to a
-        # page nobody is looking at.
-        self._set_simple_section(SERVER_SECTION)
-        self._archive_with_plan(
-            lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id))
-        )
+        self._archive_with_plan(lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id)))
+        if not self._server_archiving:
+            return
+        # Progress is shown on the run's own row, where the press was made.
+        self._archive_focus_run = str(run_id)
+        self._set_archive_run_face(str(run_id), "uploading")
 
-    def _archive_with_plan(
-        self, plan_builder: Callable[..., object], *, confirm_first: bool = False
-    ) -> None:
+    def _archive_with_plan(self, plan_builder: Callable[..., object], *, confirm_first: bool = False) -> None:
         """Plan on a worker, then upload on another, with a confirm in between.
 
         Planning hashes files, so it stays off the GUI thread; but what it found
@@ -662,9 +637,10 @@ class ServerPageMixin(MixinBase):
             self._on_archive_done(describe_failure(exc))
             return
         if held is None:
-            # Reachable from the Browse cards, whose Archive actions do not
-            # hide with the Server page's buttons, so silence here read as a
-            # button that does nothing.
+            # Reachable from the run and clip cards, whose Archive actions do
+            # not hide with the Server page's buttons. The Connect offer lives
+            # on the Server page, so the press lands there.
+            self._set_simple_section(SERVER_SECTION)
             self._refresh_server_page()
             self._server_blocker.show_blocker(ARCHIVE_NOT_CONNECTED, CONNECT)
             return
@@ -836,9 +812,7 @@ class ServerPageMixin(MixinBase):
             from deepreefmap_gui.sync import archive
 
             try:
-                states: object = archive.probe_archive_states(
-                    client, store.list_videos(), store.list_runs()
-                )
+                states: object = archive.probe_archive_states(client, store.list_videos(), store.list_runs())
             except Exception as exc:
                 logger.info("Archive badges not refreshed: %s", exc)
                 states = None
@@ -855,6 +829,10 @@ class ServerPageMixin(MixinBase):
         from deepreefmap_gui.sync.archive import ArchiveStates
 
         self._archive_states = states if isinstance(states, ArchiveStates) else None
+        # The registry's account replaces this device's own; offline, the local
+        # answer stands until it can be checked.
+        if self._archive_states is not None:
+            self._archive_run_faces = {}
         self._paint_archive_badges()
 
     def _archive_state_for_video(self, video_id: object) -> str | None:
@@ -862,8 +840,52 @@ class ServerPageMixin(MixinBase):
         return None if states is None else states.videos.get(str(video_id))
 
     def _archive_state_for_run(self, run_id: object) -> str | None:
+        face = self._archive_run_faces.get(str(run_id))
+        if face is not None:
+            return face[0]
         states = getattr(self, "_archive_states", None)
         return None if states is None else states.runs.get(str(run_id))
+
+    def _archive_note_for_run(self, run_id: object) -> str | None:
+        face = self._archive_run_faces.get(str(run_id))
+        return None if face is None else face[1]
+
+    def _set_archive_run_face(self, run_id: str, state: str | None, note: str | None = None) -> None:
+        """Dress one run's row and card from this device's own archive attempt.
+
+        The face holds until the registry answers a probe, which is the account
+        that outranks it.
+        """
+        faces = dict(self._archive_run_faces)
+        if state is None:
+            faces.pop(run_id, None)
+        else:
+            faces[run_id] = (state, note)
+        self._archive_run_faces = faces
+        self._paint_archive_badges()
+
+    def _settle_archive_run_face(self, result: object, plan: ArchivePlan | None) -> None:
+        run_id = self._archive_focus_run
+        self._archive_focus_run = None
+        if run_id is None:
+            return
+        if isinstance(result, Failure):
+            self._set_archive_run_face(run_id, "failed", f"{result.title}. {result.detail}")
+            return
+        if not isinstance(result, ArchiveReport) or result.cancelled:
+            self._set_archive_run_face(run_id, None)
+            return
+        if result.failed:
+            label, reason = result.failed[0]
+            self._set_archive_run_face(run_id, "failed", f"{label}: {reason}")
+            return
+        # A plan with nothing to send and a reason why is a run that could not
+        # be archived, not one that was.
+        if plan is not None and not plan.jobs and plan.skipped:
+            label, reason = plan.skipped[0]
+            self._set_archive_run_face(run_id, "failed", f"{label}: {reason}")
+            return
+        self._set_archive_run_face(run_id, "archived")
 
     def _on_archive_done(self, result: object) -> None:
         self._server_archiving = False
@@ -873,6 +895,7 @@ class ServerPageMixin(MixinBase):
         plan = getattr(self, "_archive_plan_pending", None)
         self._archive_plan_pending = None
         self._archive_client = None
+        self._settle_archive_run_face(result, plan)
         if isinstance(result, ArchiveReport) and plan is not None:
             result.skipped = list(plan.skipped)
         if isinstance(result, Failure):
@@ -920,9 +943,7 @@ class ServerPageMixin(MixinBase):
             return
         store = self._try_survey_store()
         self._sync_badge_scan_running = True
-        threading.Thread(
-            target=self._read_sync_badge, args=(store,), name="sync-badge", daemon=True
-        ).start()
+        threading.Thread(target=self._read_sync_badge, args=(store,), name="sync-badge", daemon=True).start()
 
     def _read_sync_badge(self, store: SurveyStore | None) -> None:
         try:
@@ -968,8 +989,7 @@ class ServerPageMixin(MixinBase):
             return sync_badge.fault_face(state.sync_fault)
         if state.waiting:
             breakdown = ", ".join(
-                f"{count} {SECTION_LABELS.get(name, name).lower()}"
-                for name, count in sorted(state.pending.items())
+                f"{count} {SECTION_LABELS.get(name, name).lower()}" for name, count in sorted(state.pending.items())
             )
             return sync_badge.waiting_face(state.waiting, breakdown)
         # No survey open means nothing was counted, which is not the same
@@ -1036,9 +1056,7 @@ class ServerPageMixin(MixinBase):
             # action, and this blocker carries the reconnect offer over it.
             self._refresh_server_page()
             self._server_blocker.show_blocker(
-                " ".join(
-                    filter(None, [f"{blocker.title}. {blocker.detail}", half_note(outcome)])
-                ),
+                " ".join(filter(None, [f"{blocker.title}. {blocker.detail}", half_note(outcome)])),
                 RECONNECT if blocker.reconnect else "",
             )
         else:
@@ -1089,10 +1107,7 @@ class ServerPageMixin(MixinBase):
                 {
                     "fingerprint": f"{PRESET_MODELS_MISSING}.{name}.{version}",
                     "title": f"{name} (v{version}) names models that are not downloaded",
-                    "body": (
-                        f"Missing: {', '.join(missing)}. "
-                        "Download them before running a session."
-                    ),
+                    "body": (f"Missing: {', '.join(missing)}. Download them before running a session."),
                     "severity": WARNING,
                     "scope": MACHINE,
                     "section": MODELS_SECTION,
@@ -1100,9 +1115,7 @@ class ServerPageMixin(MixinBase):
             )
         self._refresh_models_segment()
 
-    def _preset_models_needed(
-        self, store: SurveyStore | None
-    ) -> tuple[str, int, tuple[str, ...]] | None:
+    def _preset_models_needed(self, store: SurveyStore | None) -> tuple[str, int, tuple[str, ...]] | None:
         """The resolved server preset, and the weights it names that are not here.
 
         Answered from what _refresh_model_status verified on its worker thread,

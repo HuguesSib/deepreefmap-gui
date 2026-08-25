@@ -39,14 +39,8 @@ from deepreefmap_gui.survey.statuses import clip_spec
 
 UNAVAILABLE = "Video unavailable"
 
-NEW_SECTION_TOOLTIP = (
-    "Cut out the part of this clip worth processing, file it against a transect "
-    "or none, and add it to the cart."
-)
-NO_FILE_TOOLTIP = (
-    "The video file cannot be found, so there is nothing to cut. Add it again "
-    "from where it lives now."
-)
+NEW_SECTION_TOOLTIP = "Cut a pass from this clip and add it to the cart."
+NO_FILE_TOOLTIP = "The video file cannot be found. Add it again from where it lives now."
 
 
 def clip_facts(entry: VideoLibraryEntry) -> str:
@@ -123,8 +117,7 @@ class VideoDetailPanel(DetailCard):
         self.archive_btn.setAccessibleName("Archive this clip")
         self.archive_btn.setProperty("quiet", "true")
         self.archive_btn.setToolTip(
-            "Send this clip's original file to the registry's archive. "
-            "Needs a server connection."
+            "Send this clip's original file to the registry's archive. Needs a server connection."
         )
         self.archive_btn.clicked.connect(self._emit_archive)
         self.add_title_button(self.archive_btn)
@@ -135,8 +128,7 @@ class VideoDetailPanel(DetailCard):
         self.details_btn.setAccessibleName("Clip details")
         self.details_btn.setProperty("quiet", "true")
         self.details_btn.setToolTip(
-            "Which camera shot this clip, where it sat on the rig, whether it was "
-            "mounted upside down, and whether the footage is usable."
+            "Clip details:\n• Camera and rig position\n• Upside-down mounting\n• Review verdict"
         )
         self.details_btn.clicked.connect(self._emit_details)
         self.add_title_button(self.details_btn)
@@ -183,9 +175,7 @@ class VideoDetailPanel(DetailCard):
         Red rather than greyed: a disabled button shows no tooltip, and the
         reason is the whole of what the user needs at that point.
         """
-        self.queue_btn.setStyleSheet(
-            f"QToolButton {{ color: {PRIMARY if available else ERROR}; }}"
-        )
+        self.queue_btn.setStyleSheet(f"QToolButton {{ color: {PRIMARY if available else ERROR}; }}")
         self.queue_btn.setToolTip(NEW_SECTION_TOOLTIP if available else NO_FILE_TOOLTIP)
 
     def _emit_reveal(self) -> None:
@@ -207,7 +197,7 @@ class VideoDetailPanel(DetailCard):
         three are states where a badge would claim more than anybody checked.
         """
         faces = {
-            "archived": ("On server ✓", SUCCESS, "Archived and verified on the registry."),
+            "archived": ("On server", SUCCESS, "Archived and verified on the registry."),
             "pending": ("Uploading…", WARNING, "Offered to the registry, not verified yet."),
             "failed": ("Archive failed", ERROR, "The registry could not verify the upload. Archive again."),
         }
@@ -242,9 +232,7 @@ class VideoDetailPanel(DetailCard):
         across chapters can still find the files its frames come from.
         """
         self.title.setText(entry.video.file_name)
-        self.set_status(
-            clip_spec(entry.outcome).label, clip_outcome_color(entry.outcome)
-        )
+        self.set_status(clip_spec(entry.outcome).label, clip_outcome_color(entry.outcome))
 
         rows = [("File", _link_line(entry))]
         facts = clip_facts(entry)
@@ -257,17 +245,13 @@ class VideoDetailPanel(DetailCard):
         rows.append(("Last processed", _short_date(last_run) if last_run else "never"))
         # The checksum is what makes a clip recognisable when it turns up again
         # somewhere else, so its absence is worth as much space as its value.
-        rows.append(
-            ("Checksum", f"#{entry.video.hash[:8]}" if entry.video.hash else "none yet")
-        )
+        rows.append(("Checksum", f"#{entry.video.hash[:8]}" if entry.video.hash else "none yet"))
         self.facts.set_rows(rows)
 
         apply_link_state(self.link_btn, entry.link_state)
         self.unavailable.setVisible(entry.link_state == LINK_MISSING)
         self._set_queue_available(entry.link_state == LINK_LINKED)
-        self.pass_list.set_sections(
-            entry, transect_name, in_cart=in_cart, assets=assets
-        )
+        self.pass_list.set_sections(entry, transect_name, in_cart=in_cart, assets=assets)
         self._entry = entry
 
     def select_section(self, pass_id: str | None) -> None:

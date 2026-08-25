@@ -50,9 +50,7 @@ AGREED = contract.CONTRACT_VERSION
 class FakeRegistry:
     """Answers like the registry, and records the order it was asked in."""
 
-    def __init__(
-        self, base_url="", token="", fail=None, push_fail=None, skipped=None, omitted=()
-    ):
+    def __init__(self, base_url="", token="", fail=None, push_fail=None, skipped=None, omitted=()):
         self.base_url = base_url
         self.token = token
         # What the real client learns from the stamp on a response.
@@ -85,9 +83,7 @@ class FakeRegistry:
         self.pushed.append(dict(sections))
         return {
             "cursor": CURSOR,
-            "sections": {
-                name: self._outcome(name, rows) for name, rows in sections.items()
-            },
+            "sections": {name: self._outcome(name, rows) for name, rows in sections.items()},
         }
 
     def _outcome(self, name, rows):
@@ -132,8 +128,12 @@ def registry(monkeypatch):
     def build(*, fail=None, push_fail=None, skipped=None, omitted=()):
         def factory(base_url, token=None, timeout=None, agreed=None):
             fake = FakeRegistry(
-                base_url, token or "", fail=fail, push_fail=push_fail,
-                skipped=skipped, omitted=omitted,
+                base_url,
+                token or "",
+                fail=fail,
+                push_fail=push_fail,
+                skipped=skipped,
+                omitted=omitted,
             )
             fake.agreed = agreed
             made.append(fake)
@@ -295,9 +295,9 @@ def test_a_record_this_laptop_would_not_take_stays_readable_on_the_page(window):
     somebody renames one of them.
     """
     enrol_this_device()
-    window._survey_store().set_sync_state(QUARANTINE_KEY, json.dumps([
-        {"section": "transects", "id": str(uuid.uuid4()), "name": "Reef Wall", "row": {}}
-    ]))
+    window._survey_store().set_sync_state(
+        QUARANTINE_KEY, json.dumps([{"section": "transects", "id": str(uuid.uuid4()), "name": "Reef Wall", "row": {}}])
+    )
 
     window._set_simple_section(SERVER_SECTION)
 
@@ -357,9 +357,7 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     assert device_facts(window)[ONBOARDED_BY] == "Kim Nguyen"
 
 
-def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
-    window, qapp, monkeypatch
-):
+def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(window, qapp, monkeypatch):
     """The dialog can be cancelled mid-enrolment, and the answer still arrives."""
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
@@ -489,11 +487,7 @@ def test_a_revoked_device_is_asked_to_connect_again(window, qapp, registry):
 
 def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
     enrol_this_device()
-    registry(
-        fail=client_mod.ContractMismatchError(
-            "This app speaks metadata contract 1 and the registry speaks 2."
-        )
-    )
+    registry(fail=client_mod.ContractMismatchError("This app speaks metadata contract 1 and the registry speaks 2."))
     window._set_simple_section(SERVER_SECTION)
 
     window._on_sync_now()
@@ -505,9 +499,7 @@ def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
     assert window._server_blocker._action.text() == ""
 
 
-def test_a_registry_that_stops_saying_which_contract_it_speaks_is_refused(
-    window, qapp, registry
-):
+def test_a_registry_that_stops_saying_which_contract_it_speaks_is_refused(window, qapp, registry):
     """Once a registry has stamped, silence from it is a registry gone backwards."""
     enrol_this_device()
     registry(
@@ -594,7 +586,7 @@ def test_disconnecting_forgets_the_token_and_says_only_that(window, monkeypatch)
 
     assert credentials.load() is None
     assert window._server_empty.isVisibleTo(window)
-    assert "does not revoke the device" in window._server_disconnect_btn.toolTip()
+    assert "Revoke the device in the web interface" in window._server_disconnect_btn.toolTip()
 
 
 def test_disconnecting_is_refusable(window, monkeypatch):
@@ -617,14 +609,13 @@ def test_an_unconnected_install_offers_no_archive_button(window):
     assert not window._server_archive_btn.isEnabled()
 
 
-def test_the_archive_button_says_it_only_sends_on_request(window):
+def test_the_archive_button_says_what_it_sends(window):
     enrol_this_device()
     window._set_simple_section(SERVER_SECTION)
 
     assert window._server_archive_btn.isVisibleTo(window)
     tooltip = window._server_archive_btn.toolTip()
     assert "original clips" in tooltip and "finished run" in tooltip
-    assert "until this is pressed" in tooltip
 
 
 @pytest.fixture
@@ -642,9 +633,7 @@ def accept_confirms(monkeypatch):
     return asked
 
 
-def test_archiving_sends_the_queue_and_reports_what_landed(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registry, tmp_path, accept_confirms):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -688,9 +677,7 @@ def test_declining_the_size_question_sends_nothing(window, qapp, registry, tmp_p
     assert window._server_archive_btn.isEnabled()
 
 
-def test_what_the_plan_left_out_is_said_with_what_landed(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_what_the_plan_left_out_is_said_with_what_landed(window, qapp, registry, tmp_path, accept_confirms):
     """A clip whose file has moved must not vanish from the summary: "archived
     the rest" and "archived everything" read the same without it."""
     from deepreefmap_gui.survey.models import VideoAsset
@@ -726,8 +713,7 @@ def test_a_cancelled_archive_says_it_stopped(window, qapp, registry, tmp_path, a
     window._server_archive_btn.click()
     # The moment the upload worker starts, stopping it is offered; pressing it
     # marks the queue cancelled before the next job is taken.
-    assert settle(qapp, lambda: window._server_archive_cancel_btn.isVisibleTo(window)
-                  or not window._server_archiving)
+    assert settle(qapp, lambda: window._server_archive_cancel_btn.isVisibleTo(window) or not window._server_archiving)
     if window._server_archiving:
         assert window._server_archive_cancel_btn.text() == CANCEL_ARCHIVE
         window._on_archive_cancel()
@@ -788,9 +774,7 @@ def test_a_session_in_flight_holds_the_archive_back(window, registry):
     assert window._server_blocker._reason.text() == SESSION_RUNNING
 
 
-def test_an_archive_that_cannot_reach_the_registry_is_a_retry(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_an_archive_that_cannot_reach_the_registry_is_a_retry(window, qapp, registry, tmp_path, accept_confirms):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -861,9 +845,7 @@ def test_a_reading_that_arrives_after_the_pass_paints_nothing(window):
     assert window._server_archive_bar.value() == 0
 
 
-def test_an_archive_fills_the_gauge_and_clears_it(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_an_archive_fills_the_gauge_and_clears_it(window, qapp, registry, tmp_path, accept_confirms):
     """Scenario: the whole route from the upload thread to the widget.
 
     Expected behaviour: readings reach the gauge over the window's own signal,
@@ -893,10 +875,9 @@ def test_an_archive_fills_the_gauge_and_clears_it(
     assert window._server_archive_bar.value() == 0
 
 
-def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp, registry):
-    """The planning, progress and summary widgets all live on the Server page,
-    so an archive pressed from a Browse card must not report to a page nobody
-    is looking at."""
+def test_a_card_archive_stays_where_it_was_pressed(window, qapp, registry):
+    """The run's own row and card carry the answer, so the press does not move
+    the reader to the Server page. Its summary is still written there."""
     enrol_this_device()
     registry()
     window._set_simple_section("videos")
@@ -904,11 +885,14 @@ def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp,
     window._archive_run("no-such-run")
     assert settle(qapp, lambda: not window._server_archiving)
 
-    assert on_server_page(window)
+    assert not on_server_page(window)
+    assert window._current_section() == "videos"
     assert "Archived 0 file(s)" in window._server_notice._message.text()
 
 
 def test_an_unenrolled_archive_says_to_connect_first(window):
+    """The Connect offer lives on the Server page, so an archive pressed
+    without a registry lands there."""
     from deepreefmap_gui.server.page_ui import ARCHIVE_NOT_CONNECTED, CONNECT
 
     window._set_simple_section("videos")
@@ -950,9 +934,7 @@ def assign_preset(window, name="Expedition standard", version=2, settings=None):
     return store
 
 
-def test_a_sync_offers_to_download_what_the_assigned_preset_needs(
-    window, qapp, registry, monkeypatch
-):
+def test_a_sync_offers_to_download_what_the_assigned_preset_needs(window, qapp, registry, monkeypatch):
     enrol_this_device()
     assign_preset(window, settings=PRESET_SETTINGS)
     window._last_model_states = model_states()
@@ -1080,8 +1062,7 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
     window._refresh_sync_badge()
     assert settle(
         qapp,
-        lambda: getattr(window, "_sync_badge_state", None) is not None
-        and window._sync_badge_state.connected,
+        lambda: getattr(window, "_sync_badge_state", None) is not None and window._sync_badge_state.connected,
     )
 
     window._on_sync_badge_clicked()
@@ -1217,9 +1198,7 @@ def test_a_single_clip_is_archived_from_its_id(window, qapp, registry, tmp_path)
     other_file.write_bytes(b"wall " * 100)
     store = window._survey_store()
     wanted = store.upsert_video(make_video("ab" * 16, path=str(clip_file)))
-    store.upsert_video(
-        make_video("cd" * 16, file_name="GX020001.MP4", path=str(other_file))
-    )
+    store.upsert_video(make_video("cd" * 16, file_name="GX020001.MP4", path=str(other_file)))
     made = registry()
 
     window._archive_video(str(wanted.id))

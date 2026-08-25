@@ -54,7 +54,7 @@ class ConfigAuditDialog(QDialog):
         self.setWindowTitle("Settings history")
         layout = QVBoxLayout(self)
 
-        heading = QLabel(f"The standard now is {org.label}.\n{audit_summary(rows)}")
+        heading = QLabel(f"Standard: {org.label}\n{audit_summary(rows)}")
         heading.setWordWrap(True)
         layout.addWidget(heading)
 
@@ -64,7 +64,7 @@ class ConfigAuditDialog(QDialog):
             layout.addWidget(
                 EmptyState(
                     "Nothing processed yet",
-                    "Once you process a dive, the settings it used are listed here.",
+                    "Settings of processed runs are listed here.",
                 ),
                 1,
             )

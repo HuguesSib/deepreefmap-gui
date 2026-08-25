@@ -47,7 +47,7 @@ def test_half_entered_transect_is_flagged():
     """Nothing else in the UI mentions a draft again, so the step has to."""
     state = transects_state(1, True)
     assert state.state == ATTENTION
-    assert "endpoints" in state.reason
+    assert "both ends" in state.reason
 
 
 def test_empty_run_step_is_todo_not_blocked():
@@ -73,14 +73,13 @@ def test_blockers_name_themselves(overrides, fragment):
 def test_a_skipped_transect_is_reported_but_never_blocks():
     """Scenario: a clip is queued with the transect deliberately skipped.
 
-    Expected behaviour: the batch runs. The step says what was given up -- the
-    pass cannot be set beside repeat passes of the same place -- and says it
-    below every real blocker, because it is information rather than a fault.
+    Expected behaviour: the batch runs, and the step reports the pass as
+    uncompared below every real blocker.
     """
     state = gate(pass_count=3, unassigned=1, remaining=3)
     assert state.state == OK
     assert "without a transect" in state.count
-    assert "repeat passes" in state.reason
+    assert "not compared" in state.reason
 
 
 def test_an_unscaled_transect_is_reported_but_never_blocks():
@@ -157,9 +156,7 @@ def test_a_group_spread_over_two_withdrawn_lines_says_two():
     assert "the length recorded for them" in two.reason
     assert "Ask whoever removed them" in two.reason
 
-    withdrawn = gate(
-        pass_count=2, remaining=2, retired=2, retired_unscaled=2, unscaled=2, retired_lines=2
-    )
+    withdrawn = gate(pass_count=2, remaining=2, retired=2, retired_unscaled=2, unscaled=2, retired_lines=2)
     assert "no tape length was recorded for them" in withdrawn.reason
     assert "whether they should come back with their tape lengths" in withdrawn.reason
 
@@ -167,9 +164,7 @@ def test_a_group_spread_over_two_withdrawn_lines_says_two():
 def test_the_mixed_sentence_does_not_claim_they_share_a_line():
     """Some of the group lost its scale and some did not, which is only possible
     across more than one line, so the clause cannot say "the line they are on"."""
-    state = gate(
-        pass_count=3, remaining=3, retired=3, retired_unscaled=1, unscaled=1, retired_lines=2
-    )
+    state = gate(pass_count=3, remaining=3, retired=3, retired_unscaled=1, unscaled=1, retired_lines=2)
 
     assert "1 of them will run unscaled" in state.reason
     assert "no tape length was recorded for the line each was swum on" in state.reason
@@ -448,6 +443,4 @@ def test_a_headline_drops_the_advice_and_keeps_the_fault():
 
 
 def test_a_one_sentence_reason_survives_whole():
-    assert headline("Add a transect, or import a CSV or GPX file.") == (
-        "Add a transect, or import a CSV or GPX file"
-    )
+    assert headline("Add a transect, or import a CSV or GPX file.") == ("Add a transect, or import a CSV or GPX file")

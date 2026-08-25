@@ -206,10 +206,7 @@ PICK_MODIFIERS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.Shift
 # runs perfectly well unfiled, so this is an invitation in the accent colour
 # rather than a warning in the red one.
 SET_TRANSECT = "Set transect"
-SET_TRANSECT_TOOLTIP = (
-    "This pass is not filed against a transect. Click to pick one, or leave "
-    "it: a pass processes either way."
-)
+SET_TRANSECT_TOOLTIP = "Not filed against a transect. Click to pick one."
 CHANGE_TRANSECT_TOOLTIP = "Click to file this pass somewhere else."
 
 # A tick, held for this long, so a click on the cart is answered where it was
@@ -240,17 +237,9 @@ MENU_OPEN_TRANSECTS_PAGE = "Open the Transects page"
 MENU_DELETE = "Delete pass"
 NO_TRANSECT_TOOLTIP = "This pass is not filed against a transect."
 RETRIM_TOOLTIP = "Move this pass's window."
-TRIM_UNLINKED_TOOLTIP = (
-    "The video file cannot be found, so there is nothing to scrub. Add it again "
-    "from where it lives now."
-)
-CART_UNLINKED_TOOLTIP = (
-    "The video file cannot be found, so this pass cannot be processed. Add it "
-    "again from where it lives now."
-)
-DELETE_BLOCKED_TOOLTIP = (
-    "This pass has runs. Delete those in Browse first, and the pass can go with them."
-)
+TRIM_UNLINKED_TOOLTIP = "The video file cannot be found. Add it again from where it lives now."
+CART_UNLINKED_TOOLTIP = TRIM_UNLINKED_TOOLTIP
+DELETE_BLOCKED_TOOLTIP = "This pass has runs. Delete them in Browse first."
 
 # A clip row's own menu. Hiding is a view of the library rather than a fact
 # about it, so it sits beside the destructive item rather than looking like one.
@@ -267,10 +256,7 @@ MENU_DELETE_CLIP = "Delete clip"
 # at when the doubt arrives is not something the row gets to choose.
 KEEPS_FILE_NOTE = "The video file itself is not deleted."
 DELETE_CLIP_TOOLTIP = f"Take this clip out of the library. {KEEPS_FILE_NOTE}"
-DELETE_CLIP_BLOCKED_TOOLTIP = (
-    f"This clip has runs. Delete those in Browse first, and the clip can go with "
-    f"them. {KEEPS_FILE_NOTE}"
-)
+DELETE_CLIP_BLOCKED_TOOLTIP = f"This clip has runs. Delete them in Browse first. {KEEPS_FILE_NOTE}"
 
 # The clip delete asks in the button rather than in a dialog: one click arms it,
 # the second does it, and it disarms itself. Clearing a library of bad imports
@@ -285,20 +271,12 @@ DELETE_CLIP_ARMED_TOOLTIP = f"Click again to remove it. {KEEPS_FILE_NOTE}"
 # shape it has no other use for.
 NEW_SECTION_GLYPH = "+"
 
-UNKNOWN_LENGTH_TOOLTIP = (
-    "Length unknown, so there is nowhere to draw this clip's passes along it."
-)
-NO_SECTIONS_TOOLTIP = "Nothing has been cut from this clip yet. Use + to cut a pass."
+UNKNOWN_LENGTH_TOOLTIP = "Length unknown; passes cannot be drawn."
+NO_SECTIONS_TOOLTIP = "No passes yet. Use + to cut one."
 GRAVITY_UNKNOWN_TOOLTIP = "Gravity not read yet."
-ESTIMATED_DATE_NOTE = (
-    "The recording date is the file's own timestamp: the clip carries none of "
-    "its own, which is what re-encoding or trimming leaves behind."
-)
-MISSING_FILE_NOTE = (
-    "Not found. Add videos… on the file's new home relinks it by checksum, "
-    "passes and all."
-)
-HIDDEN_NOTE = "Hidden on this machine, and shown only because Show hidden is on."
+ESTIMATED_DATE_NOTE = "Recording date taken from the file timestamp; the clip carries none."
+MISSING_FILE_NOTE = "Not found. Add videos… from its new home relinks it."
+HIDDEN_NOTE = "Hidden on this machine. Shown while Show hidden is on."
 
 
 def _clock(seconds: float) -> str:
@@ -362,7 +340,7 @@ def preview_times(pass_: TransectPass) -> tuple[float, float, float]:
 
 
 def run_label(count: int) -> str:
-    """"3 runs", and nothing at all until a pass has been processed once."""
+    """ "3 runs", and nothing at all until a pass has been processed once."""
     if count < 1:
         return ""
     return f"{count} run" if count == 1 else f"{count} runs"
@@ -413,10 +391,7 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
     section = (
         # SECTION_INDENT already carries two of these, then one gap after each of
         # the dot, the window, the chip, the arrow, the run count and this spacer.
-        SPACE_SM * 8
-        + DISCLOSURE_WIDTH
-        + ICON_SM * 3
-        + cw * (WINDOW_CHARS + TRANSECT_CHARS + RUNS_CHARS)
+        SPACE_SM * 8 + DISCLOSURE_WIDTH + ICON_SM * 3 + cw * (WINDOW_CHARS + TRANSECT_CHARS + RUNS_CHARS)
     )
     return max(0, clip - section)
 
@@ -469,7 +444,8 @@ def _selectable(widget: QWidget, name: str) -> None:
         f" border: 1px solid {SELECTION_CONTROL_BORDER}; color: {BRIGHT_TEXT}; }}"
         # Unavailable stays unavailable: the rule above would otherwise paint a
         # dead control in the same white as a live one.
-        f'QWidget#{name}[selected="true"] QToolButton:disabled {{'
+        f'QWidget#{name}[selected="true"] QToolButton:disabled,'
+        f' QWidget#{name}[selected="true"] QToolButton[dead="true"] {{'
         f" color: {DISABLED_FG}; border-color: {BORDER}; }}"
         # A mark you click rather than a button keeps its own nothing: boxing
         # the disclosure chevron on selection makes it read as an action.
@@ -503,9 +479,7 @@ def _quiet_button(glyph: str, name: str, tooltip: str) -> QToolButton:
     return button
 
 
-def apply_link_state(
-    button: QToolButton, link_state: str, ink: QColor | None = None
-) -> None:
+def apply_link_state(button: QToolButton, link_state: str, ink: QColor | None = None) -> None:
     """Dress a button as the clip's link: joined, broken, or not yet asked.
 
     Clickable in every state, including unknown: revealing is how you find out
@@ -525,7 +499,7 @@ def apply_link_state(
         button.setToolTip("Show in folder")
 
 
-def _icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
+def icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
     """The same button drawn from the icon layer rather than from a character."""
     button = QToolButton()
     button.setIcon(icon)
@@ -534,7 +508,19 @@ def _icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
     button.setToolTip(tooltip)
     button.setProperty("quiet", "true")
     button.setProperty("pad", "none")
+    button.setProperty("dead", "false")
     return button
+
+
+def set_button_dead(button: QToolButton, dead: bool) -> None:
+    """Mark a row button that cannot act: no hover fill, still enabled for its tooltip."""
+    value = "true" if dead else "false"
+    if button.property("dead") == value:
+        return
+    button.setProperty("dead", value)
+    style = button.style()
+    style.unpolish(button)
+    style.polish(button)
 
 
 class SectionStrip(QWidget):
@@ -651,9 +637,7 @@ class SectionStrip(QWidget):
         # Inset by half the pen, or the stroke is clipped by the widget's edge.
         painter.drawRoundedRect(track.adjusted(1.0, 1.0, -1.0, -1.0), radius, radius)
 
-    def _paint_span(
-        self, painter: QPainter, span: Span, rect: QRectF, radius: float
-    ) -> None:
+    def _paint_span(self, painter: QPainter, span: Span, rect: QRectF, radius: float) -> None:
         colour = self._span_colour(span)
         fill = QColor(colour)
         # A section not started yet is a claim about the future, so it is tinted
@@ -670,9 +654,7 @@ class SectionStrip(QWidget):
         painter.drawRoundedRect(rect, radius, radius)
         self._paint_ticks(painter, span, rect, colour)
 
-    def _paint_ticks(
-        self, painter: QPainter, span: Span, rect: QRectF, colour: QColor
-    ) -> None:
+    def _paint_ticks(self, painter: QPainter, span: Span, rect: QRectF, colour: QColor) -> None:
         """One tick per run, above a pass that has been run more than once.
 
         A single tick over every processed pass would be decoration; the mark
@@ -702,9 +684,7 @@ class SectionStrip(QWidget):
         painter.setPen(pen)
         x = track.left() - track.height()
         while x < track.right() + track.height():
-            painter.drawLine(
-                QPointF(x, track.bottom()), QPointF(x + track.height(), track.top())
-            )
+            painter.drawLine(QPointF(x, track.bottom()), QPointF(x + track.height(), track.top()))
             x += HATCH_PITCH
 
 
@@ -793,15 +773,13 @@ class VideoRow(QWidget):
         self.play_btn.clicked.connect(lambda: self._emit(self.play_requested))
         row.addWidget(self.play_btn)
 
-        self.new_section_btn = _quiet_button(
-            NEW_SECTION_GLYPH, "Cut a new pass", "Cut a new pass"
-        )
+        self.new_section_btn = _quiet_button(NEW_SECTION_GLYPH, "Cut a new pass", "Cut a new pass")
         self.new_section_btn.clicked.connect(lambda: self._emit(self.new_section_requested))
         row.addWidget(self.new_section_btn)
 
         # Live whatever the clip's state: the handler is what refuses, and the
         # tooltip carries the reason. A disabled button shows no tooltip.
-        self.delete_btn = _icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
+        self.delete_btn = icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         row.addWidget(self.delete_btn)
         # A text glyph measures narrower than an icon, and the sections column has
@@ -907,6 +885,8 @@ class VideoRow(QWidget):
             self._apply_delete_icon()
             self._emit(self.delete_requested)
             return
+        if self._entry is not None and self._entry.run_count:
+            return
         self._delete_arm.start()
         self._apply_delete_icon()
 
@@ -916,12 +896,11 @@ class VideoRow(QWidget):
             self.delete_btn.setIcon(check_icon(color=QColor(ERROR)))
             self.delete_btn.setToolTip(DELETE_CLIP_ARMED_TOOLTIP)
             return
-        ink = self._ink()
-        self.delete_btn.setIcon(trash_icon(color=ink) if ink is not None else trash_icon())
         runs = 0 if self._entry is None else self._entry.run_count
-        self.delete_btn.setToolTip(
-            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
-        )
+        ink = QColor(DISABLED_FG) if runs else self._ink() or QColor(DEFAULT_INK)
+        self.delete_btn.setIcon(trash_icon(color=ink))
+        set_button_dead(self.delete_btn, bool(runs))
+        self.delete_btn.setToolTip(DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Report the press, and treat a bare one as picking this clip.
@@ -962,9 +941,7 @@ class VideoRow(QWidget):
         delete.triggered.connect(lambda *_: self.delete_unused_requested.emit(self.video_id))
         runs = 0 if self._entry is None else self._entry.run_count
         delete_clip = menu.addAction(MENU_DELETE_CLIP)
-        delete_clip.setToolTip(
-            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
-        )
+        delete_clip.setToolTip(DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP)
         delete_clip.triggered.connect(lambda *_: self.delete_requested.emit(self.video_id))
         return menu
 
@@ -1016,10 +993,7 @@ class VideoRow(QWidget):
         self.strip.set_spans(
             timeline_spans(entry),
             video.duration_s,
-            {
-                str(pass_.id): transect_name(pass_.transect_id) or UNASSIGNED_NAME
-                for pass_ in entry.passes
-            },
+            {str(pass_.id): transect_name(pass_.transect_id) or UNASSIGNED_NAME for pass_ in entry.passes},
         )
         # Playing and cutting both decode the file, so they need the file, and
         # an unknown link state is not yet a yes. Revealing stays live: the
@@ -1183,32 +1157,22 @@ class SectionRow(QWidget):
             # difference on a gap in front of the transect. Every section of one
             # clip writes its window to much the same length anyway, so they
             # line up without being made to.
-            self._window.setSizePolicy(
-                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-            )
+            self._window.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         row.addWidget(self._window)
 
         self.transect_chip = TransectChip()
-        self.transect_chip.clicked.connect(
-            lambda: self._emit(self.reassign_requested)
-        )
+        self.transect_chip.clicked.connect(lambda: self._emit(self.reassign_requested))
         if compact:
             # The chip takes what the pane leaves it and elides; in the wide
             # list it holds a column so the names line up down the page. The
             # floor is set here rather than left to the button's own text, or a
             # long transect name makes the row wider than the pane and pushes
             # the buttons off the end of it.
-            self.transect_chip.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-            self.transect_chip.setMinimumWidth(
-                self.fontMetrics().averageCharWidth() * TRANSECT_MIN_CHARS
-            )
+            self.transect_chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.transect_chip.setMinimumWidth(self.fontMetrics().averageCharWidth() * TRANSECT_MIN_CHARS)
             row.addWidget(self.transect_chip, 1)
         else:
-            self.transect_chip.setFixedWidth(
-                self.fontMetrics().averageCharWidth() * TRANSECT_CHARS
-            )
+            self.transect_chip.setFixedWidth(self.fontMetrics().averageCharWidth() * TRANSECT_CHARS)
             row.addWidget(self.transect_chip)
 
         # An arrow rather than the word: which way a swim went is one bit, and
@@ -1230,15 +1194,13 @@ class SectionRow(QWidget):
         self.strip: SectionStrip | None = None
         if not compact:
             self._strip_lead = QLabel()
-            self._strip_lead.setFixedWidth(
-                section_strip_lead(self, self.fontMetrics().averageCharWidth() * NAME_CHARS)
-            )
+            self._strip_lead.setFixedWidth(section_strip_lead(self, self.fontMetrics().averageCharWidth() * NAME_CHARS))
             row.addWidget(self._strip_lead)
             self.strip = SectionStrip()
             self.strip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             row.addWidget(self.strip, 1)
 
-        self.cart_btn = _icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
+        self.cart_btn = icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
         self.cart_btn.clicked.connect(self._on_cart_clicked)
         row.addWidget(self.cart_btn)
         # Owned by the row, so a list rebuilt under a pending tick takes the
@@ -1248,11 +1210,11 @@ class SectionRow(QWidget):
         self._cart_ack.setInterval(CART_ACK_MS)
         self._cart_ack.timeout.connect(self._apply_cart_icon)
 
-        self.trim_btn = _icon_button(pencil_icon(), MENU_RETRIM, RETRIM_TOOLTIP)
+        self.trim_btn = icon_button(pencil_icon(), MENU_RETRIM, RETRIM_TOOLTIP)
         self.trim_btn.clicked.connect(lambda: self._emit(self.retrim_requested))
         row.addWidget(self.trim_btn)
 
-        self.delete_btn = _icon_button(trash_icon(), MENU_DELETE, MENU_DELETE)
+        self.delete_btn = icon_button(trash_icon(), MENU_DELETE, MENU_DELETE)
         self.delete_btn.clicked.connect(lambda: self._emit(self.delete_requested))
         row.addWidget(self.delete_btn)
 
@@ -1332,13 +1294,9 @@ class SectionRow(QWidget):
                     {str(pass_.id): transect_name or UNASSIGNED_NAME},
                 )
         length = section_length_label(pass_)
-        self._window.setText(
-            f"{window_label(pass_)} · {length}" if length else window_label(pass_)
-        )
+        self._window.setText(f"{window_label(pass_)} · {length}" if length else window_label(pass_))
         self.transect_chip.set_assignment(transect_name, pass_.direction)
-        self._direction.setToolTip(
-            f"Swum {direction_phrase(pass_.direction)} along the transect."
-        )
+        self._direction.setToolTip(f"Swum {direction_phrase(pass_.direction)} along the transect.")
         self._apply_icons()
         self._runs.setText(run_label(run_count))
         self.delete_btn.setToolTip(DELETE_BLOCKED_TOOLTIP if run_count else MENU_DELETE)
@@ -1348,9 +1306,7 @@ class SectionRow(QWidget):
         self.trim_btn.setToolTip(RETRIM_TOOLTIP if available else TRIM_UNLINKED_TOOLTIP)
         # The window is not repeated here: the row shows it, and once frames
         # arrive each one is captioned with where in the window it came from.
-        self._plain_tooltip = (
-            f"{transect_name or UNASSIGNED_NAME}  ·  {statuses.status_label(status)}"
-        )
+        self._plain_tooltip = f"{transect_name or UNASSIGNED_NAME}  ·  {statuses.status_label(status)}"
         self._preview = preview if available else None
         self._preview_key = f"{pass_.id}@{pass_.begin_s:.2f}-{pass_.end_s:.2f}"
         self.setToolTip(self._plain_tooltip)
@@ -1458,9 +1414,7 @@ class SectionRow(QWidget):
             self.cart_btn.setIcon(cart_icon(color=QColor(ERROR)))
             self.cart_btn.setToolTip(CART_UNLINKED_TOOLTIP)
             return
-        self.cart_btn.setIcon(
-            cart_icon(color=QColor(SUCCESS)) if self._in_cart else cart_icon(color=self._ink())
-        )
+        self.cart_btn.setIcon(cart_icon(color=QColor(SUCCESS)) if self._in_cart else cart_icon(color=self._ink()))
         self.cart_btn.setToolTip(IN_CART_TOOLTIP if self._in_cart else MENU_ADD_TO_CART)
 
     def _on_cart_clicked(self) -> None:
@@ -1488,27 +1442,17 @@ class SectionRow(QWidget):
         menu.setToolTipsVisible(True)
         # One entry that names the move it will make, rather than an "Add to
         # cart" greyed out on everything already in it.
-        cart = menu.addAction(
-            MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART
-        )
+        cart = menu.addAction(MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART)
         cart.triggered.connect(lambda *_: self.add_to_cart_requested.emit(self.pass_id))
-        menu.addAction(MENU_RETRIM).triggered.connect(
-            lambda *_: self.retrim_requested.emit(self.pass_id)
-        )
-        menu.addAction(MENU_REASSIGN).triggered.connect(
-            lambda *_: self.reassign_requested.emit(self.pass_id)
-        )
+        menu.addAction(MENU_RETRIM).triggered.connect(lambda *_: self.retrim_requested.emit(self.pass_id))
+        menu.addAction(MENU_REASSIGN).triggered.connect(lambda *_: self.reassign_requested.emit(self.pass_id))
         # The one action with nowhere on the row to live: it leaves the page
         # altogether, which is not something a row's own buttons should look
         # like they do.
-        open_transect = menu.addAction(
-            MENU_OPEN_TRANSECT if self.transect_id else MENU_OPEN_TRANSECTS_PAGE
-        )
+        open_transect = menu.addAction(MENU_OPEN_TRANSECT if self.transect_id else MENU_OPEN_TRANSECTS_PAGE)
         if not self.transect_id:
             open_transect.setToolTip(NO_TRANSECT_TOOLTIP)
-        open_transect.triggered.connect(
-            lambda *_: self.open_transect_requested.emit(self.transect_id)
-        )
+        open_transect.triggered.connect(lambda *_: self.open_transect_requested.emit(self.transect_id))
         menu.addSeparator()
         delete = menu.addAction(MENU_DELETE)
         # A section with runs stands for something that happened. Letting it
@@ -1649,9 +1593,7 @@ SORT_ASC_GLYPH, SORT_DESC_GLYPH = "▲", "▼"
 
 # Gravity's column is dots rather than values, so its heading has to say which
 # way round the sort goes; the rest read plainly enough from their own titles.
-_SORT_TOOLTIPS = {
-    SORT_GRAVITY: "Sort by gravity: ascending brings the clips without one to the top."
-}
+_SORT_TOOLTIPS = {SORT_GRAVITY: "Sort by gravity: ascending brings the clips without one to the top."}
 
 
 class _HeaderCell(QLabel):
@@ -1723,9 +1665,7 @@ class VideoListHeader(QWidget):
         self._descending = DEFAULT_SORT_DESCENDING
         self._relabel()
 
-    def _add_cell(
-        self, row: QHBoxLayout, title: str, column: str, chars: int, *, right: bool = False
-    ) -> None:
+    def _add_cell(self, row: QHBoxLayout, title: str, column: str, chars: int, *, right: bool = False) -> None:
         cell = _HeaderCell(title, sortable=True)
         _fixed_width(cell, chars)
         if right:
@@ -1908,11 +1848,7 @@ class VideoLibraryList(QScrollArea):
         self._prune_selection()
         # Built once for the whole list: a section spanning chapters needs the
         # clips either side of the one its row sits under.
-        assets = {
-            entry.video.id: entry.video
-            for group in self._groups
-            for entry in group.entries
-        }
+        assets = {entry.video.id: entry.video for group in self._groups for entry in group.entries}
         for group in self._groups:
             for entry in group.entries:
                 video_id = str(entry.video.id)

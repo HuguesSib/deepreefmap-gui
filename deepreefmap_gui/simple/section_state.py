@@ -91,7 +91,7 @@ def _plural(count: int, singular: str, plural: str = "") -> str:
 
 
 def passes_phrase(count: int) -> str:
-    """"3 passes". Shared so the gate's reason and the button that obeys it
+    """ "3 passes". Shared so the gate's reason and the button that obeys it
     count the same thing in the same words."""
     return _plural(count, "pass", "passes")
 
@@ -123,7 +123,7 @@ def transects_state(transect_count: int, has_draft: bool) -> SectionState:
         return SectionState(
             ATTENTION,
             _plural(transect_count, "transect"),
-            "A transect is half-entered: it needs a name and both endpoints to save.",
+            "A transect draft needs a name and both ends to save.",
             cause=CAUSE_DRAFT_TRANSECT,
             n=1,
         )
@@ -145,8 +145,7 @@ def browse_state(run_count: int, unfiled: int) -> SectionState:
         return SectionState(
             ATTENTION,
             f"{counts} · {unfiled} unfiled",
-            f"{_plural(unfiled, 'run')} belong to no transect. "
-            "Assign them to compare passes of the same transect.",
+            f"{_plural(unfiled, 'run')} belong to no transect. Assign them under Browse.",
             cause=CAUSE_UNFILED_RUNS,
             n=unfiled,
         )
@@ -176,7 +175,7 @@ def videos_state(clip_count: int, missing: int) -> SectionState:
 
 
 def _sit_on(count: int) -> str:
-    """"1 pass is on", "2 passes are on". The reasons below name a count and then
+    """ "1 pass is on", "2 passes are on". The reasons below name a count and then
     say something about it, so the verb has to follow the count."""
     return f"{passes_phrase(count)} {'is' if count == 1 else 'are'} on"
 
@@ -187,7 +186,7 @@ def _it_or_they(count: int) -> str:
 
 
 def _lines_phrase(count: int, described_as: str = "") -> str:
-    """"a transect", "2 transects", with the adjective inside the count.
+    """ "a transect", "2 transects", with the adjective inside the count.
 
     Shared, because every clause that names the lines a group of passes sits on
     pluralises the same way, and the count of passes says nothing about it: two
@@ -238,15 +237,10 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
     about, so it is carried here rather than swallowed.
     """
     them = "it" if lines <= 1 else "them"
-    withdrawn = (
-        f"{_sit_on(retired)} {_lines_phrase(lines)} the registry no longer lists"
-    )
+    withdrawn = f"{_sit_on(retired)} {_lines_phrase(lines)} the registry no longer lists"
     ask = f"Ask whoever removed {them} in the web console"
     if not unscaled:
-        scaled = (
-            f"{withdrawn}, and still {'runs' if retired == 1 else 'run'} scaled by "
-            f"the length recorded for {them}"
-        )
+        scaled = f"{withdrawn}, and still {'runs' if retired == 1 else 'run'} scaled by the length recorded for {them}"
         if not elsewhere:
             return f"{scaled}. {ask} whether these results count."
         # The unscaled group leads, because only its half of this is
@@ -256,8 +250,7 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
             f"length under Transects. {ask} whether these results count."
         )
     consequence = (
-        f"and no tape length was recorded for {them}, so {_it_or_they(retired)} "
-        "will run unscaled"
+        f"and no tape length was recorded for {them}, so {_it_or_they(retired)} will run unscaled"
         if unscaled == retired
         # "the line each was swum on" rather than "the line they are on": some
         # of the group kept its scale and some did not, which can only happen
@@ -278,10 +271,7 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
         return reason
     # The opening sentence already says runs will come out unscaled, so this
     # group follows it rather than displacing it.
-    return (
-        f"{reason} {_unscaled_clause(elsewhere, spread, 'listed')}. Set the length "
-        "under Transects."
-    )
+    return f"{reason} {_unscaled_clause(elsewhere, spread, 'listed')}. Set the length under Transects."
 
 
 def run_gate(
@@ -338,7 +328,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            "The run settings could not be loaded, so nothing here can be processed.",
+            "The run settings could not be loaded.",
             fix=FIX_SETTINGS,
             cause=CAUSE_NO_PRESET,
         )
@@ -346,8 +336,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            f"The {gpu_only_mapper} processing method requires a graphics card, "
-            "and none was detected.",
+            f"The {gpu_only_mapper} processing method requires a graphics card, and none was detected.",
             fix=FIX_MACHINE,
             cause=CAUSE_NO_GPU,
         )
@@ -355,8 +344,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            f"{_plural(len(missing_models), 'required model')} not installed "
-            f"({', '.join(missing_models)}).",
+            f"{_plural(len(missing_models), 'required model')} not installed ({', '.join(missing_models)}).",
             fix=FIX_MACHINE,
             cause=CAUSE_MISSING_MODELS,
             n=len(missing_models),
@@ -386,9 +374,7 @@ def run_gate(
                     ],
                 )
             ),
-            _retired_reason(
-                retired, retired_unscaled, max(retired_lines, 1), elsewhere, unscaled_lines
-            ),
+            _retired_reason(retired, retired_unscaled, max(retired_lines, 1), elsewhere, unscaled_lines),
             cause=CAUSE_RETIRED_TRANSECT,
             n=retired,
         )
@@ -408,8 +394,7 @@ def run_gate(
         return SectionState(
             OK,
             f"{counts} · {unassigned} without a transect",
-            f"{passes_phrase(unassigned)} will run without a transect, so they will not be "
-            "compared against repeat passes.",
+            f"{passes_phrase(unassigned)} will run without a transect: unscaled, not compared.",
             cause=CAUSE_UNASSIGNED_PASSES,
             n=unassigned,
         )

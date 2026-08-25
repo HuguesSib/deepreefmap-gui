@@ -4,9 +4,13 @@ from pathlib import Path
 
 from _factories import make_transect, write_test_mp4
 
-from deepreefmap_gui.core.theme import ERROR, PRIMARY
-from deepreefmap_gui.runs.section_detail import ARCHIVE_RUN_TOOLTIP, ARCHIVE_UNFINISHED
-from deepreefmap_gui.server.state import SERVER_SECTION
+from deepreefmap_gui.core.icons import DEFAULT_INK
+from deepreefmap_gui.core.theme import DISABLED_FG, ERROR, PRIMARY
+from deepreefmap_gui.runs.section_detail import (
+    ARCHIVE_RUN_TOOLTIP,
+    ARCHIVE_UNFINISHED,
+    ARCHIVING,
+)
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 from deepreefmap_gui.survey.catalogue import (
     VIDEO_FAILED,
@@ -18,16 +22,12 @@ from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
 
 
 def _seed(store, name: str, *, passes: int = 0, statuses: tuple[str, ...] = ()) -> VideoAsset:
-    video = store.upsert_video(
-        VideoAsset(file_name=name, path=f"/data/{name}", hash=name * 4, duration_s=60.0)
-    )
+    video = store.upsert_video(VideoAsset(file_name=name, path=f"/data/{name}", hash=name * 4, duration_s=60.0))
     transect = make_transect(name.replace(".", "_"))
     store.add_transect(transect)
     made = []
     for index in range(passes):
-        pass_ = TransectPass(
-            transect_id=transect.id, video_id=video.id, begin_s=index * 10.0, end_s=index * 10 + 5
-        )
+        pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=index * 10.0, end_s=index * 10 + 5)
         store.add_pass(pass_)
         made.append(pass_)
     for pass_, status in zip(made, statuses, strict=False):
@@ -37,9 +37,7 @@ def _seed(store, name: str, *, passes: int = 0, statuses: tuple[str, ...] = ()) 
 
 
 def _seed_at(store, name: str, path: Path) -> VideoAsset:
-    return store.upsert_video(
-        VideoAsset(file_name=name, path=str(path), hash=name * 4, duration_s=60.0)
-    )
+    return store.upsert_video(VideoAsset(file_name=name, path=str(path), hash=name * 4, duration_s=60.0))
 
 
 def show_videos(window) -> None:
@@ -420,9 +418,7 @@ def test_a_deleted_clip_stops_counting_as_hidden(window):
     assert window._video_hidden_check.isHidden()
 
 
-def test_a_new_section_is_cut_scrubbed_and_filed_but_not_carted(
-    window, tmp_path, monkeypatch
-):
+def test_a_new_section_is_cut_scrubbed_and_filed_but_not_carted(window, tmp_path, monkeypatch):
     """The whole reason the page exists: footage in, a filed pass out.
 
     Expected behaviour: the cart stays as the user left it. Cutting a pass
@@ -502,9 +498,7 @@ def test_a_clip_of_unknown_length_cuts_nothing_and_says_why(window):
     from deepreefmap_gui.survey.catalogue import LINK_LINKED
 
     store = window._survey_store()
-    video = store.upsert_video(
-        VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="cd" * 16)
-    )
+    video = store.upsert_video(VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="cd" * 16))
     clip = SimpleNamespace(video=video, link_state=LINK_LINKED)
     window._new_section_from_clip(clip)
     assert store.list_passes() == []
@@ -714,20 +708,116 @@ def test_each_finished_run_row_carries_an_archive_icon(window):
     assert asked == [newest.id]
 
 
-def test_an_archive_press_lands_on_the_server_view(window):
-    """The planning, progress and gauge are all on the Server view, so the press
-    has to take the reader there rather than report to a page nobody is on."""
+def _icon_ink(icon) -> str:
+    """The colour the icon's glyph is drawn in, read off its centre-ish pixels."""
+    from PySide6.QtGui import QColor
+
+    image = icon.pixmap(16, 16).toImage()
+    for y in range(image.height()):
+        for x in range(image.width()):
+            colour = image.pixelColor(x, y)
+            if colour.alpha() > 200:
+                return QColor(colour.red(), colour.green(), colour.blue()).name()
+    return ""
+
+
+class _ArchiveRegistry:
+    """Answers the archive handshake with "already held" and refuses a probe."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def archive_initiate(self, payload):
+        return {"object_id": "o-1", "status": "complete"}
+
+    def archive_complete(self, object_id, parts):
+        return {"object_id": object_id, "status": "uploaded"}
+
+
+def _settle(qapp, ready, timeout=5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if ready():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_an_archive_press_stays_on_the_row_that_made_it(window, qapp, monkeypatch):
+    """Scenario: the archive icon on a run row is pressed.
+
+    Expected behaviour: the page does not change; the row shows the upload in
+    progress, then the tick once the registry has the outputs."""
+    from deepreefmap_gui.sync import client as client_mod
+    from deepreefmap_gui.sync import credentials
+
     store = window._survey_store()
     video = _seed(store, "GX010073.MP4")
     pass_ = _cut(store, video)
+    run = _seed_run(store, pass_)
+    run_dir = store.path.parent / run.run_dir_name
+    run_dir.mkdir()
+    (run_dir / "cloud.ply").write_bytes(b"ply")
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+    monkeypatch.setattr(client_mod, "SyncClient", _ArchiveRegistry)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+    before = window._current_section()
+    row = window._section_detail.run_rows()[0]
+    row.archive_btn.click()
+
+    assert window._current_section() == before
+    assert window._server_archiving
+    assert row.archive_btn.toolTip() == ARCHIVING
+    assert _settle(qapp, lambda: not window._server_archiving)
+    # The pass pane is rebuilt on the way, so the row is read afresh.
+    row = window._section_detail.run_rows()[0]
+    assert "Outputs on server" in row.archive_btn.toolTip()
+
+
+def test_a_run_whose_outputs_are_gone_says_so_on_its_row(window, qapp, monkeypatch):
+    from deepreefmap_gui.sync import client as client_mod
+    from deepreefmap_gui.sync import credentials
+
+    store = window._survey_store()
+    video = _seed(store, "GX010074.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_)
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+    monkeypatch.setattr(client_mod, "SyncClient", _ArchiveRegistry)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+    row = window._section_detail.run_rows()[0]
+    row.archive_btn.click()
+    assert _settle(qapp, lambda: not window._server_archiving)
+
+    row = window._section_detail.run_rows()[0]
+    assert "output directory is gone" in row.archive_btn.toolTip()
+    assert _icon_ink(row.archive_btn.icon()) == ERROR.lower()
+
+
+def test_the_archive_icon_is_dead_only_where_it_cannot_act(window):
+    store = window._survey_store()
+    video = _seed(store, "GX010075.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_, "failed")
     _seed_run(store, pass_)
 
     show_videos(window)
     window._select_section(str(pass_.id))
-    window._section_detail.run_rows()[0].archive_btn.click()
 
-    assert window._current_section() == "machine"
-    assert window._machine_view == SERVER_SECTION
+    by_status = {row.run.status: row.archive_btn for row in window._section_detail.run_rows()}
+    dead = by_status["failed"]
+    live = by_status["succeeded"]
+    assert dead.property("dead") == "true" and dead.isEnabled()
+    assert _icon_ink(dead.icon()) == DISABLED_FG.lower()
+    assert live.property("dead") == "false"
+    assert _icon_ink(live.icon()) == DEFAULT_INK.lower()
 
 
 def test_an_unfinished_run_row_shows_a_dead_archive_icon(window):
@@ -957,9 +1047,7 @@ def test_the_pane_rows_reach_the_pages_handlers(window, monkeypatch):
 
     seen = []
     for name in ("_on_section_retrim", "_on_section_reassign", "_on_section_delete"):
-        monkeypatch.setattr(
-            window, name, lambda pass_id, name=name: seen.append((name, pass_id))
-        )
+        monkeypatch.setattr(window, name, lambda pass_id, name=name: seen.append((name, pass_id)))
     # Bound after the connection was made, so the row is re-wired to the patches.
     panel = window._video_detail
     panel.retrim_requested.disconnect()
@@ -1179,9 +1267,7 @@ def test_leaving_for_the_transects_page_keeps_the_section(window, tmp_path, monk
         self.left_for_page = True
         return QDialog.DialogCode.Rejected
 
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec", leave_for_page
-    )
+    monkeypatch.setattr("deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec", leave_for_page)
 
     show_videos(window)
     resolve_links(window)
@@ -1239,9 +1325,7 @@ def pick_clips(window, *file_names: str) -> None:
                 QPointF(1.0, 1.0),
                 Qt.MouseButton.LeftButton,
                 Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier
-                if index == 0
-                else Qt.KeyboardModifier.ControlModifier,
+                Qt.KeyboardModifier.NoModifier if index == 0 else Qt.KeyboardModifier.ControlModifier,
             )
         )
 

@@ -110,10 +110,7 @@ def test_transects_facet_groups_and_buckets_unassigned(out_root, make_window):
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     window._data_facet_buttons["transects"].click()
-    titles = [
-        window._data_tree.topLevelItem(i).text(0)
-        for i in range(window._data_tree.topLevelItemCount())
-    ]
+    titles = [window._data_tree.topLevelItem(i).text(0) for i in range(window._data_tree.topLevelItemCount())]
     assert titles[0].startswith(UNASSIGNED_TITLE)
     assert any(t.startswith("T1") for t in titles)
 
@@ -123,9 +120,7 @@ def write_session_runs(root: Path, name: str, dirs: list[str]) -> None:
     store = SurveyStore(root / "survey.db")
     batch = make_batch(store, name)
     for index, dir_name in enumerate(dirs):
-        seed_survey_run(
-            store, root, dir_name, transect=make_transect(f"T{index}"), batch=batch
-        )
+        seed_survey_run(store, root, dir_name, transect=make_transect(f"T{index}"), batch=batch)
     store.close()
 
 
@@ -216,9 +211,7 @@ def test_rename_refuses_a_name_another_run_already_has(out_root, make_window, mo
         asked.append(text)
         return ("reef north", True) if len(asked) == 1 else (text, True)
 
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.browse.QInputDialog.getText", staticmethod(answer)
-    )
+    monkeypatch.setattr("deepreefmap_gui.runs.browse.QInputDialog.getText", staticmethod(answer))
     window._on_data_rename_clicked()
 
     assert asked[1] == "reef north 2"
@@ -342,9 +335,7 @@ def test_assign_moves_loose_run_under_transect(out_root, make_window, monkeypatc
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     select_run(window, row_of(window, "loose"))
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose"].transect_name == "T1"
@@ -490,9 +481,7 @@ def test_dropped_video_registers_a_clip_without_a_pass(tmp_path, make_window, mo
     clip = tmp_path / "reef.mp4"
     clip.write_bytes(b"x" * 4096)
     window = make_window()
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
-    )
+    monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0))
     store = window._survey_store()
     window._handle_data_drop([clip])
     # Probing runs on a worker thread, so the clip arrives with a queued signal.
@@ -679,7 +668,7 @@ def test_a_run_whose_data_went_cannot_be_archived(out_root, make_window, monkeyp
     select_run(window, 0)
 
     assert not archive.isEnabled()
-    assert "nothing to send" in archive.toolTip()
+    assert "output data was removed" in archive.toolTip()
 
 
 # --- T1.7 multi-select actions ---
@@ -725,18 +714,14 @@ def test_multi_select_assign_moves_all_selected(out_root, make_window, monkeypat
     write_run(out_root, "loose_b", video_hashes=["ef" * 16])
     window = make_window()
     _select_rows(window, {"loose_a", "loose_b"})
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose_a"].transect_name == "T1"
     assert entries["loose_b"].transect_name == "T1"
 
 
-def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(
-    out_root, make_window, monkeypatch
-):
+def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(out_root, make_window, monkeypatch):
     """Scenario: a whole group of loose runs is selected in the rail, nothing
     in the table.
 
@@ -755,18 +740,14 @@ def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(
     targets = {e.dir_name for e in window._data_assign_targets()}
     assert targets == {"loose_a", "loose_b"}
 
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose_a"].transect_name == "T1"
     assert entries["loose_b"].transect_name == "T1"
 
 
-def test_assigning_from_browse_reaches_the_process_table(
-    out_root, make_window, monkeypatch
-):
+def test_assigning_from_browse_reaches_the_process_table(out_root, make_window, monkeypatch):
     """Scenario: a run is assigned to a transect from Browse while its pass sits
     in the Process table.
 
@@ -782,9 +763,7 @@ def test_assigning_from_browse_reaches_the_process_table(
 
     window = make_window()
     assert any(row.pass_id == pass_.id for row in window._survey_rows)
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (other.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (other.id, "forward"))
     select_run(window, row_of(window, "assigned"))
     window._on_data_assign_clicked()
 
@@ -1022,7 +1001,7 @@ def test_unfinished_run_detail_carries_its_reason(out_root, make_window):
 
 
 def test_columns_sort_by_value_not_by_their_formatting(out_root, make_window):
-    """"988k pts" is smaller than "1.2M pts", and every string comparison disagrees."""
+    """ "988k pts" is smaller than "1.2M pts", and every string comparison disagrees."""
     write_run(out_root, "small", semantic_reference_points=988_000)
     write_run(out_root, "large", semantic_reference_points=1_200_000)
     window = make_window()
@@ -1061,10 +1040,16 @@ def test_map_click_narrows_the_table_to_that_transect(out_root, make_window):
 
 def two_sites(root: Path) -> None:
     """Two transects an ocean apart, one run each, so a viewport can separate them."""
-    write_survey_run(root, "fiji", Transect(name="Fiji", start_lat=-17.5, start_lon=177.1,
-                                            end_lat=-17.5005, end_lon=177.1005, length_m=50.0))
-    write_survey_run(root, "azores", Transect(name="Azores", start_lat=38.5, start_lon=-28.6,
-                                              end_lat=38.5005, end_lon=-28.6005, length_m=50.0))
+    write_survey_run(
+        root,
+        "fiji",
+        Transect(name="Fiji", start_lat=-17.5, start_lon=177.1, end_lat=-17.5005, end_lon=177.1005, length_m=50.0),
+    )
+    write_survey_run(
+        root,
+        "azores",
+        Transect(name="Azores", start_lat=38.5, start_lon=-28.6, end_lat=38.5005, end_lon=-28.6005, length_m=50.0),
+    )
 
 
 def browse_by_transect(make_window):

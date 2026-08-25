@@ -105,9 +105,7 @@ def measure_bytes_per_footage_minute(out_root: Path, limit: int = _SIZED_RUNS) -
     from deepreefmap_gui.survey.catalogue import dir_size_bytes
 
     try:
-        manifests = sorted(
-            out_root.glob("*/run_manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True
-        )
+        manifests = sorted(out_root.glob("*/run_manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return None
     rates: list[float] = []
@@ -158,9 +156,7 @@ def graphics_check(*, gpu_name: str | None, requires_gpu: bool, pending: bool = 
         # Counting the cards costs seconds on a cold driver, so the window opens
         # before the answer exists. Advisory, so an unfinished probe cannot be
         # what holds a session back; the row repaints when it lands.
-        return SetupCheck(
-            "graphics", True, "Graphics card", "Looking for a graphics card…", advisory=True
-        )
+        return SetupCheck("graphics", True, "Graphics card", "Looking for a graphics card…", advisory=True)
     if gpu_name is not None:
         return SetupCheck("graphics", True, "Graphics card", gpu_name)
     if requires_gpu:
@@ -168,21 +164,20 @@ def graphics_check(*, gpu_name: str | None, requires_gpu: bool, pending: bool = 
             "graphics",
             False,
             "Graphics card",
-            "None detected. The selected processing method requires one; "
-            "select the standard method in settings.",
+            "None detected, and the selected method requires one. Choose the standard method in settings.",
         )
     return SetupCheck(
         "graphics",
         True,
         "Graphics card",
-        "None detected. Processing will run on the CPU, which is slower.",
+        "None detected. Processing runs on the CPU.",
     )
 
 
 def models_check(missing_models: list[str]) -> SetupCheck:
     """Models row. Passes when nothing the current settings need is absent."""
     if not missing_models:
-        return SetupCheck("models", True, "Models", "All models required by these settings are installed.")
+        return SetupCheck("models", True, "Models", "All required models are installed.")
     names = ", ".join(missing_models)
     count = len(missing_models)
     noun = "model" if count == 1 else "models"
@@ -212,9 +207,7 @@ def _coarse_footage(minutes: float) -> str:
     return f"about {round(hours / 10) * 10} hours"
 
 
-def space_check(
-    free_bytes: int, min_free_bytes: int, bytes_per_footage_minute: float | None = None
-) -> SetupCheck:
+def space_check(free_bytes: int, min_free_bytes: int, bytes_per_footage_minute: float | None = None) -> SetupCheck:
     """Disk space row, sized in footage where this machine has runs to measure."""
     free = format_bytes(free_bytes)
     if free_bytes < min_free_bytes:
@@ -222,8 +215,7 @@ def space_check(
             "space",
             False,
             "Disk space",
-            f"{free} free, below the {format_bytes(min_free_bytes)} required. "
-            "Delete old surveys to make room.",
+            f"{free} free, below the {format_bytes(min_free_bytes)} required. Delete old surveys to make room.",
         )
     if bytes_per_footage_minute:
         capacity = _coarse_footage(free_bytes / bytes_per_footage_minute)
@@ -236,9 +228,7 @@ def space_check(
     # Deliberately no capacity figure: nothing has been processed here to size
     # against, and ROUGH_PASS_BYTES is a fallback for blocking a doomed batch,
     # not a number to quote at someone.
-    return SetupCheck(
-        "space", True, "Disk space", f"{free} free. Capacity is estimated once a run is recorded."
-    )
+    return SetupCheck("space", True, "Disk space", f"{free} free. Capacity is estimated once a run is recorded.")
 
 
 def memory_check(
@@ -296,9 +286,7 @@ def shortcut_check(status: ShortcutStatus) -> SetupCheck:
     uninstaller expects to find.
     """
     if status.state is ShortcutState.UNSUPPORTED:
-        return SetupCheck(
-            "shortcut", True, "Applications menu", status.detail, advisory=True, actionable=False
-        )
+        return SetupCheck("shortcut", True, "Applications menu", status.detail, advisory=True, actionable=False)
     if not status.owned and status.state in (ShortcutState.CURRENT, ShortcutState.UNKNOWN):
         return SetupCheck(
             "shortcut",
@@ -312,7 +300,7 @@ def shortcut_check(status: ShortcutStatus) -> SetupCheck:
             "shortcut",
             False,
             "Applications menu",
-            "DeepReefMap is not in this computer's applications menu.",
+            "Not in the applications menu.",
             advisory=True,
             action_label="Add",
         )
@@ -321,7 +309,7 @@ def shortcut_check(status: ShortcutStatus) -> SetupCheck:
             "shortcut",
             False,
             "Applications menu",
-            "The existing entry points at a copy of DeepReefMap that has moved.",
+            "The menu entry points at a moved copy of DeepReefMap.",
             advisory=True,
             action_label="Update",
         )
@@ -387,9 +375,7 @@ class BatchDiskEstimate:
         return self.free_bytes >= self.need_bytes
 
 
-def estimate_batch_disk(
-    pass_count: int, free_bytes: int, per_pass_bytes: int = ROUGH_PASS_BYTES
-) -> BatchDiskEstimate:
+def estimate_batch_disk(pass_count: int, free_bytes: int, per_pass_bytes: int = ROUGH_PASS_BYTES) -> BatchDiskEstimate:
     return BatchDiskEstimate(pass_count, pass_count * per_pass_bytes, free_bytes)
 
 
@@ -401,6 +387,7 @@ _ROW_TITLES = {
     "survey": "Survey database",
     "shortcut": "Applications menu",
 }
+
 
 def _set_cta(button: QPushButton, on: bool) -> None:
     """Turn a button's filled-CTA styling on or off, repolishing so it takes."""
@@ -476,9 +463,7 @@ class SimpleSetupMixin(MixinBase):
         # rather than in it: the checks are about this computer, and this is
         # about the software on it.
         self._setup_update_strip = NoticeStrip()
-        self._setup_update_strip.action_clicked.connect(
-            lambda: self._set_machine_view("updates")
-        )
+        self._setup_update_strip.action_clicked.connect(lambda: self._set_machine_view("updates"))
         outer.addWidget(self._setup_update_strip)
 
         # Untitled: the page it sits on is already headed Setup, and the
@@ -505,17 +490,13 @@ class SimpleSetupMixin(MixinBase):
             "Download models (requires internet)", download_icon(ICON_SM), cta_when_unmet=True
         )
         self._setup_download_btn.clicked.connect(self._on_setup_download_models)
-        card_layout.addWidget(
-            self._build_setup_row("models", [self._setup_usb_btn, self._setup_download_btn])
-        )
+        card_layout.addWidget(self._build_setup_row("models", [self._setup_usb_btn, self._setup_download_btn]))
 
         self._setup_drives_btn = _row_action("Drives", drive_icon())
         self._setup_drives_btn.clicked.connect(self._on_setup_show_drives)
         space_browse = _row_action("Open past surveys", browse_icon())
         space_browse.clicked.connect(lambda: self._go_to_section("browse"))
-        card_layout.addWidget(
-            self._build_setup_row("space", [self._setup_drives_btn, space_browse])
-        )
+        card_layout.addWidget(self._build_setup_row("space", [self._setup_drives_btn, space_browse]))
 
         self._setup_survey_btn = _row_action("Repair…", refresh_icon(ICON_SM, TEXT_MUTED))
         self._setup_survey_btn.clicked.connect(self._on_setup_check_survey)
@@ -570,10 +551,7 @@ class SimpleSetupMixin(MixinBase):
         host_layout = QVBoxLayout(self._machine_out_root_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._machine_out_root_host)
-        caption = QLabel(
-            "Every run, and the survey database that tracks them, is written under "
-            "this folder."
-        )
+        caption = QLabel("Runs and the survey database are written under this folder.")
         caption.setWordWrap(True)
         caption.setStyleSheet(f"color: {TEXT_MUTED};")
         layout.addWidget(caption)
@@ -755,15 +733,10 @@ class SimpleSetupMixin(MixinBase):
                     _set_cta(action, not check.ok)
         ready = setup_ready(checks)
         unmet = sum(1 for check in checks if not check.ok and not check.advisory)
-        # Says what the unmet count means for the button beside it. "1
-        # requirement not met" next to a lit-up way onwards read as a
-        # contradiction; the rest of the app is genuinely still available, and
-        # processing genuinely is not, so the sentence says both.
         self._setup_summary.setText(
             "All requirements met."
             if ready
-            else f"{unmet} requirement{'' if unmet == 1 else 's'} not met. You can still"
-            " mark out transects and queue passes; processing will not run until this is fixed."
+            else f"{unmet} requirement{'' if unmet == 1 else 's'} not met. Processing will not run until fixed."
         )
         # When something is broken the loudest button on the page should be the
         # one that fixes it, not the one that carries on past it.
@@ -868,15 +841,12 @@ class SimpleSetupMixin(MixinBase):
         from deepreefmap_gui.models.cache import all_known_models
 
         catalogue = {info.name: info for info in all_known_models()}
-        needs_account = (
-            self._hf_auth_user is None
-            and any(catalogue[name].gated for name in missing if name in catalogue)
+        needs_account = self._hf_auth_user is None and any(
+            catalogue[name].gated for name in missing if name in catalogue
         )
         if needs_account:
             # Fold the sign-in into the one download action.
-            self._status_label.setText(
-                "Some models require a free Hugging Face account. Sign in, then download again."
-            )
+            self._status_label.setText("Some models require a free Hugging Face account. Sign in, then download again.")
             self._on_hf_auth_button()
             return
         for name in missing:

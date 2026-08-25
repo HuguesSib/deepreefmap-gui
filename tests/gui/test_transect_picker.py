@@ -56,9 +56,8 @@ def test_clicking_the_line_on_the_map_picks_it(store):
 
 
 def test_direction_reads_as_the_heading_it_means(store):
-    """"Forward" says nothing about the water until there is a line to swim."""
-    store.add_transect(make_transect("T1", start_lat=-17.5, start_lon=177.1,
-                                    end_lat=-17.5, end_lon=177.2))
+    """ "Forward" says nothing about the water until there is a line to swim."""
+    store.add_transect(make_transect("T1", start_lat=-17.5, start_lon=177.1, end_lat=-17.5, end_lon=177.2))
     dialog = TransectPickerDialog(None, store)
     dialog.list.setCurrentRow(1)
 
@@ -158,12 +157,12 @@ def test_the_arrow_names_where_it_goes(store):
     dialog = TransectPickerDialog(None, store)
 
     assert dialog.open_btn.text() == OPEN_PAGE_EMPTY_LABEL
-    assert "kept, unfiled" in dialog.open_btn.toolTip()
+    assert "kept unfiled" in dialog.open_btn.toolTip()
 
     dialog.list.setCurrentRow(1)
 
     assert dialog.open_btn.text() == OPEN_PAGE_LABEL
-    assert "ends can be dragged" in dialog.open_btn.toolTip()
+    assert "Show this transect" in dialog.open_btn.toolTip()
 
 
 def test_the_map_says_it_can_be_clicked_before_anything_is_armed(store):
@@ -178,7 +177,7 @@ def test_the_map_says_it_can_be_clicked_before_anything_is_armed(store):
     store.add_transect(make_transect("T1"))
     dialog = TransectPickerDialog(None, store)
     assert dialog.map_hint.text() == MAP_HINT
-    assert "Click one" in dialog.map_hint.text()
+    assert "Click a transect" in dialog.map_hint.text()
 
 
 def test_drawing_says_which_click_comes_next(store):

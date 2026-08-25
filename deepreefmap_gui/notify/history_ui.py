@@ -1,7 +1,6 @@
 """Everything this survey has reported, and the messages somebody silenced.
 
-The one route back from "never show this again", which is why it is a view on a
-page rather than a checkbox in a dialog.
+The one route back from "never show this again".
 """
 
 from __future__ import annotations
@@ -57,10 +56,7 @@ _SEVERITY_CHOICES = (
 _SCOPE_CHOICES = (("All", ""), ("This survey", SURVEY), ("This computer", MACHINE))
 
 _SEVERITY_LABELS = {BLOCKER: "Blocking", SEVERITY_WARNING: "Attention", INFO: "Information"}
-# Every section a message is filed against, the destinations and the two Setup
-# views that are section names of their own. One missing here is a blank Where
-# cell, which is how a sync conflict, an archive failure and the missing-model
-# offer all came to say nothing about where they happened.
+# Every section a message is filed against. One missing here is a blank Where cell.
 _SECTION_LABELS = {
     "transects": "Transects",
     "videos": "Videos",
@@ -85,12 +81,7 @@ class NotificationHistoryPanel(QWidget):
         outer.setSpacing(GUTTER)
 
         card, layout = section_card("Activity")
-        layout.addWidget(
-            muted_label(
-                "Everything this survey has reported. Cleared entries are kept so a "
-                "problem that came and went can still be found."
-            )
-        )
+        layout.addWidget(muted_label("Everything this survey has reported, cleared entries included."))
 
         filters = QHBoxLayout()
         filters.setSpacing(SPACE_SM)
@@ -148,7 +139,7 @@ class NotificationHistoryPanel(QWidget):
                 old.deleteLater()
         if not muted:
             self._muted_layout.addWidget(
-                muted_label("Nothing is silenced. Messages you clear here would say so.")
+                muted_label("Nothing is silenced. Messages hidden with Never show again land here.")
             )
             return
         for fingerprint, title in muted:
@@ -183,9 +174,7 @@ def _cleared(note: Notification, now: str) -> str:
     if note.resolved_at is None:
         return ""
     try:
-        lasted = (
-            datetime.fromisoformat(note.resolved_at) - datetime.fromisoformat(note.created_at)
-        ).total_seconds()
+        lasted = (datetime.fromisoformat(note.resolved_at) - datetime.fromisoformat(note.created_at)).total_seconds()
     except ValueError:
         return "cleared"
     if lasted < 60:
