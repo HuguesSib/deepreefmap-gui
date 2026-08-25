@@ -158,3 +158,58 @@ def test_backfill_from_a_saved_scene(tmp_path: Path) -> None:
     header, views = read_web_cloud(out)
     assert header["frame_order"] == list(scene.cloud_index.frame_order)
     assert [c["id"] for c in header["classes"]] == list(scene.cloud_index.class_ids)
+
+
+def test_a_camera_track_travels_with_the_cloud(tmp_path: Path) -> None:
+    """Expected behaviour: one world-from-camera matrix per placed frame, and the
+    lens the depth maps were sized in."""
+    from _factories import make_scene
+
+    from deepreefmap_gui.io.web_cloud import camera_track
+
+    scene = make_scene(frame_indices=(0, 1, 2), size=(6, 4))
+    cloud = _semantic_cloud()
+    frame_order = [10, 20, 30]
+    index = build_final_cloud_index(cloud, frame_order, CLASS_COLOURS)
+    path = tmp_path / WEB_CLOUD_FILENAME
+
+    write_web_cloud(
+        path,
+        index,
+        frame_order,
+        CLASS_NAMES,
+        CLASS_COLOURS,
+        has_confidence=False,
+        cameras=camera_track(scene.mapping, [0, 1, 2]),
+    )
+
+    header, views = read_web_cloud(path)
+    assert header["version"] == 2
+    assert header["cameras"]["count"] == 3
+    assert header["cameras"]["width"] == 6
+    assert header["cameras"]["height"] == 4
+    assert header["cameras"]["fx"] == 100.0
+    assert views["camera_pose"].shape == (3, 4, 4)
+    np.testing.assert_allclose(views["camera_pose"][0], np.eye(4))
+
+
+def test_a_cloud_without_a_track_stays_readable(tmp_path: Path) -> None:
+    cloud = _semantic_cloud()
+    path = tmp_path / WEB_CLOUD_FILENAME
+    write_from_cloud(path, cloud, [10, 20, 30])
+
+    header, views = read_web_cloud(path)
+    assert "cameras" not in header
+    assert "camera_pose" not in views
+
+
+def test_a_track_drops_frames_the_mapper_did_not_place() -> None:
+    from _factories import make_scene
+
+    from deepreefmap_gui.io.web_cloud import camera_track
+
+    scene = make_scene(frame_indices=(0, 1, 2))
+    track = camera_track(scene.mapping, [0, 2, 99])
+
+    assert track is not None
+    assert track.poses_world_from_camera.shape == (2, 4, 4)

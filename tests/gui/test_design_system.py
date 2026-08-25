@@ -149,6 +149,10 @@ def test_no_em_dashes_in_prose_or_user_facing_strings() -> None:
     A lone em dash standing in for an empty value is the documented exception,
     so a bare "-" string is left alone.
 
+    The en dash is banned alongside it. Only the em dash was ever checked, so the
+    en dash spread unnoticed through every time-range label in the app; a range
+    is written with a plain hyphen, which also survives tabular figures.
+
     Every tracked text file, not only the Python: the rule is about the prose,
     and the prose is as much in the build workflow and the packaging comments as
     it is in a docstring.
@@ -171,9 +175,11 @@ def test_no_em_dashes_in_prose_or_user_facing_strings() -> None:
         except (OSError, UnicodeDecodeError):
             continue
         for number, line in enumerate(text.splitlines(), 1):
-            if "—" not in line or '"—"' in line:
-                continue
-            offenders.append(f"{name}:{number}")
+            for dash in ("—", "\u2013"):
+                if dash not in line or f'"{dash}"' in line:
+                    continue
+                offenders.append(f"{name}:{number}")
+                break
     assert offenders == []
 
 

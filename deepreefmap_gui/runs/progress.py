@@ -165,10 +165,36 @@ def _subphase_spans(keys: tuple[str, ...]) -> dict[str, tuple[float, float]]:
     return spans
 
 
+# Ortho: PCA, the cell lexsort, the grid aggregate, the cover tally. Every one
+# of these reports by message with no count, so without spans the stage never
+# earns a fraction at all and its countdown is a frozen constant.
+_ORTHO_PHASE_KEYS: tuple[str, ...] = ("ortho_pca", "ortho_sort", "ortho_aggregate", "ortho_cover")
+
+# The writes, then the viewer's own setup, in emission order. Several of these
+# report n/n; without spans the first one to do so pins the whole stage at 1.0
+# and the rest of the viewer setup runs with no estimate.
+_VIEWER_PHASE_KEYS: tuple[str, ...] = (
+    "ortho_save",
+    "viewer_index_cloud",
+    "viewer_index_classes",
+    "viewer_actors",
+    "viewer_frustums",
+    "viewer_camera",
+    "viewer_upload",
+    "viewer_finalise",
+)
+
 _MAPPING_SUBPHASE_SPANS = _subphase_spans(_MAPPING_PHASE_KEYS)
 _CLOUD_SUBPHASE_SPANS = _subphase_spans(_CLOUD_PHASE_KEYS)
+_ORTHO_SUBPHASE_SPANS = _subphase_spans(_ORTHO_PHASE_KEYS)
+_VIEWER_SUBPHASE_SPANS = _subphase_spans(_VIEWER_PHASE_KEYS)
 # One lookup over every fine phase shown as part of a continuous stage fill.
-_SUBPHASE_SPANS = {**_MAPPING_SUBPHASE_SPANS, **_CLOUD_SUBPHASE_SPANS}
+_SUBPHASE_SPANS = {
+    **_MAPPING_SUBPHASE_SPANS,
+    **_CLOUD_SUBPHASE_SPANS,
+    **_ORTHO_SUBPHASE_SPANS,
+    **_VIEWER_SUBPHASE_SPANS,
+}
 
 
 # cloud_concat / cloud_replace / cloud_voxel are the silent post-frame steps

@@ -182,17 +182,29 @@ def driver_denominator(driver: str, frames: int, points: int | None) -> float | 
 
 @dataclass
 class _StageRun:
-    state: str = "pending"  # pending | running | done
+    state: str = "pending"  # pending | running | done | skipped
     started_at: float | None = None
     ended_at: float | None = None
     frac: float = 0.0
     frac0: float | None = None  # fraction at the first determinate event
+    frac0_at: float | None = None  # wall clock at that first determinate event
 
     def elapsed(self, now: float) -> float:
         if self.started_at is None:
             return 0.0
         end = self.ended_at if self.ended_at is not None else now
         return max(0.0, end - self.started_at)
+
+    def earning(self, now: float) -> float:
+        """Seconds since the stage began earning fraction.
+
+        Not `elapsed`: a stage can spend minutes on indeterminate sub-steps
+        before its first counted event, and charging that head to the fraction
+        earned afterwards inflates the measured rate by the ratio of the two.
+        """
+        if self.frac0_at is None:
+            return 0.0
+        return max(0.0, now - self.frac0_at)
 
 
 @dataclass

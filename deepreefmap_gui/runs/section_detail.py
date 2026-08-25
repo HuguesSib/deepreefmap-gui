@@ -80,7 +80,7 @@ def section_window(pass_: TransectPass) -> str:
     """The pass's own name: where it starts and stops in the clip."""
     end = pass_.end_s
     tail = "end" if end is None else f"{int(end) // 60}:{int(end) % 60:02d}"
-    return f"{int(pass_.begin_s) // 60}:{int(pass_.begin_s) % 60:02d}–{tail}"
+    return f"{int(pass_.begin_s) // 60}:{int(pass_.begin_s) % 60:02d}-{tail}"
 
 
 def _length(pass_: TransectPass) -> str:

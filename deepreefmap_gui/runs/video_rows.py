@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.icons import (
     DEFAULT_INK,
     ICON_SM,
@@ -136,14 +137,10 @@ from deepreefmap_gui.survey.video_probe import NO, SOURCE_CONTAINER, YES
 # The strip is one of the app's bars, so it takes bar_qss's geometry: the same
 # height, and the round ends MeterBar paints at half that height.
 STRIP_BAR_HEIGHT = BAR_HEIGHT
-# Rerun ticks sit above the bar rather than inside it, so the widget is taller.
-TICK_HEIGHT = SPACE_XS
-STRIP_HEIGHT = STRIP_BAR_HEIGHT + TICK_HEIGHT
+STRIP_HEIGHT = STRIP_BAR_HEIGHT
 
 # A hairline, the weight MeterBar's hatching is drawn at.
 LINE_WIDTH = 2.0
-# One tick's own width between ticks, so a run of them still reads as separate.
-TICK_PITCH = LINE_WIDTH * 2
 
 # A ten-second section of an hour-long clip is under a pixel wide. Painted at
 # least this wide so it can be seen and hit.
@@ -160,7 +157,7 @@ RECORDED_CHARS = 10  # "~14:32", "Recorded ▼"
 LENGTH_CHARS = 9  # "12m 03s", "Length ▼"
 SIZE_CHARS = 9  # "1015 MB", "Size ▼"
 GRAVITY_CHARS = 9  # "Gravity ▼", over a cell holding only a dot
-WINDOW_CHARS = 22  # "0:00–11:51 · 11m 51s"
+WINDOW_CHARS = 22  # "0:00-11:51 · 11m 51s"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
 # What the clip pane's chip is allowed to shrink to before the pane itself has
 # to give: enough that an elided name is still a name rather than an ellipsis.
@@ -312,7 +309,7 @@ def size_label(size_bytes: int | None) -> str:
 
 def window_label(pass_: TransectPass) -> str:
     """A pass's time window, which is what tells two passes of one clip apart."""
-    return f"{_clock(pass_.begin_s)}–{_clock(pass_.end_s)}"
+    return f"{_clock(pass_.begin_s)}-{_clock(pass_.end_s)}"
 
 
 def section_length_label(pass_: TransectPass) -> str:
@@ -411,8 +408,19 @@ def clip_name_width(available: int, char_width: int) -> int:
     return max(char_width * NAME_MIN_CHARS, share)
 
 
-def _fixed_width(label: QLabel, chars: int) -> None:
-    label.setFixedWidth(label.fontMetrics().averageCharWidth() * chars)
+def _fixed_width(label: QLabel, chars: int, *, figures: bool = False) -> None:
+    """Reserve ``chars`` characters' worth of width for a row cell.
+
+    Measured against a digit rather than ``averageCharWidth``, which is a mean
+    dominated by lowercase letters and materially narrower than a figure: every
+    numeric column sized that way was short of what it held. ``figures`` also
+    gives the label tabular digits, so a column of times and sizes lines up
+    down the list instead of shifting with whichever numbers a row happens to
+    carry.
+    """
+    if figures:
+        label.setFont(tabular(label.font()))
+    label.setFixedWidth(label.fontMetrics().horizontalAdvance("0" * chars))
 
 
 def _selectable(widget: QWidget, name: str) -> None:
@@ -559,7 +567,7 @@ class SectionStrip(QWidget):
         return None
 
     def _bar_rect(self) -> QRectF:
-        return QRectF(0.0, float(TICK_HEIGHT), float(self.width()), float(STRIP_BAR_HEIGHT))
+        return QRectF(0.0, 0.0, float(self.width()), float(STRIP_BAR_HEIGHT))
 
     def _span_rects(self) -> list[tuple[Span, QRectF]]:
         track = self._bar_rect()
@@ -576,8 +584,13 @@ class SectionStrip(QWidget):
 
     def _span_tooltip(self, span: Span) -> str:
         name = self._names.get(span.pass_id) or UNASSIGNED_NAME
-        window = f"{_clock(span.begin * self._duration)}–{_clock(span.end * self._duration)}"
-        return f"{name}  ·  {window}  ·  {statuses.status_label(span.status)}"
+        window = f"{_clock(span.begin * self._duration)}-{_clock(span.end * self._duration)}"
+        # How many times this pass has been run is part of reading the bar,
+        # and the clip row has no column that says it.
+        facts = [name, window, statuses.status_label(span.status)]
+        if span.run_count:
+            facts.append(run_label(span.run_count))
+        return "  ·  ".join(facts)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pass_id = self.span_at(event.position().x())
@@ -639,25 +652,6 @@ class SectionStrip(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, radius, radius)
-        self._paint_ticks(painter, span, rect, colour)
-
-    def _paint_ticks(self, painter: QPainter, span: Span, rect: QRectF, colour: QColor) -> None:
-        """One tick per run, above a pass that has been run more than once.
-
-        A single tick over every processed pass would be decoration; the mark
-        is there to say a pass was done again, which is the thing worth
-        finding when two runs of one swim disagree.
-        """
-        if span.run_count < 2:
-            return
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(colour)
-        x = rect.left()
-        for _ in range(span.run_count):
-            if x + LINE_WIDTH > rect.right():
-                break
-            painter.drawRect(QRectF(x, 0.0, LINE_WIDTH, float(TICK_HEIGHT)))
-            x += TICK_PITCH
 
     def _paint_unknown(self, painter: QPainter, groove: QPainterPath, track: QRectF) -> None:
         """Hatching, as MeterBar draws a figure it cannot report.
@@ -725,19 +719,19 @@ class VideoRow(QWidget):
         self._name_width = self._name.width()
 
         self._recorded = muted_label()
-        _fixed_width(self._recorded, RECORDED_CHARS)
+        _fixed_width(self._recorded, RECORDED_CHARS, figures=True)
         row.addWidget(self._recorded)
 
         # Length and size are figures, so they right-align under their header
         # cells and their digits line up down the list.
         self._length = muted_label()
         self._length.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        _fixed_width(self._length, LENGTH_CHARS)
+        _fixed_width(self._length, LENGTH_CHARS, figures=True)
         row.addWidget(self._length)
 
         self._size = muted_label()
         self._size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        _fixed_width(self._size, SIZE_CHARS)
+        _fixed_width(self._size, SIZE_CHARS, figures=True)
         row.addWidget(self._size)
 
         # A dot and nothing else. The word "Gravity" beside a green dot in a
@@ -1137,7 +1131,7 @@ class SectionRow(QWidget):
         # that tells two sections of one clip apart before they are filed.
         self._window = secondary_label()
         if not compact:
-            _fixed_width(self._window, WINDOW_CHARS)
+            _fixed_width(self._window, WINDOW_CHARS, figures=True)
         else:
             # No column here: the pane is a third of the page, and a column
             # wide enough for the longest window a clip could have spends the
@@ -1170,7 +1164,7 @@ class SectionRow(QWidget):
         row.addWidget(self._direction)
 
         self._runs = muted_label()
-        _fixed_width(self._runs, RUNS_CHARS)
+        _fixed_width(self._runs, RUNS_CHARS, figures=True)
         self._runs.setVisible(not compact)
         row.addWidget(self._runs)
 

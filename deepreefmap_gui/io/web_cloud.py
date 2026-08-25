@@ -26,6 +26,11 @@ require.
 
 Semantic colours are not shipped: the viewer recolours from the ``classes``
 table in the header.
+
+Version 2 adds the camera track: one world-from-camera matrix per mapped frame
+and the lens they were taken with, so the console can draw the path the diver
+swam and the frustums along it. A version 1 file stays readable and simply has
+no track.
 """
 
 from __future__ import annotations
@@ -33,19 +38,22 @@ from __future__ import annotations
 import json
 import struct
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 if TYPE_CHECKING:
+    from deepreefmap.pipeline.artifacts import MappingSequenceResult
     from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
 WEB_CLOUD_FILENAME = "cloud_web.drmw"
 
 _MAGIC = b"DRMWEB01"
 _FORMAT = "drmw"
-_VERSION = 1
+_VERSION = 2
+_READABLE_VERSIONS = (1, 2)
 
 _DTYPES: dict[str, np.dtype[Any]] = {
     "float32": np.dtype("<f4"),
@@ -53,8 +61,61 @@ _DTYPES: dict[str, np.dtype[Any]] = {
 }
 
 
+@dataclass(frozen=True)
+class CameraTrack:
+    """Where each mapped frame's camera sat, and the lens it saw through."""
+
+    # (n, 4, 4): the transform that takes a camera-space point to world space.
+    poses_world_from_camera: np.ndarray
+    # 3x3 K, in the same pixels `image_size` counts.
+    intrinsics: np.ndarray
+    image_size: tuple[int, int]
+
+
+def camera_track(
+    mapping_result: "MappingSequenceResult", frame_order: Sequence[int]
+) -> CameraTrack | None:
+    """The track for `frame_order`, or None when the mapper placed no camera.
+
+    Frames the mapper did not place are dropped rather than filled: the track is
+    drawn as a path, and an invented pose would bend it.
+    """
+    poses = np.asarray(mapping_result.poses_w_c, dtype=np.float32)
+    depth = np.asarray(mapping_result.depth_maps)
+    if poses.ndim != 3 or poses.shape[1:] != (4, 4) or depth.ndim != 3:
+        return None
+    at = {
+        int(frame): index
+        for index, frame in enumerate(
+            np.asarray(mapping_result.frame_indices).reshape(-1).tolist()
+        )
+    }
+    picked = [poses[at[int(frame)]] for frame in frame_order if int(frame) in at]
+    if not picked:
+        return None
+    return CameraTrack(
+        poses_world_from_camera=np.stack(picked),
+        intrinsics=np.asarray(mapping_result.intrinsics, dtype=np.float64),
+        image_size=(int(depth.shape[2]), int(depth.shape[1])),
+    )
+
+
 def _padding(n: int) -> int:
     return (-n) % 4
+
+
+def _camera_header(track: CameraTrack) -> dict[str, object]:
+    k = np.asarray(track.intrinsics, dtype=np.float64).reshape(3, 3)
+    width, height = track.image_size
+    return {
+        "count": int(np.asarray(track.poses_world_from_camera).shape[0]),
+        "fx": float(k[0, 0]),
+        "fy": float(k[1, 1]),
+        "cx": float(k[0, 2]),
+        "cy": float(k[1, 2]),
+        "width": int(width),
+        "height": int(height),
+    }
 
 
 def write_web_cloud(
@@ -65,6 +126,7 @@ def write_web_cloud(
     class_colours: Mapping[int, tuple[int, int, int]],
     *,
     has_confidence: bool,
+    cameras: "CameraTrack | None" = None,
 ) -> None:
     """Write an already-built index as a 'drmw' file.
 
@@ -111,6 +173,9 @@ def write_web_cloud(
     ]
     if has_confidence:
         arrays.append(("conf", "float32", _concat(conf_parts, (0,), "float32")))
+    if cameras is not None:
+        poses = np.asarray(cameras.poses_world_from_camera, dtype=np.float32).reshape(-1, 16)
+        arrays.append(("camera_pose", "float32", np.ascontiguousarray(poses)))
 
     payload = bytearray()
     buffer_entries: list[dict[str, object]] = []
@@ -138,6 +203,8 @@ def write_web_cloud(
         "per_class": per_class,
         "buffers": buffer_entries,
     }
+    if cameras is not None:
+        header["cameras"] = _camera_header(cameras)
     header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
     header_bytes += b" " * _padding(len(_MAGIC) + 4 + len(header_bytes))
 
@@ -170,6 +237,9 @@ def write_web_cloud_from_scene(scene_path: Path, out_path: Path, *, run_dir: Pat
         arr.size > 1 and float(arr.min()) != float(arr.max())
         for arr in fci.conf_by_class.values()
     )
+    from deepreefmap.pipeline.resume import load_mapping_result
+
+    mapping_result = load_mapping_result(run_dir)
     write_web_cloud(
         out_path,
         fci,
@@ -177,6 +247,9 @@ def write_web_cloud_from_scene(scene_path: Path, out_path: Path, *, run_dir: Pat
         scene.classes_config.id_to_name,
         scene.classes_config.id_to_color,
         has_confidence=has_confidence,
+        cameras=(
+            None if mapping_result is None else camera_track(mapping_result, fci.frame_order)
+        ),
     )
     return True
 
@@ -194,7 +267,7 @@ def read_web_cloud(path: Path) -> tuple[dict[str, object], dict[str, np.ndarray]
     (header_len,) = struct.unpack_from("<I", raw, len(_MAGIC))
     data_start = len(_MAGIC) + 4 + header_len
     header = json.loads(raw[len(_MAGIC) + 4 : data_start].decode("utf-8"))
-    if header.get("format") != _FORMAT or int(header.get("version", -1)) != _VERSION:
+    if header.get("format") != _FORMAT or int(header.get("version", -1)) not in _READABLE_VERSIONS:
         raise ValueError(f"{path}: unsupported drmw header {header.get('format')!r} v{header.get('version')!r}")
 
     views: dict[str, np.ndarray] = {}
@@ -203,5 +276,10 @@ def read_web_cloud(path: Path) -> tuple[dict[str, object], dict[str, np.ndarray]
         count = int(buf["byte_length"]) // dtype.itemsize
         arr = np.frombuffer(raw, dtype=dtype, count=count, offset=data_start + int(buf["byte_offset"]))
         name = str(buf["name"])
-        views[name] = arr.reshape(-1, 3) if name in ("xyz", "rgb") else arr
+        if name in ("xyz", "rgb"):
+            views[name] = arr.reshape(-1, 3)
+        elif name == "camera_pose":
+            views[name] = arr.reshape(-1, 4, 4)
+        else:
+            views[name] = arr
     return header, views

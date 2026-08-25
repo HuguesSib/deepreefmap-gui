@@ -402,7 +402,7 @@ def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None
     texts = label_texts(row)
     # The window and how long it runs for, on one label: the clip above says how
     # long the recording is, and this says how much of it was cut.
-    assert "0:00–0:30 · 30s" in texts
+    assert "0:00-0:30 · 30s" in texts
     assert "2 runs" in texts
     # Direction is an arrow rather than a word, so it costs an icon's width
     # instead of a column; the tooltip still says it in words.

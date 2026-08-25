@@ -1151,11 +1151,11 @@ class BrowseMixin(MixinBase):
         bits = [f"{stats.run_count} run{'s' if stats.run_count != 1 else ''}"]
         if stats.duration_range:
             lo, hi = stats.duration_range
-            bits.append(f"runtime {format_duration(lo)}" + (f" – {format_duration(hi)}" if hi != lo else ""))
+            bits.append(f"runtime {format_duration(lo)}" + (f" to {format_duration(hi)}" if hi != lo else ""))
         if stats.point_range:
             lo_p, hi_p = stats.point_range
             bits.append(
-                f"{points_label(lo_p)}–{points_label(hi_p)} points" if hi_p != lo_p else f"{points_label(hi_p)} points"
+                f"{points_label(lo_p)}-{points_label(hi_p)} points" if hi_p != lo_p else f"{points_label(hi_p)} points"
             )
         # Disk is deliberately absent: the label at the other end of this row
         # already carries it, and printing it twice on one line read as two

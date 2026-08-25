@@ -747,7 +747,7 @@ def _window_title(entry: RunEntry) -> str:
     else:
         begin = f"{entry.begin_s:g}" if entry.begin_s is not None else "0"
         end = f"{entry.end_s:g}" if entry.end_s is not None else "end"
-        label = f"{begin}–{end} s"
+        label = f"{begin}-{end} s"
     name = entry.transect_name
     return f"{label} · {name}" if name else label
 
