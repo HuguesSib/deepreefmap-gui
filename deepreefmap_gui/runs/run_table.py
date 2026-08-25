@@ -60,12 +60,13 @@ _HEADERS = (
 # a status pill, a fixed-width timestamp, a formatted number. Sizing these to
 # content instead let them take the viewport and squeeze Name to an ellipsis,
 # and sizing them to the window would only pad digits with air. Measured against
-# the widest value each holds ("2026-08-04 14:32" is 141px at the base font, plus
-# the row padding), not guessed: a timestamp column short of its timestamp elides
-# every row it has.
+# the widest value each holds, not guessed: a timestamp column short of its
+# timestamp elides every row it has. The measurement carries a few pixels of
+# slack, because the item delegate reserves a focus margin beyond the padding
+# and a column sized to the exact advance still elides.
 _FIXED_WIDTHS = {
-    COL_STATUS: 96,
-    COL_CREATED: 144,
+    COL_STATUS: 92,
+    COL_CREATED: 152,
     COL_SIZE: 76,
 }
 
@@ -77,22 +78,25 @@ _FIXED_WIDTHS = {
 # tooltip carries all of them whether or not a column does.
 _OPTIONAL_WIDTHS = (
     (COL_POINTS, 64),
-    (COL_RUNTIME, 72),
+    (COL_RUNTIME, 80),
     (COL_FRAMES, 64),
-    (COL_DIRECTION, 84),
-    (COL_RECORDED, 144),
+    (COL_TRANSECT, 140),
+    (COL_DIRECTION, 88),
+    (COL_RECORDED, 152),
 )
 
 # What is left over, shared out by weight. Qt's Stretch mode splits slack
-# equally, which would hand Transect as much room as Name; the name is what
-# identifies a row, so it takes the larger share and the two weaker identifiers
-# follow it.
-_FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
+# equally, which would hand the clip as much room as the run; the name is what
+# identifies a row, so it takes the larger share and the clip follows it.
+# Transect is not here: on the grouped facets it repeats the heading above the
+# table, so it earns its width with the other secondary columns rather than
+# taking a share of the slack from the two that always say something.
+_FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2}
 
 # Below these a column has stopped saying which run, which clip or which line,
 # so it holds its floor and the table scrolls instead. That only happens on a
 # window too narrow to hold the columns by any arrangement.
-_FLEX_MINIMUMS = {COL_NAME: 180, COL_VIDEO: 100, COL_TRANSECT: 80}
+_FLEX_MINIMUMS = {COL_NAME: 180, COL_VIDEO: 120}
 
 # Numbers read right-aligned, which also lines up their digits down the column.
 # Their headers follow them, so label and value share an edge.

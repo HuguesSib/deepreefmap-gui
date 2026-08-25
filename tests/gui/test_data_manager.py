@@ -1323,12 +1323,12 @@ def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
     name put a horizontal scrollbar under the one table the page is for. 830px
     is about what Browse leaves the table with the rail open and a run selected.
     """
-    from deepreefmap_gui.runs.run_table import COL_NAME, COL_TRANSECT, COL_VIDEO, column_widths
+    from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths
 
     widths = column_widths(available)
     assert sum(widths.values()) <= available
-    # Name identifies the row, so it takes the largest share of the slack.
-    assert widths[COL_NAME] > widths[COL_VIDEO] >= widths[COL_TRANSECT]
+    # Name identifies the row, so it takes the larger share of the slack.
+    assert widths[COL_NAME] > widths[COL_VIDEO]
 
 
 def test_the_secondary_columns_appear_only_where_there_is_room_for_them():
@@ -1348,8 +1348,8 @@ def test_the_secondary_columns_appear_only_where_there_is_room_for_them():
     )
 
     assert {COL_DIRECTION, COL_RECORDED} <= set(column_widths(1440))
-    assert COL_DIRECTION in column_widths(1000)
-    assert COL_RECORDED not in column_widths(1000)
+    assert COL_DIRECTION in column_widths(1080)
+    assert COL_RECORDED not in column_widths(1080)
     # Figures earn their width before the identifiers do: a number is read off
     # the row, where the transect and the session repeat the group heading.
     assert COL_POINTS in column_widths(800)

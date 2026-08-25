@@ -277,6 +277,7 @@ def build_window():
 
 
 def capture_all(out_dir: Path) -> None:
+    from deepreefmap_gui.runs.browse import _GROUPED_FACETS
     from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 
     out_root = _isolate_config()
@@ -311,7 +312,7 @@ def capture_all(out_dir: Path) -> None:
     window._data_run_table.selectRow(0)
     capture.shot("browse-selected")
 
-    for facet in ("sessions", "transects", "videos"):
+    for facet in _GROUPED_FACETS:
         window._data_facet_buttons[facet].click()
         capture.settle()
         capture.shot(f"browse-by-{facet}")
