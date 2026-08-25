@@ -83,6 +83,7 @@ from deepreefmap_gui.core.widgets import (
     EmptyState,
     lent_panel_home,
     muted_label,
+    unpad,
     utility_button_qss,
     warning_banner_qss,
 )
@@ -510,6 +511,7 @@ class FormPanelMixin(MixinBase):
 
         root_open_btn = QPushButton()
         root_open_btn.setIcon(arrow_right_icon(18))
+        unpad(root_open_btn)
         root_open_btn.setFixedSize(26, 24)
         root_open_btn.setToolTip("Open output root in file manager")
         root_open_btn.setAccessibleName("Open output root in file manager")
@@ -526,6 +528,7 @@ class FormPanelMixin(MixinBase):
         root_browse_btn = QPushButton()
         root_browse_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         root_browse_btn.setIconSize(QSize(18, 18))
+        unpad(root_browse_btn)
         root_browse_btn.setFixedSize(28, 28)
         root_browse_btn.setToolTip("Browse for output root folder…")
         root_browse_btn.setAccessibleName("Browse for output root folder")
@@ -534,6 +537,7 @@ class FormPanelMixin(MixinBase):
         root_default_btn = QPushButton()
         root_default_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         root_default_btn.setIconSize(QSize(18, 18))
+        unpad(root_default_btn)
         root_default_btn.setFixedSize(28, 28)
         root_default_btn.setToolTip("Reset to <Documents>/DeepReefMap")
         root_default_btn.setAccessibleName("Reset the output root to its default")
@@ -720,6 +724,7 @@ class FormPanelMixin(MixinBase):
         scs_ckpt_btn = QPushButton()
         scs_ckpt_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         scs_ckpt_btn.setIconSize(QSize(18, 18))
+        unpad(scs_ckpt_btn)
         scs_ckpt_btn.setFixedSize(28, 28)
         scs_ckpt_btn.setToolTip("Browse for a SCSfMLearner .pt checkpoint…")
         scs_ckpt_btn.setAccessibleName("Browse for a SCSfMLearner checkpoint")
@@ -756,6 +761,7 @@ class FormPanelMixin(MixinBase):
         loger_ckpt_btn = QPushButton()
         loger_ckpt_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         loger_ckpt_btn.setIconSize(QSize(18, 18))
+        unpad(loger_ckpt_btn)
         loger_ckpt_btn.setFixedSize(28, 28)
         loger_ckpt_btn.setToolTip("Browse for a LoGeR .pt checkpoint…")
         loger_ckpt_btn.setAccessibleName("Browse for a LoGeR checkpoint")

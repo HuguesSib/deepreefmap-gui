@@ -699,9 +699,18 @@ def unpad(button: QWidget) -> None:
     the ``setFixedSize``, or the button measures 46x28 and draws its glyph
     clipped inside whatever smaller box it was given.
     """
-    if button.property("pad") == "none":
+    _set_pad(button, "none")
+
+
+def repad(button: QWidget) -> None:
+    """Give the padding back, for a button that has gone from a glyph to a label."""
+    _set_pad(button, None)
+
+
+def _set_pad(button: QWidget, value: str | None) -> None:
+    if button.property("pad") == value:
         return
-    button.setProperty("pad", "none")
+    button.setProperty("pad", value)
     style = button.style()
     style.unpolish(button)
     style.polish(button)

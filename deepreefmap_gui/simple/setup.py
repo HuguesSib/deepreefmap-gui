@@ -54,7 +54,7 @@ from deepreefmap_gui.core.theme import (
     TEXT_MUTED,
     WARNING,
 )
-from deepreefmap_gui.core.widgets import NoticeStrip, section_card
+from deepreefmap_gui.core.widgets import NoticeStrip, repad, section_card, unpad
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.models.cache import GPU_ONLY_BACKENDS
 from deepreefmap_gui.packaging.shortcuts import (
@@ -428,8 +428,13 @@ def _paint_row_action(button: QPushButton, *, label: str, compact: bool) -> None
     button.setToolTip(label if compact else "")
     button.setAccessibleName(label)
     if compact:
+        # The global button padding measures 46px on its own, so a 34px glyph
+        # button that keeps it draws its icon clipped. Stripped before the width
+        # is pinned, and put back when the label returns and needs it again.
+        unpad(button)
         button.setFixedWidth(_COMPACT_ACTION_WIDTH)
     else:
+        repad(button)
         button.setMinimumWidth(0)
         button.setMaximumWidth(_UNBOUNDED)
 
