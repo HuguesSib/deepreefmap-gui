@@ -82,6 +82,21 @@ def seed_from_settings(
     return seeded
 
 
+def seeded_stages(output_dir: Path, seeded: Path | None) -> frozenset[str]:
+    """Coarse stages this run will read from cache rather than compute.
+
+    Their durations measure a hard-link, not the work, so they must not be
+    folded into the timing profile that seeds fresh runs. Preprocess always
+    comes across on a hit; the mapping npz only when the source had a sidecar.
+    """
+    if seeded is None:
+        return frozenset()
+    stages = {"preprocess"}
+    if (output_dir / "mapping_outputs.npz").is_file():
+        stages.add("mapping")
+    return frozenset(stages)
+
+
 def _link_or_copy(src: Path, dst: Path) -> None:
     try:
         os.link(src, dst)

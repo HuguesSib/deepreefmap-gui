@@ -310,8 +310,13 @@ class ProgressBarsMixin(MixinBase):
             if sink is not None
         ]
 
-    def _begin_progress(self, model: ProgressModel) -> None:
-        """Switch the active progress model and start the run from zero."""
+    def _begin_progress(self, model: ProgressModel, spec=None) -> None:
+        """Switch the active progress model and start the run from zero.
+
+        `spec` is the PassSpec of the queued pass about to run, when there is
+        one. Without it the estimator reads the form, which a batch has already
+        restored to the session's values.
+        """
         model.reset()
         self._active_progress_model = model
         self._run_progress = RunProgress()
@@ -321,27 +326,48 @@ class ProgressBarsMixin(MixinBase):
         self._status_phase_key = None
         self._status_phase_started = time.monotonic()
         # ETA only applies to a reconstruction; a cached-run load has its own model.
-        self._eta = self._new_run_estimator() if model is self._recon_model else None
+        self._eta = self._new_run_estimator(spec) if model is self._recon_model else None
         self._ensure_status_tick_timer().start()
 
-    def _new_run_estimator(self) -> RunEtaEstimator:
-        """Estimator seeded from this machine's history for the selected backends."""
-        from deepreefmap_gui.profiling.run_history import history_key, load_expected_points, load_priors
+    def _form_pass_spec(self):
+        """A PassSpec for the run the form is currently describing."""
+        from deepreefmap_gui.profiling.batch_estimate import PassSpec
+        from deepreefmap_gui.profiling.run_history import seg_key
+
+        return PassSpec(
+            key="form",
+            frames=0,
+            mapping_backend=self._map_combo.currentText(),
+            seg_model=seg_key(
+                self._seg_combo.currentText(),
+                bool(getattr(self, "_skip_seg_check", None) and self._skip_seg_check.isChecked()),
+            ),
+            width=self._proc_width_spin.value(),
+            height=self._proc_height_spin.value(),
+            fps=self._fps_spin.value(),
+        )
+
+    def _new_run_estimator(self, spec=None) -> RunEtaEstimator:
+        """Estimator seeded from this machine's history for the pass about to run."""
+        from deepreefmap_gui.profiling.batch_estimate import expected_points_for
+        from deepreefmap_gui.profiling.run_history import history_key, load_priors
 
         try:
+            if spec is None:
+                spec = self._form_pass_spec()
             key = history_key(
-                self._map_combo.currentText(),
-                self._seg_combo.currentText(),
-                self._proc_width_spin.value(),
-                self._proc_height_spin.value(),
-                self._fps_spin.value(),
+                spec.mapping_backend, spec.seg_model, spec.width, spec.height, spec.fps
             )
             priors = load_priors(key)
-            expected_points = load_expected_points(key)
+            # Scaled to this pass's length: an unscaled median prices the
+            # point-driven stages of a long pass as a median-length one.
+            expected_points = expected_points_for(key, spec.frames)
+            frames = spec.frames
         except Exception:
             priors = {}
             expected_points = None
-        return RunEtaEstimator(frames=0, priors=priors, expected_points=expected_points)
+            frames = 0
+        return RunEtaEstimator(frames=frames, priors=priors, expected_points=expected_points)
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
         """Progress readouts belong to a run in flight; idle shows none of them."""
@@ -501,8 +527,10 @@ class ProgressBarsMixin(MixinBase):
         if est is not None and stage_for_phase(phase_key) is not None:
             # The preprocess total is the selected frame count, the size the
             # per-frame stages scale with; capture it for pending predictions.
-            if phase_key == "preprocess" and total > 0:
-                est.frames = total
+            # `> 1` and latched: the stage-completed pulse reports 1/1, not the
+            # frame count, and arrives just as mapping is about to be priced.
+            if phase_key == "preprocess" and total > 1:
+                est.frames = max(est.frames, total)
             if stage_combined is not None:
                 # Feed the estimator the same combined fill the detail bar shows
                 # (0-100), not the raw per-sub-phase fraction. Otherwise the hover

@@ -23,6 +23,7 @@ from deepreefmap_gui.profiling.eta import FRAMES, STAGES, RunEtaEstimator
 from deepreefmap_gui.profiling.run_history import (
     ProfileEntry,
     history_key,
+    load_expected_frames,
     load_expected_points,
     load_priors,
     load_profile_entries,
@@ -79,6 +80,22 @@ class BatchPrediction:
 
     def seconds_for(self, key: str) -> float | None:
         return next((p.seconds for p in self.passes if p.key == key), None)
+
+
+def expected_points_for(key: str, frames: int, *, path: Path | None = None) -> int | None:
+    """The stored point count, scaled to a pass of `frames`.
+
+    The median is taken over runs of whatever length, so feeding it in unscaled
+    prices the four point-driven stages of a long pass as a median-length one.
+    Scaled the way the donor branch already scales (`_scaled_points`).
+    """
+    points = load_expected_points(key, path)
+    if points is None:
+        return None
+    recorded = load_expected_frames(key, path)
+    if not recorded or frames <= 0:
+        return points
+    return int(points * frames / recorded)
 
 
 def _predict_from(
@@ -160,7 +177,7 @@ def predict_pass_seconds(spec: PassSpec, *, path: Path | None = None) -> PassPre
     key = history_key(spec.mapping_backend, spec.seg_model, spec.width, spec.height, spec.fps)
     priors = load_priors(key, path)
     if priors:
-        seconds = _predict_from(spec, priors, load_expected_points(key, path))
+        seconds = _predict_from(spec, priors, expected_points_for(key, spec.frames, path=path))
         if seconds is not None:
             return PassPrediction(spec.key, seconds, BASIS_EXACT)
 

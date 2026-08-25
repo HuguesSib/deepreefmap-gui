@@ -1585,7 +1585,7 @@ class SimpleBatchMixin(MixinBase):
         warning belongs on the settings that caused it.
         """
         from deepreefmap_gui.profiling.memory_estimate import fit_for_pass
-        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
+        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks, seg_key
         from deepreefmap_gui.profiling.system_probe import probe_system
 
         seconds = row.end_s - row.begin_s
@@ -1598,7 +1598,12 @@ class SimpleBatchMixin(MixinBase):
         width = int(settings.get("processing_width") or self._proc_width_spin.value())
         height = int(settings.get("processing_height") or self._proc_height_spin.value())
         mapping = str(settings.get("mapping_name") or self._map_combo.currentText())
-        seg = str(settings.get("segmentation_name") or self._seg_combo.currentText())
+        # Spelled the way a finished run is recorded, so the memory grade and the
+        # time estimate read the same history key.
+        seg = seg_key(
+            settings.get("segmentation_name") or self._seg_combo.currentText(),
+            bool(settings.get("skip_segmentation")),
+        )
         batch_size = int(settings.get("preprocess_batch_size") or self._batch_size_spin.value())
         try:
             machine = probe_system(wait_for_gpu=False) if profile is None else profile
@@ -1695,6 +1700,7 @@ class SimpleBatchMixin(MixinBase):
         memory grade are answering about the same run.
         """
         from deepreefmap_gui.profiling.batch_estimate import PassSpec
+        from deepreefmap_gui.profiling.run_history import seg_key
 
         seconds = row.end_s - row.begin_s
         settings = self._row_settings(row)
@@ -1705,7 +1711,10 @@ class SimpleBatchMixin(MixinBase):
             key=str(row.pass_id),
             frames=int(max(0.0, seconds) * max(1, fps)),
             mapping_backend=str(settings.get("mapping_name") or self._map_combo.currentText()),
-            seg_model=str(settings.get("segmentation_name") or self._seg_combo.currentText()),
+            seg_model=seg_key(
+                settings.get("segmentation_name") or self._seg_combo.currentText(),
+                bool(settings.get("skip_segmentation")),
+            ),
             width=int(settings.get("processing_width") or self._proc_width_spin.value()),
             height=int(settings.get("processing_height") or self._proc_height_spin.value()),
             fps=max(1, fps),
@@ -2473,7 +2482,7 @@ class SimpleBatchMixin(MixinBase):
 
         from deepreefmap_gui.models.cache import resolve_model_versions
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
-        from deepreefmap_gui.runs.seeding import seed_from_settings
+        from deepreefmap_gui.runs.seeding import seed_from_settings, seeded_stages
         from deepreefmap_gui.simple.setup import ROUGH_PASS_BYTES
         from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
@@ -2567,6 +2576,7 @@ class SimpleBatchMixin(MixinBase):
                             f"Pass {index} of {len(jobs)}: reusing prepared frames from an earlier attempt."
                         )
                     instrumented_reconstruction(
+                        cached_stages=seeded_stages(out_dir, seeded),
                         video_paths=[video.path for video in job.videos],
                         output_dir=out_dir,
                         transect_length=job.transect.length_m if job.transect else None,
@@ -2649,8 +2659,11 @@ class SimpleBatchMixin(MixinBase):
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
         self._status_label.setText(f"Processing pass {index} of {total}: {name}")
         # Fresh estimator per pass so the ETA does not blend across passes. The
-        # batch card spans them instead, from the median of past runs.
-        self._begin_progress(self._recon_model)
+        # batch card spans them instead, from the median of past runs. Seeded
+        # from this row's own spec: the form has already been restored to the
+        # session's settings, so an overridden row would otherwise be estimated
+        # from a config it is not running.
+        self._begin_progress(self._recon_model, self._running_pass_spec(index - 1))
         # `_on_load_progress` drops every report while this is set, which would
         # stall each pass at the last percent through its scene write.
         self._load_cancelled = False
@@ -2658,6 +2671,15 @@ class SimpleBatchMixin(MixinBase):
             sink.set_batch_context(index, total, name)
         self._survey_running_index = index - 1
         self._refresh_survey_pass_statuses()
+
+    def _running_pass_spec(self, index: int):
+        """The spec of the queued pass at `index`, or None if it cannot be built."""
+        try:
+            pass_id = self._survey_job_pass_ids[index]
+            row = self._row_for_pass(pass_id)
+            return self._pass_spec(row) if row is not None else None
+        except Exception:
+            return None
 
     def _on_survey_pass_done(self, index: int, seconds: float) -> None:
         """Fold a finished pass's real cost into the session estimate."""

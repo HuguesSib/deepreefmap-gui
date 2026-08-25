@@ -367,6 +367,7 @@ def instrumented_reconstruction(
     *,
     run_name: str | None = None,
     manifest_extra: dict | None = None,
+    cached_stages: "frozenset[str] | None" = None,
     scene_writer: "Callable[[Path, dict, dict], None] | None" = None,
     on_failure: "Callable[[dict], None] | None" = None,
     **kwargs,
@@ -383,6 +384,11 @@ def instrumented_reconstruction(
     the scene_save span measurable. It runs inside the sampled window so its
     memory peak is recorded too, and a failure is logged rather than raised: the
     scene file is a cache, and losing it must not lose the run.
+
+    ``cached_stages`` names the coarse stages this run read from a seeded cache.
+    Their spans measure a hard-link rather than the work, so they are recorded
+    in the manifest as ``resumed_stages`` and withheld from the timing profile;
+    the rest of the run is still worth learning from.
 
     ``on_failure`` is handed the partial manifest of a run that raised, before
     the exception carries on. The manifest on disk cannot carry it -- a run that
@@ -402,6 +408,8 @@ def instrumented_reconstruction(
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
     extra = dict(manifest_extra or {})
+    if cached_stages:
+        extra["resumed_stages"] = sorted(cached_stages)
     extra.update(_record_run_command(output_dir, kwargs))
     # The library's preprocess cache key reads the classes file directly, so a
     # None (bundled default) must become the packaged copy's absolute path
@@ -451,4 +459,4 @@ def instrumented_reconstruction(
     finally:
         instr.stop()
     if manifest is not None:
-        record_run_from_manifest(manifest)
+        record_run_from_manifest(manifest, cached_stages=cached_stages)
