@@ -414,9 +414,16 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
         video = videos.get(pass_.video_id)
         if video is not None:
             entry.db_captured_at = video.captured_at or video.mtime
-        transect = (
-            transects.get(pass_.transect_id) if pass_.transect_id is not None else None
-        )
+        transect_id = pass_.transect_id
+        if transect_id is not None and transect_id not in transects:
+            # A line the registry has retired still named the swim this run
+            # processed. Leaving it blank files the run as belonging to no
+            # transect, and Browse then asks somebody to assign it to a line
+            # nothing lists any more. Looked up once per line, into the same map.
+            retired = store.get_transect_for_reference(transect_id)
+            if retired is not None:
+                transects[transect_id] = retired
+        transect = transects.get(transect_id) if transect_id is not None else None
         entry.db_transect_name = transect.name if transect is not None else None
         if (
             entry.manifest_transect_name

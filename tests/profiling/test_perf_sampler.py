@@ -78,6 +78,32 @@ def test_the_machine_reading_is_the_fallback_when_the_process_will_not_report(
     assert all(s.ram_bytes == 20 and s.swap_bytes == 9 for s in sampler.samples)
 
 
+def test_the_fallback_carries_an_unmeasurable_swap_through_as_null(monkeypatch) -> None:
+    """Scenario: neither the process nor the machine will report swap.
+
+    Expected behaviour: null all the way to the sample. The machine-wide
+    reading is the fallback for RAM, and taking a zero swap from it would put
+    the very observation the per-process null exists to keep out back in.
+    """
+    import threading
+
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(
+        probe, "sample_utilisation",
+        lambda: probe.Utilisation(20, 100, 20.0, 1.0, vram_used_bytes=None,
+                                  vram_total_bytes=None, swap_used_bytes=None),
+    )
+    monkeypatch.setattr(probe, "sample_process_memory", lambda: None)
+    sampler = ResourceSampler(interval_s=0.01)
+    sampler.start()
+    threading.Event().wait(0.05)
+    sampler.stop()
+
+    assert sampler.samples
+    assert all(s.ram_bytes == 20 and s.swap_bytes is None for s in sampler.samples)
+
+
 def test_stage_without_samples_or_marks_is_omitted() -> None:
     # Mapping has no marks, and preprocess has no sample landing inside it.
     marks = {"start": 0.0, "preprocess": 10.0}
@@ -89,9 +115,30 @@ def test_stage_without_samples_or_marks_is_omitted() -> None:
 
 def test_vram_none_when_no_sample_reported_it() -> None:
     marks = {"start": 0.0, "preprocess": 10.0}
-    samples = [ResourceSample(1.0, 5, None), ResourceSample(2.0, 8, None)]
+    samples = [ResourceSample(1.0, 5, None, 0), ResourceSample(2.0, 8, None, 0)]
     peaks = peaks_from_marks(samples, _SPANS, marks)
     assert peaks["startup"] == {"ram_bytes": 8, "vram_bytes": None, "swap_bytes": 0}
+
+
+def test_swap_none_when_the_platform_would_not_report_it() -> None:
+    """Scenario: a Windows or macOS run, where per-process swap is unreadable.
+
+    Expected behaviour: null, exactly as VRAM does on a machine with no card. A
+    zero is an observation, and one from every run on those platforms drags the
+    fleet's mean swap towards nothing and invents variance around it.
+    """
+    marks = {"start": 0.0, "preprocess": 10.0}
+    samples = [ResourceSample(1.0, 5, None, None), ResourceSample(2.0, 8, None, None)]
+    peaks = peaks_from_marks(samples, _SPANS, marks)
+    assert peaks["startup"] == {"ram_bytes": 8, "vram_bytes": None, "swap_bytes": None}
+
+
+def test_a_measured_zero_swap_stays_a_zero() -> None:
+    """A run that swapped nothing is a real observation, not a missing one."""
+    marks = {"start": 0.0, "preprocess": 10.0}
+    samples = [ResourceSample(1.0, 5, None, 0), ResourceSample(2.0, 8, None, None)]
+    peaks = peaks_from_marks(samples, _SPANS, marks)
+    assert peaks["startup"]["swap_bytes"] == 0
 
 
 def test_sampler_collects_samples_then_stops(monkeypatch) -> None:

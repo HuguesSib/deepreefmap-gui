@@ -43,6 +43,7 @@ from deepreefmap_gui.core.theme import (
     SPACE_XS,
     TEXT_MUTED,
     UPDATE,
+    WARNING,
 )
 from deepreefmap_gui.core.widgets import (
     SectionHeader,
@@ -315,6 +316,25 @@ class SimpleMachineMixin(MixinBase):
                 f"DeepReefMap {version} is available." if version else "",
                 "See what's new",
             )
+
+    def _refresh_models_segment(self) -> None:
+        """Tint Models while the server preset names weights this laptop lacks.
+
+        For the same reason the Updates segment is tinted: the offer to fetch
+        them is painted on the Server view, and the sync that raises it is
+        usually run from the status-bar badge, which leaves that page unseen.
+        """
+        button = getattr(self, "_machine_view_buttons", {}).get("models")
+        if button is None:
+            return
+        index = MACHINE_VIEWS.index("models")
+        button.setStyleSheet(
+            segmented_qss(
+                first=index == 0,
+                last=index == len(MACHINE_VIEWS) - 1,
+                alert=WARNING if getattr(self, "_preset_missing_models", ()) else "",
+            )
+        )
 
     def _set_machine_view(self, view: str) -> None:
         if view not in MACHINE_VIEWS:

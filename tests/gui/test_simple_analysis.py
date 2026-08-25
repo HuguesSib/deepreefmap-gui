@@ -160,3 +160,30 @@ def test_a_pooled_bar_opens_nothing_because_it_is_every_pass(analysis_window, mo
     w._analysis_chart.series_clicked.emit(str(w._analysis_covers[0].pass_id))
 
     assert opened == []
+
+
+def test_a_retired_line_keeps_its_place_in_analysis(analysis_window):
+    """Scenario: the registry retires the line whose passes are already
+    processed and shown here.
+
+    Expected behaviour: it stays in the picker, marked retired, and its numbers
+    stay readable. Listing only what somebody may choose emptied the pane of
+    work that had already been done, with nothing on screen saying why.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    window = analysis_window
+    store = window._survey_store()
+    transect = store.list_transects()[0]
+    retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": retired_at,
+        "updated_at": retired_at,
+    }])
+
+    window._refresh_survey_analysis()
+
+    assert window._analysis_transect_combo.count() == 1
+    assert window._analysis_transect_combo.itemText(0) == "T1 (retired)"
+    assert len(window._analysis_covers) == 1

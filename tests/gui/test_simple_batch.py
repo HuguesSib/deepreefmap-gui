@@ -24,6 +24,7 @@ from deepreefmap_gui.simple.batch import (
 )
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
+from deepreefmap_gui.sync import wire
 
 
 def test_diagnose_failure_speaks_plainly_and_advises():
@@ -645,6 +646,68 @@ def test_the_worker_skips_a_pass_taken_out_after_checkout(
     skipped = statuses[second_pass_id]
     assert skipped.status == "cancelled"
     assert "Taken out of the session" in skipped.error
+
+
+def test_a_failed_pass_records_and_pushes_the_peaks_it_reached(
+    batch_window, tmp_path, out_root, monkeypatch, qapp, sampled
+):
+    """Scenario: a pass runs the machine out of memory partway through mapping.
+
+    Expected behaviour: the row carries what it measured before it died, and the
+    push carries it on. The run that hit the ceiling is the one the fleet's
+    resource statistics exist to explain, and only a finished run used to report.
+    """
+    def dying_run(**kwargs):
+        viewer = kwargs["viewer"]
+        viewer.set_stage("startup", "running", "Loading camera + segmentation + mapping backends")
+        viewer.set_stage("preprocess", "running", "Rectifying + segmenting + masking")
+        viewer.set_stage("mapping", "running", "3D mapping pipeline in progress")
+        sampled()
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", dying_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    (run,) = batch_window._survey_store().list_runs()
+    assert run.status == "failed"
+    assert set(run.stage_durations) == {"startup", "preprocess", "mapping"}
+    assert "mapping" in run.stage_peaks
+    assert run.stage_peaks["mapping"]["ram_bytes"] > 0
+    assert "cloud" not in run.stage_peaks
+    assert run.run_duration_s >= 0.0
+    # The grain the registry pools peaks at: without it the failed run groups
+    # alone rather than beside the passes it should be compared against.
+    assert (run.processing_width, run.processing_height) == (1376, 768)
+    assert (run.fps, run.preprocess_batch_size) == (5, 4)
+    assert run.mapping_backend and run.segmentation_model
+    assert run.preset_name == batch_window._active_preset.org.name
+
+    row = wire.run_rows_to_wire([run], out_root)[0]
+    assert row["stage_durations"] == run.stage_durations
+    assert row["stage_peaks"] == run.stage_peaks
+    assert row["status"] == "failed"
+
+
+def test_a_cancelled_pass_records_no_peaks(batch_window, tmp_path, monkeypatch, qapp):
+    """A pass stopped by hand says nothing about what the configuration costs.
+    Its peaks are whatever it got to before the diver changed their mind, and
+    pooling them would pull the fleet's averages down towards nothing."""
+    def cancelled_run(**kwargs):
+        kwargs["viewer"].set_stage("preprocess", "running", "Rectifying + segmenting + masking")
+        raise ReconstructionCancelled()
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", cancelled_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    (run,) = batch_window._survey_store().list_runs()
+    assert run.status == "cancelled"
+    assert run.stage_peaks is None
 
 
 def test_failed_pass_keeps_its_cause_on_the_row(batch_window, tmp_path, monkeypatch, qapp):
@@ -2403,3 +2466,129 @@ def test_every_table_names_a_column_width_store(window):
     """Dragged column widths survive a restart on every page with a table."""
     assert window._pass_column_sizer._settings_key == "passes"
     assert window._transect_list.column_sizer._settings_key == "transects"
+
+
+def retire_transect(window, transect_id):
+    """Land the tombstone a curator's delete arrives as, which is a column only.
+
+    delete_transect refuses a line that has passes; a pulled tombstone goes
+    through no such guard, which is exactly what made this worth a test.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    window._survey_store().apply_from_server("transects", [
+        {"id": str(transect_id), "deleted_at": retired_at, "updated_at": retired_at}
+    ])
+    window._refresh_survey_batch_tab()
+
+
+def test_a_pass_on_a_retired_transect_still_runs_scaled_and_named(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """Scenario: a curator retires the line a queued pass was swum on, and the
+    tombstone arrives on a pull before the session runs.
+
+    Expected behaviour: the run is scaled by that line's tape length and the
+    manifest names it. Reading the retired line as absent launched an unscaled
+    run with a null transect, which is a reconstruction nothing can rescue and
+    no record of which line was swum.
+    """
+    calls = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    transect_id = batch_window._survey_rows[0].transect_id
+    retire_transect(batch_window, transect_id)
+
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    assert calls[0]["transect_length"] == 50.0
+    manifest = json.loads((calls[0]["output_dir"] / "run_manifest.json").read_text())
+    assert manifest["survey"]["transect"]["id"] == str(transect_id)
+    assert manifest["survey"]["transect"]["name"] == "T1"
+    assert manifest["survey"]["transect"]["deleted_at"], "and that it had been retired"
+
+
+def test_a_retired_transect_is_named_on_the_row_and_in_the_gate(
+    batch_window, tmp_path, monkeypatch
+):
+    """The gate is what a diver reads before pressing Start, and a line nobody
+    lists any more is the one thing no other view would ever mention."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+
+    retire_transect(batch_window, batch_window._survey_rows[0].transect_id)
+
+    assert row_cell(batch_window, 0, _COL_SECTION).text().startswith("T1 (retired) · ")
+    gate = batch_window._survey_gate
+    assert gate.state != "blocked"
+    assert "retired transect" in gate.count
+    assert "unscaled" not in gate.reason
+    assert batch_window._survey_start_btn.isEnabled()
+
+
+def test_passes_on_two_retired_lines_are_not_called_one_transect(
+    batch_window, tmp_path, monkeypatch
+):
+    """Two passes of one withdrawn line is the ordinary case, so the sentence
+    reads "a transect" for it. Swum on two different withdrawn lines it has to
+    say two, or it names a line nothing here is on."""
+    add_second_transect(batch_window)
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    store = batch_window._survey_store()
+    lines = store.list_transects()
+    assign_transect(batch_window, 0, transect_id=lines[0].id)
+    assign_transect(batch_window, 1, transect_id=lines[1].id)
+
+    for line in lines:
+        retire_transect(batch_window, line.id)
+
+    assert "2 passes are on 2 transects the registry no longer lists" in (
+        batch_window._survey_gate.reason
+    )
+
+
+def test_unscaled_passes_are_counted_over_the_lines_they_were_swum_on(
+    batch_window, tmp_path, monkeypatch
+):
+    """The same count for the unscaled clause. Two lines nobody entered a tape
+    reading for is not one, and the gate's sentence has to say which."""
+    add_second_transect(batch_window)
+    store = batch_window._survey_store()
+    for line in store.list_transects():
+        line.length_m = None
+        store.update_transect(line)
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    lines = store.list_transects()
+    assign_transect(batch_window, 0, transect_id=lines[0].id)
+    assign_transect(batch_window, 1, transect_id=lines[1].id)
+
+    assert "2 passes are on 2 transects with no tape length" in (
+        batch_window._survey_gate.reason
+    )
+
+
+def test_a_retired_line_is_still_named_in_the_one_way_hint(
+    batch_window, tmp_path, monkeypatch
+):
+    """The hint asks which line these passes were swum on, and a line the
+    registry has retired still answers that. Reading the name off the picker's
+    list called it "Unnamed transect" the moment the tombstone arrived."""
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    assert "All 2 passes of T1 are set to forward" in section_cell(batch_window, 0).toolTip()
+
+    retire_transect(batch_window, batch_window._survey_rows[0].transect_id)
+
+    assert "All 2 passes of T1 are set to forward" in section_cell(batch_window, 0).toolTip()

@@ -98,6 +98,9 @@ if TYPE_CHECKING:
         # Single-file, but declared anyway: each is assigned an empty literal in
         # its mixin, which mypy cannot infer an element type for on its own.
         _survey_transects: list
+        # Lines the registry has retired, looked up once each: see
+        # SimpleBatchMixin._transect_for_row.
+        _retired_transects: dict
         _survey_batch: SurveyBatch | None
         # The queue's predicted cost, keyed on the shape of the queue that
         # produced it: recomputed on every row mutation, and it reads a file.
@@ -326,6 +329,7 @@ if TYPE_CHECKING:
         _sig_sync_done = Signal(object, object)
         _sig_sync_badge = Signal(object)
         _sig_archive_progress = Signal(str)
+        _sig_archive_bytes = Signal(object)
         _sig_archive_plan = Signal(object)
         _sig_archive_done = Signal(object)
         _sig_archive_states = Signal(object)
@@ -448,6 +452,7 @@ if TYPE_CHECKING:
         def _sync_system_gauges_running(self) -> None: ...  # SimpleMachineMixin
         def _refresh_machine_button(self) -> None: ...  # SimpleMachineMixin
         def _refresh_update_notice(self) -> None: ...  # SimpleMachineMixin
+        def _refresh_models_segment(self) -> None: ...  # SimpleMachineMixin
         def _refresh_readiness_view(self) -> None: ...  # SimpleSetupMixin
         def _on_footage_rate(self, out_root: object, rate: object) -> None: ...  # SimpleSetupMixin
         def _current_setup_checks(self) -> list: ...  # SimpleSetupMixin

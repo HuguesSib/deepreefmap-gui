@@ -316,6 +316,24 @@ def test_sample_utilisation_reports_swap() -> None:
     assert 0 <= u.swap_used_bytes <= u.swap_total_bytes
 
 
+def test_a_machine_that_will_not_report_swap_reports_none_not_zero(monkeypatch) -> None:
+    """Scenario: psutil cannot read the swap pool at all.
+
+    Expected behaviour: null, as the per-process reading already is. The
+    sampler falls back to this figure, and a zero there is an observation the
+    fleet's swap statistics count.
+    """
+    def refuse() -> None:
+        raise OSError("no swap here")
+
+    monkeypatch.setattr(sp.psutil, "swap_memory", refuse)
+
+    u = sp.sample_utilisation()
+
+    assert u.swap_used_bytes is None
+    assert u.swap_percent is None
+
+
 def test_sample_process_memory_reads_this_process() -> None:
     """The run's own footprint, which is what a stored peak has to mean.
 
@@ -328,9 +346,47 @@ def test_sample_process_memory_reads_this_process() -> None:
     assert mine is not None
     rss, swap = mine
     assert rss > 0
-    assert swap >= 0
+    # None off Linux, where the call carrying swap walks the working set and is
+    # far too slow to poll twice a second.
+    assert swap is None or swap >= 0
     # And it is this process, not the machine: the desktop around it is larger.
     assert rss < sp.sample_utilisation().ram_total_bytes
+
+
+class _OneProcess:
+    """A process tree of one, reporting a fixed footprint and no swap."""
+
+    def __init__(self, swap: int = 0) -> None:
+        self._swap = swap
+
+    def children(self, recursive=False):
+        return []
+
+    def memory_full_info(self):
+        return SimpleNamespace(rss=2048, swap=self._swap)
+
+    def memory_info(self):
+        return SimpleNamespace(rss=2048)
+
+
+def test_process_swap_is_none_where_the_platform_will_not_report_it(monkeypatch) -> None:
+    """Scenario: Windows or macOS, where reading per-process swap is too slow to poll.
+
+    Expected behaviour: None, not zero. These peaks are pooled across the fleet,
+    and a zero from every run on those platforms is counted as an observation.
+    """
+    monkeypatch.setattr(sp, "_PROCESS_SWAP_READABLE", False)
+    monkeypatch.setattr(sp.psutil, "Process", lambda *a, **k: _OneProcess())
+
+    assert sp.sample_process_memory() == (2048, None)
+
+
+def test_a_linux_run_that_swapped_nothing_reports_zero(monkeypatch) -> None:
+    """The measured zero has to stay distinguishable from the unmeasurable one."""
+    monkeypatch.setattr(sp, "_PROCESS_SWAP_READABLE", True)
+    monkeypatch.setattr(sp.psutil, "Process", lambda *a, **k: _OneProcess())
+
+    assert sp.sample_process_memory() == (2048, 0)
 
 
 def test_process_memory_survives_a_platform_that_will_not_report_it(monkeypatch) -> None:

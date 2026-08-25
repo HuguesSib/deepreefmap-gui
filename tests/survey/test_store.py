@@ -14,6 +14,7 @@ from _factories import (
     make_video,
     seed_pass,
     seed_survey_run,
+    write_run,
     write_v0_2_0_database,
 )
 
@@ -26,8 +27,12 @@ from deepreefmap_gui.survey.models import (
     TransectPass,
 )
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
-from deepreefmap_gui.survey.store import SYNC_SECTIONS, SurveyStore
+from deepreefmap_gui.survey.store import SYNC_SECTIONS, WATERMARK_PREFIX, SurveyStore
 from deepreefmap_gui.survey.video_probe import UNKNOWN, YES
+
+# An hour ahead: newer than anything the store stamps during a test, and still
+# inside the tolerance the apply path allows an incoming stamp.
+PULLED_AT = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
 
 
 def test_site_crud_round_trip(store):
@@ -1291,7 +1296,8 @@ def test_changed_since_carries_tombstones_and_takes_either_name(store):
     """A delete only travels as a row, so the push document has to include one.
 
     The watermark here is the stamp the pass had a moment before it was deleted,
-    which is the same second: an exclusive comparison would lose the delete.
+    which is the same second. The comparison is exclusive, so the stamp cannot
+    carry the delete across it: the mark the delete left behind is what does.
     """
     transect, _video, pass_ = seed_pass(store)
     watermark = store.get_pass(pass_.id).updated_at
@@ -1303,6 +1309,9 @@ def test_changed_since_carries_tombstones_and_takes_either_name(store):
     assert changed[0].deleted_at is not None
     assert store.changed_since("transect_pass", watermark) == changed
     assert [t.id for t in store.changed_since("transects")] == [transect.id]
+    # Once the registry has answered for it, its stamp is all that is left to
+    # judge it by, and a watermark past that stamp leaves it out.
+    store.clear_pending_push("transects", [transect.id])
     assert store.changed_since("transects", "2099-01-01T00:00:00+00:00") == []
 
 
@@ -1446,6 +1455,37 @@ def test_record_run_provenance_lands_on_the_row_and_keeps_the_empty_map(store):
     assert stored.updated_at >= run.updated_at
 
 
+def test_record_run_provenance_lands_the_configuration_the_run_ran_at(store):
+    """The grain a memory peak is comparable at, so it has to survive the run
+    directory being pruned."""
+    _transect, _video, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    store.record_run_provenance(run.id, {
+        "processing_width": 1376,
+        "processing_height": 768,
+        "fps": 4,
+        "preprocess_batch_size": 8,
+    })
+
+    stored = store.get_run(run.id)
+    assert (stored.processing_width, stored.processing_height) == (1376, 768)
+    assert (stored.fps, stored.preprocess_batch_size) == (4, 8)
+
+
+def test_a_run_that_recorded_no_configuration_keeps_its_nulls(store):
+    _transect, _video, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    store.record_run_provenance(run.id, {"gui_version": "0.9.0"})
+
+    stored = store.get_run(run.id)
+    assert (stored.processing_width, stored.processing_height) == (None, None)
+    assert (stored.fps, stored.preprocess_batch_size) == (None, None)
+
+
 def test_apply_from_server_skips_a_row_carrying_a_value_the_model_refuses(store):
     _transect, _video, pass_ = seed_pass(store)
 
@@ -1571,3 +1611,414 @@ def test_apply_from_server_ignores_a_column_the_model_no_longer_carries(store):
 
     assert (result.received, result.inserted) == (1, 1)
     assert store.get_site(uuid.UUID(pulled["id"])).name == "Reef"
+
+
+# --- Sync: rows the database would not take ---
+
+
+def test_apply_from_server_sets_aside_a_name_a_live_row_already_holds(store):
+    """Scenario: a pulled transect collides with one here on the site's unique
+    index, which is what a curator swapping two names looks like halfway through.
+
+    Expected behaviour: it is named and set aside, and the rest of the page
+    lands. Letting it raise wedged the pull for good, because the local row
+    holding the name is not going away and every retry failed identically.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs, other = uuid.uuid4(), uuid.uuid4()
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(theirs, "Reef Wall", site.id),
+        _pulled_transect(other, "Sand Chute", site.id),
+    ])
+
+    assert [(c.row_id, c.name) for c in result.collided] == [(theirs, "Reef Wall")]
+    assert result.inserted == 1
+    assert store.get_transect(theirs) is None
+    assert store.get_transect(other).name == "Sand Chute"
+    assert store.get_transect(ours.id).name == "Reef Wall"
+
+
+def test_a_pulled_rename_onto_a_taken_name_is_set_aside(store):
+    """Scenario: a curator swaps two lines' names on one site and the halfway
+    state comes down first. Both rows are already here, so this is an update the
+    index refuses, and it needs no misbehaving registry at all.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    store.add_transect(first)
+    store.add_transect(second)
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(second.id, "T1", site.id),
+    ])
+
+    assert [(c.row_id, c.name) for c in result.collided] == [(second.id, "T1")]
+    assert store.get_transect(second.id).name == "T2", "nothing here changed"
+
+
+def test_apply_from_server_still_takes_the_page_down_for_a_missing_parent(store):
+    """The holding pen exists to retry a parent that is merely late, so the page
+    has to be asked for again. Setting the row aside instead would leave a hole
+    in the survey that nothing would ever come back to fill.
+    """
+    with pytest.raises(sqlite3.IntegrityError):
+        store.apply_from_server("passes", [{
+            "id": str(uuid.uuid4()),
+            "transect_id": None,
+            "campaign_id": None,
+            "video_id": str(uuid.uuid4()),
+            "begin_s": 0.0,
+            "end_s": 60.0,
+            "direction": "forward",
+            "upside_down": False,
+            "label": "",
+            "notes": "",
+            "quality": None,
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "updated_at": "2026-08-02T00:00:00+00:00",
+            "deleted_at": None,
+        }])
+
+    assert store.list_passes() == []
+
+
+def test_a_name_a_later_row_frees_is_not_set_aside(store):
+    """Scenario: one page carries B renamed onto the name A holds, and then A
+    renamed away, which frees it. The freeing row sorts second.
+
+    Expected behaviour: both land and nothing is set aside. Judging B on the
+    state of the page at the moment it was read makes where a row sits in a page
+    decide the outcome, and leaves the registry and the laptop permanently
+    apart over a collision one more attempt would have cleared.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    store.add_transect(first)
+    store.add_transect(second)
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(second.id, "T1", site.id),
+        _pulled_transect(first.id, "T3", site.id),
+    ])
+
+    assert result.collided == []
+    assert result.updated == 2
+    assert store.get_transect(second.id).name == "T1"
+    assert store.get_transect(first.id).name == "T3"
+
+
+def test_two_lines_that_swap_names_both_land(store):
+    """Scenario: a curator swaps T1 and T2 in the web console, which is an
+    ordinary morning's work, and the pair comes down together.
+
+    Expected behaviour: the laptop ends up mirroring the registry. Each row
+    holds the name the other wants, so neither can go first, and setting both
+    aside left the two records swapped with respect to each other for good.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    store.add_transect(first)
+    store.add_transect(second)
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(first.id, "T2", site.id),
+        _pulled_transect(second.id, "T1", site.id),
+    ])
+
+    assert result.collided == []
+    assert result.updated == 2
+    assert store.get_transect(first.id).name == "T2"
+    assert store.get_transect(second.id).name == "T1"
+
+
+def test_three_lines_that_rotate_names_all_land(store):
+    """A rotation is the same knot with a longer loop, and no single retry
+    unpicks it: every row is waiting on the one behind it."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    lines = [make_transect(name, site_id=site.id) for name in ("T1", "T2", "T3")]
+    for line in lines:
+        store.add_transect(line)
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(lines[0].id, "T2", site.id),
+        _pulled_transect(lines[1].id, "T3", site.id),
+        _pulled_transect(lines[2].id, "T1", site.id),
+    ])
+
+    assert result.collided == []
+    assert [store.get_transect(line.id).name for line in lines] == ["T2", "T3", "T1"]
+
+
+def test_a_swap_blocked_from_outside_leaves_both_names_as_they_were(store):
+    """Scenario: two rows want each other's names, and one of them also wants a
+    name a third line here holds, which nothing on the page frees.
+
+    Expected behaviour: both are set aside with their names untouched. Parking a
+    name and then failing to write over it would leave a line called after its
+    own id, which is worse than the collision it was trying to solve.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    for line in (first, second, make_transect("T9", site_id=site.id)):
+        store.add_transect(line)
+
+    result = store.apply_from_server("transects", [
+        _pulled_transect(first.id, "T2", site.id),
+        _pulled_transect(second.id, "T9", site.id),
+    ])
+
+    assert {c.row_id for c in result.collided} == {first.id, second.id}
+    assert store.get_transect(first.id).name == "T1"
+    assert store.get_transect(second.id).name == "T2"
+
+
+def test_two_site_less_lines_can_share_a_name(store):
+    """Why every collision test above files its lines against a site.
+
+    The index is transect(site_id, LOWER(name)) and SQLite counts one NULL as
+    distinct from another, so two lines belonging to no site never fight over a
+    name at all. A collision test written without one passes without the index
+    ever firing, and proves nothing about the setting-aside it is named for.
+    """
+    store.add_transect(make_transect("T1"))
+    theirs = uuid.uuid4()
+
+    result = store.apply_from_server("transects", [
+        {**_pulled_transect(theirs, "T1", uuid.uuid4()), "site_id": None},
+    ])
+
+    assert result.collided == []
+    assert result.inserted == 1
+    assert {line.name for line in store.list_transects()} == {"T1"}
+    assert len(store.list_transects()) == 2
+
+
+def _pulled_transect(transect_id, name, site_id):
+    return {
+        "id": str(transect_id),
+        "site_id": str(site_id),
+        "name": name,
+        "description": "",
+        "start_lat": -17.5,
+        "start_lon": 177.1,
+        "end_lat": -17.5005,
+        "end_lon": 177.1005,
+        "length_m": 50.0,
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "updated_at": PULLED_AT,
+        "deleted_at": None,
+    }
+
+
+# --- Sync: the watermark boundary and a clock that jumped back ---
+
+
+def test_changed_since_leaves_out_the_second_the_watermark_was_earned_in(store):
+    """Scenario: the registry accepted a row and the watermark is its own stamp.
+
+    Expected behaviour: it is not offered again. An inclusive comparison had a
+    laptop re-sending the same rows on every sync of a survey nobody had
+    touched, forever.
+    """
+    transect = make_transect()
+    store.add_transect(transect)
+    watermark = store.get_transect(transect.id).updated_at
+    store.clear_pending_push("transects", [transect.id])
+
+    assert store.changed_since("transects", watermark) == []
+    assert store.count_changed_since("transects", watermark) == 0
+
+
+def test_an_edit_in_the_second_a_push_was_accepted_in_still_travels(store):
+    """Scenario: the registry accepts a push and a diver types into one of the
+    rows it accepted, before that second is out.
+
+    Expected behaviour: the edit is stamped past the watermark and marked, so
+    the next push carries it. This is what the inclusive comparison used to
+    cover, and losing it silently would cost more than the comparison did.
+    """
+    transect = make_transect()
+    store.add_transect(transect)
+    accepted = store.get_transect(transect.id).updated_at
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", accepted)
+    store.clear_pending_push("transects", [transect.id])
+
+    transect.name = "Renamed in the same second"
+    store.update_transect(transect)
+
+    assert store.get_transect(transect.id).updated_at > accepted
+    assert store.pending_push_ids("transects") == {transect.id}
+    assert [t.name for t in store.changed_since("transects", accepted)] == [
+        "Renamed in the same second"
+    ]
+
+
+def test_a_clock_that_jumped_back_cannot_strand_a_row(store):
+    """Scenario: a watermark ahead of what this machine's clock now reads, which
+    is what a laptop whose clock has gone backwards is left holding.
+
+    Expected behaviour: the edit is stamped past the watermark rather than
+    under it. Under it, no push would ever select the row again and the work
+    would be lost without anything saying so.
+    """
+    transect = make_transect()
+    store.add_transect(transect)
+    ahead = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", ahead)
+    store.clear_pending_push("transects", [transect.id])
+
+    transect.name = "Renamed while the clock was wrong"
+    store.update_transect(transect)
+
+    stamped = store.get_transect(transect.id)
+    assert stamped.updated_at > ahead
+    assert [t.id for t in store.changed_since("transects", ahead)] == [transect.id]
+
+
+def test_two_edits_under_a_wrong_clock_keep_moving_forwards(store):
+    """A stamp merely clamped to the watermark would tie the second edit to the
+    first, and the section would stall again the moment the first was accepted."""
+    first, second = make_transect("T1"), make_transect("T2")
+    store.add_transect(first)
+    store.add_transect(second)
+    ahead = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", ahead)
+
+    first.description = "one"
+    store.update_transect(first)
+    accepted = store.get_transect(first.id).updated_at
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", accepted)
+    second.description = "two"
+    store.update_transect(second)
+
+    assert store.get_transect(second.id).updated_at > accepted
+
+
+# --- A line the registry retired ---
+
+
+def test_a_retired_transect_still_answers_for_the_passes_swum_on_it(store):
+    """Scenario: a curator retires a line the console shows, and the tombstone
+    arrives on a pull. delete_transect refuses this locally; a pulled tombstone
+    is only a column and lands with no such check.
+
+    Expected behaviour: the picker no longer offers it and the run still finds
+    it. Answering None here is what launched unscaled runs with no transect at
+    all in their manifests.
+    """
+    transect, _video, pass_ = seed_pass(store)
+
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": PULLED_AT,
+        "updated_at": PULLED_AT,
+    }])
+
+    assert store.get_transect(transect.id) is None
+    assert store.list_transects() == []
+    retired = store.get_transect_for_reference(transect.id)
+    assert (retired.name, retired.length_m) == (transect.name, 50.0)
+    assert retired.deleted_at == PULLED_AT
+    assert store.get_pass(pass_.id).transect_id == transect.id
+
+
+def test_a_manifest_records_that_the_line_was_retired(store, tmp_path):
+    """A bare run directory is the whole record later, so whether the line was
+    live at the time is only ever written here."""
+    transect, _video, pass_ = seed_pass(store)
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": PULLED_AT,
+        "updated_at": PULLED_AT,
+    }])
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    block = survey_manifest_block(
+        run, pass_, store.get_transect_for_reference(transect.id), None
+    )
+
+    assert block["transect"]["deleted_at"] == PULLED_AT
+    assert block["transect"]["length_m"] == 50.0
+
+
+def test_a_rebuild_brings_a_retired_line_back_retired(store, tmp_path):
+    """Scanning footage still on disk must not put a withdrawn line back in
+    front of whoever withdrew it."""
+    transect, _video, pass_ = seed_pass(store)
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": PULLED_AT,
+        "updated_at": PULLED_AT,
+    }])
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+    out_root = tmp_path / "out"
+    write_run(
+        out_root,
+        "t1__p01",
+        survey=survey_manifest_block(
+            run, pass_, store.get_transect_for_reference(transect.id), None
+        ),
+    )
+    fresh = SurveyStore(tmp_path / "fresh.db")
+
+    fresh.rebuild_from_scan(out_root)
+
+    assert fresh.list_transects() == []
+    assert fresh.get_transect_for_reference(transect.id).length_m == 50.0
+
+
+def test_a_retired_line_with_passes_is_still_listed_for_reference(store):
+    """Scenario: the registry retires a line somebody had already swum, and a
+    second line nobody ever used.
+
+    Expected behaviour: the swum one is still listed for reference and the
+    unused one is not. Every reader that asks "what work is there" went through
+    the picker's list, so a retirement silently took finished passes out of
+    analysis, out of the export, and out of what the registry is sent.
+    """
+    swum, _video, _pass = seed_pass(store)
+    unused = make_transect("Never used")
+    store.add_transect(unused)
+    for line in (swum, unused):
+        store.apply_from_server("transects", [{
+            "id": str(line.id),
+            "deleted_at": PULLED_AT,
+            "updated_at": PULLED_AT,
+        }])
+
+    assert store.list_transects() == []
+    assert [t.id for t in store.list_transects_for_reference()] == [swum.id]
+
+
+def test_an_exported_document_carries_the_retired_line_its_passes_name(store, tmp_path):
+    """A document naming a transect it does not contain cannot be imported
+    whole, and the pass that names it is the reason it has to be in there."""
+    transect, _video, _pass = seed_pass(store)
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": PULLED_AT,
+        "updated_at": PULLED_AT,
+    }])
+    path = tmp_path / "survey.json"
+
+    store.export_json(path)
+    fresh = SurveyStore(tmp_path / "fresh.db")
+    fresh.import_json(path)
+
+    assert fresh.get_transect_for_reference(transect.id).length_m == 50.0
+    assert fresh.list_passes(transect_id=transect.id)

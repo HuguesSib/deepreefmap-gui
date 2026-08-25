@@ -25,6 +25,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QWidget,
@@ -45,7 +46,9 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.models.cache_ui import MODELS_SECTION
 from deepreefmap_gui.notify.widgets import relative_age
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.server import enrolment as enrolment_mod
 from deepreefmap_gui.server.connect_ui import ConnectDialog
 from deepreefmap_gui.server.state import (
@@ -59,8 +62,10 @@ from deepreefmap_gui.server.state import (
     SYNC_ERROR_KEY,
     Failure,
     ServerState,
+    SyncOutcome,
     default_device_name,
     describe_failure,
+    half_note,
     heartbeat_report,
     read_agreed_contract,
     read_state,
@@ -75,9 +80,9 @@ from deepreefmap_gui.survey.preset import (
     resolved_identity,
 )
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
+from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport, TransferProgress
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
-from deepreefmap_gui.sync.engine import SyncEngine
+from deepreefmap_gui.sync.engine import PullReport, PushReport, SyncEngine
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,10 @@ REFERENCE_NOTE = (
     "campaign when it is filed."
 )
 ONBOARDED_BY = "Onboarded by"
+# Records the registry holds that could not be taken, listed on the page because
+# the notification that announced them has long since scrolled away and the two
+# copies go on differing until somebody renames one of them.
+SET_ASIDE = "Not taken"
 
 CONNECT = "Connect to server"
 RECONNECT = "Connect again"
@@ -129,6 +138,12 @@ ARCHIVE_FAILED = "archive.upload_failed"
 # Said when an archive is asked for on a laptop that never enrolled. The sync
 # button hides then, but the Browse cards still offer their Archive actions.
 ARCHIVE_NOT_CONNECTED = "Connect this laptop to a registry before archiving."
+
+# The upload gauge. Permille steps because a whole-survey queue is tens of
+# gigabytes, and a percent of that moves once a minute at best. The width is
+# the model library's download bar, so the app's two gauges are one size.
+GAUGE_STEPS = 1000
+GAUGE_WIDTH = 150
 
 DOWNLOAD_NOW = "Download now"
 # One episode per preset identity: a new version naming new models is new news.
@@ -304,6 +319,19 @@ class ServerPageMixin(MixinBase):
         self._server_progress = muted_label("")
         row.addWidget(self._server_progress, 1)
 
+        # The upload's own gauge: the text beside the spinner names the file in
+        # flight, this says how much of the queue's bytes have landed and how
+        # fast they move. Permille rather than percent, so a long queue still
+        # visibly creeps between one file and the next.
+        self._server_archive_bar = QProgressBar()
+        self._server_archive_bar.setRange(0, GAUGE_STEPS)
+        self._server_archive_bar.setTextVisible(False)
+        self._server_archive_bar.setFixedWidth(GAUGE_WIDTH)
+        row.addWidget(self._server_archive_bar)
+        self._server_archive_bytes_label = muted_label("")
+        row.addWidget(self._server_archive_bytes_label)
+        self._reset_archive_gauge()
+
         # Beside the progress it stops: an upload on a field uplink can be hours
         # of PUTs, and until this existed nothing could end it early.
         self._server_archive_cancel_btn = QPushButton(CANCEL_ARCHIVE)
@@ -405,6 +433,14 @@ class ServerPageMixin(MixinBase):
         self._server_disconnect_btn.setEnabled(not busy)
         if not busy:
             self._server_archive_cancel_btn.setVisible(False)
+            self._reset_archive_gauge()
+
+    def _reset_archive_gauge(self) -> None:
+        """Empty the upload gauge, so the next pass never opens on the last one's fill."""
+        self._server_archive_bar.setValue(0)
+        self._server_archive_bar.setVisible(False)
+        self._server_archive_bytes_label.setText("")
+        self._server_archive_bytes_label.setVisible(False)
 
     # --- connecting ---------------------------------------------------------
 
@@ -492,17 +528,28 @@ class ServerPageMixin(MixinBase):
         self._refresh_sync_badge()
 
         def worker() -> None:
+            # Two halves, two try blocks. A pull that cannot land a page of
+            # somebody else's data must not take the push with it: the records
+            # made on this laptop exist nowhere else, and a page that fails the
+            # same way every sync would strand them for the rest of the season.
+            _heartbeat(client, store)
+            pulled: PullReport | None = None
+            pull_failure: Failure | None = None
             try:
-                _heartbeat(client, store)
                 pulled = engine.pull()
+            except Exception as exc:
+                logger.warning("The pull did not finish: %s", exc)
+                pull_failure = describe_failure(exc)
+            pushed: PushReport | None = None
+            push_failure: Failure | None = None
+            try:
                 pushed = engine.push()
             except Exception as exc:
-                logger.warning("Sync failed: %s", exc)
-                payload: tuple[object, object] = (None, describe_failure(exc))
-            else:
-                payload = ((pulled, pushed), None)
+                logger.warning("The push did not finish: %s", exc)
+                push_failure = describe_failure(exc)
+            outcome = SyncOutcome(pulled, pushed, pull_failure, push_failure)
             try:
-                self._sig_sync_done.emit(*payload)
+                self._sig_sync_done.emit(outcome, None)
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the sync finished")
 
@@ -647,7 +694,6 @@ class ServerPageMixin(MixinBase):
 
     def _on_archive_plan_ready(self, result: object) -> None:
         """Back on the GUI thread with the plan: land the digests, ask, upload."""
-        from deepreefmap_gui.profiling.system_probe import format_bytes
         from deepreefmap_gui.sync import archive
 
         if isinstance(result, Failure):
@@ -691,10 +737,16 @@ class ServerPageMixin(MixinBase):
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive finished")
 
+        def on_bytes(reading: object) -> None:
+            try:
+                self._sig_archive_bytes.emit(reading)
+            except (RuntimeError, TypeError):
+                logger.debug("The window closed before the archive finished")
+
         def worker() -> None:
             try:
                 outcome: object = archive.run_archive(
-                    client, jobs, report, cancel_event=self._archive_cancel
+                    client, jobs, report, cancel_event=self._archive_cancel, on_bytes=on_bytes
                 )
             except Exception as exc:
                 logger.warning("Archive failed: %s", exc)
@@ -717,6 +769,26 @@ class ServerPageMixin(MixinBase):
     def _on_archive_progress(self, text: str) -> None:
         if self._server_archiving:
             self._set_server_busy(True, text)
+
+    def _on_archive_bytes(self, reading: object) -> None:
+        """A byte reading from the upload worker, painted as the gauge.
+
+        Delivered over `_sig_archive_bytes` rather than called: the meter is fed
+        on the upload thread, and every widget touched here belongs to this one.
+        Readings that arrive after the pass has been reported are dropped, or a
+        gauge already emptied would fill again behind the summary.
+        """
+        if not self._server_archiving or not isinstance(reading, TransferProgress):
+            return
+        total = reading.total_bytes
+        filled = int(GAUGE_STEPS * reading.done_bytes / total) if total else GAUGE_STEPS
+        self._server_archive_bar.setValue(min(filled, GAUGE_STEPS))
+        text = f"{format_bytes(reading.done_bytes)} of {format_bytes(total)}"
+        if reading.speed_bps:
+            text += f" · {format_bytes(reading.speed_bps)}/s"
+        self._server_archive_bytes_label.setText(text)
+        self._server_archive_bar.setVisible(True)
+        self._server_archive_bytes_label.setVisible(True)
 
     # --- what the registry holds, for the badges ------------------------------
 
@@ -931,41 +1003,55 @@ class ServerPageMixin(MixinBase):
         self._set_simple_section(SERVER_SECTION)
 
     def _on_sync_done(self, reports: object, failure: object) -> None:
+        """One sync's two halves, however many of them got to run.
+
+        ``reports`` carries both halves once the worker reached them.
+        ``failure`` is for an exchange that never started, which is a credential
+        this page could not read.
+        """
         self._server_syncing = False
         self._set_server_busy(False)
         # Before anything branches: a sync that failed halfway may still have been
         # told which contract it was running under, and that answer keeps.
         self._remember_agreed_contract()
-        if isinstance(failure, Failure):
+        outcome = reports if isinstance(reports, SyncOutcome) else None
+        blocker = outcome.blocker if outcome is not None else failure
+        if outcome is None and not isinstance(blocker, Failure):
+            return
+        store = self._try_survey_store()
+        if store is not None:
+            # Written before anything repaints: the badge reads from disk, so an
+            # unwritten failure is a green badge on the next tick.
+            store.set_sync_state(
+                SYNC_ERROR_KEY,
+                f"{blocker.title}. {blocker.detail}" if isinstance(blocker, Failure) else None,
+            )
+            # Only a sync that ran both halves dates the survey: the badge's
+            # "synced N minutes ago" must not stand for half an exchange.
+            if outcome is not None and outcome.complete:
+                store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
+        if isinstance(blocker, Failure):
             self._server_notice.clear()
-            store = self._try_survey_store()
-            if store is not None:
-                # Written before anything repaints: the badge reads from disk,
-                # so an unwritten failure is a green badge on the next tick.
-                store.set_sync_state(SYNC_ERROR_KEY, f"{failure.title}. {failure.detail}")
             # The page refresh first: it paints the persisted message without an
             # action, and this blocker carries the reconnect offer over it.
             self._refresh_server_page()
             self._server_blocker.show_blocker(
-                f"{failure.title}. {failure.detail}",
-                RECONNECT if failure.reconnect else "",
+                " ".join(
+                    filter(None, [f"{blocker.title}. {blocker.detail}", half_note(outcome)])
+                ),
+                RECONNECT if blocker.reconnect else "",
             )
-            self._refresh_sync_badge()
-            return
-        if not isinstance(reports, tuple):
-            return
-        pulled, pushed = reports
-        store = self._try_survey_store()
-        if store is not None:
-            store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
-            store.set_sync_state(SYNC_ERROR_KEY, None)
-        self._server_blocker.clear()
-        self._refresh_server_page()
+        else:
+            self._server_blocker.clear()
+            self._refresh_server_page()
         self._refresh_sync_badge()
+        if outcome is None:
+            return
         # A sync proves the registry is reachable, which is when the archive
         # badges are worth asking about.
         self._refresh_archive_badges()
-        self._server_notice.show_notice(summarise(pulled, pushed))
+        if blocker is None:
+            self._server_notice.show_notice(summarise(outcome.pull, outcome.push))
         # After the pull has landed, so it sees the preset row and the
         # assignment in whichever order the registry delivered them.
         self._offer_preset_model_downloads(store)
@@ -980,48 +1066,70 @@ class ServerPageMixin(MixinBase):
         Run after every successful sync, which covers both orderings: the
         heartbeat can record an assignment before the preset row has been
         pulled, and the row landing on a later pull re-raises the offer.
-        Answered from what _refresh_model_status verified on its worker
-        thread, never by verifying here, for the reasons
-        _survey_missing_models gives: until the first refresh lands, nothing
-        is offered. The run gate stays the backstop either way.
+
+        The strip alone would not reach anybody. The sync that raises it is
+        usually run from the status-bar badge rather than from this page, so
+        the offer also tints Setup's Models segment, and the notification it
+        posts names that view rather than settling for Setup and reopening
+        whichever view was last on screen.
         """
-        self._preset_missing_models = ()
-        self._preset_models_notice.clear()
+        needed = self._preset_models_needed(store)
+        if needed is None:
+            self._preset_missing_models = ()
+            self._preset_models_notice.clear()
+        else:
+            name, version, missing = needed
+            self._preset_missing_models = missing
+            self._preset_models_notice.show_notice(
+                f"{name} (v{version}) needs {len(missing)} model(s) this laptop has "
+                f"not downloaded: {', '.join(missing)}.",
+                DOWNLOAD_NOW,
+            )
+            self._notify_post(
+                {
+                    "fingerprint": f"{PRESET_MODELS_MISSING}.{name}.{version}",
+                    "title": f"{name} (v{version}) names models that are not downloaded",
+                    "body": (
+                        f"Missing: {', '.join(missing)}. "
+                        "Download them before running a session."
+                    ),
+                    "severity": WARNING,
+                    "scope": MACHINE,
+                    "section": MODELS_SECTION,
+                }
+            )
+        self._refresh_models_segment()
+
+    def _preset_models_needed(
+        self, store: SurveyStore | None
+    ) -> tuple[str, int, tuple[str, ...]] | None:
+        """The resolved server preset, and the weights it names that are not here.
+
+        Answered from what _refresh_model_status verified on its worker thread,
+        never by verifying here, for the reasons _survey_missing_models gives:
+        until the first refresh lands, nothing is offered. The run gate stays
+        the backstop either way.
+        """
         if store is None or not self._last_model_states:
-            return
+            return None
         identity = resolved_identity(store)
         if identity is None:
-            return
+            return None
         name, version = identity
         row = store.get_server_preset(name, version)
         if row is None:
-            return
+            return None
         from deepreefmap_gui.models.cache import required_model_names
 
         required = required_model_names(registry_preset(name, version, row.settings).settings)
-        missing = sorted(
-            info.name
-            for info, cached in self._last_model_states
-            if info.name in required and not cached and info.name not in self._downloading
+        missing = tuple(
+            sorted(
+                info.name
+                for info, cached in self._last_model_states
+                if info.name in required and not cached and info.name not in self._downloading
+            )
         )
-        if not missing:
-            return
-        self._preset_missing_models = tuple(missing)
-        self._preset_models_notice.show_notice(
-            f"{name} (v{version}) needs {len(missing)} model(s) this laptop has "
-            f"not downloaded: {', '.join(missing)}.",
-            DOWNLOAD_NOW,
-        )
-        self._notify_post(
-            {
-                "fingerprint": f"{PRESET_MODELS_MISSING}.{name}.{version}",
-                "title": f"{name} (v{version}) names models that are not downloaded",
-                "body": f"Missing: {', '.join(missing)}. Download them before running a session.",
-                "severity": WARNING,
-                "scope": MACHINE,
-                "section": "machine",
-            }
-        )
+        return (name, version, missing) if missing else None
 
     def _download_missing_preset_models(self) -> None:
         """Start the offered downloads through the model library's own path.
@@ -1033,6 +1141,7 @@ class ServerPageMixin(MixinBase):
             self._download_model(model_name)
         self._preset_missing_models = ()
         self._preset_models_notice.clear()
+        self._refresh_models_segment()
 
     # --- disconnecting ------------------------------------------------------
 
@@ -1086,12 +1195,32 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
         last = f"Just now ({state.last_sync})"
     else:
         last = f"{age} ago ({state.last_sync})"
-    return [
+    rows = [
         ("Server", state.base_url),
         ("Last sync", last),
         ("Pulled up to", "Nothing yet" if state.cursor is None else str(state.cursor)),
         ("Waiting to send", f"{state.waiting} row(s)"),
     ]
+    if state.set_aside:
+        rows.append((SET_ASIDE, _set_aside_value(state.set_aside)))
+    return rows
+
+
+def _set_aside_value(names: Sequence[str], shown: int = 4) -> str:
+    """The names, capped, and where they stand.
+
+    Nearly always a name a record here already carries, but not always, and the
+    row cannot tell which from the name alone, so it says only what is true of
+    both: the registry holds these and this survey would not write them.
+
+    Capped because the list survives every sync until somebody acts on it, and a
+    registry disagreeing about a season's worth of lines would otherwise push
+    everything under it off the page.
+    """
+    listed = ", ".join(names[:shown])
+    if len(names) > shown:
+        listed += f", and {len(names) - shown} more"
+    return f"{listed} (held by the registry, not accepted here)"
 
 
 def summarise_archive(report: ArchiveReport) -> str:

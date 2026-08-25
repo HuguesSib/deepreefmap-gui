@@ -253,6 +253,7 @@ extend-ignore-names = [
   "hasUrls",
   "leaveEvent",
   "mimeData",
+  "mouseDoubleClickEvent",
   "mouseMoveEvent",
   "mousePressEvent",
   "mouseReleaseEvent",

@@ -84,6 +84,32 @@ def test_a_run_folds_timings_and_name_into_the_manifest(out_dir, timings, monkey
     assert "scene_save" in WRITER_DRIVEN_STAGES and "scene_save" not in measured
 
 
+def test_the_configuration_the_run_launched_with_wins(out_dir, timings, monkeypatch) -> None:
+    """The grain both the timing profile and the registry collate peaks at.
+
+    The launch parameters are the resolved pixel size the form settled on, so
+    they are what a peak is comparable under. The pipeline records no batch size
+    at all, and anything it wrote for the other three is superseded here.
+    """
+    monkeypatch.setattr(
+        "deepreefmap.pipeline.orchestrator.run_reconstruction",
+        _fake_run(processing_width=99, processing_height=99, fps=99),
+    )
+
+    instrumented_reconstruction(
+        output_dir=out_dir,
+        viewer=None,
+        processing_width=688,
+        processing_height=384,
+        fps=4,
+        preprocess_batch_size=8,
+    )
+
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert (manifest["processing_width"], manifest["processing_height"]) == (688, 384)
+    assert (manifest["fps"], manifest["preprocess_batch_size"]) == (4, 8)
+
+
 def test_a_scene_writer_completes_the_stage_breakdown(out_dir, timings, monkeypatch) -> None:
     """The last span, and the one the ETA reserves the most weight for.
 
@@ -267,6 +293,128 @@ def test_the_sampler_is_stopped_even_when_the_run_raises(out_dir, timings, monke
         instrumented_reconstruction(output_dir=out_dir, viewer=None)
 
     assert created and created[0]._sampler._thread is None
+
+
+def test_a_failed_run_reports_the_peaks_it_reached(out_dir, timings, monkeypatch, sampled) -> None:
+    """Scenario: a pass gets as far as mapping, and the backend exhausts memory.
+
+    Expected behaviour: every stage it reached carries a duration and a peak,
+    the stage it died in included, and the stages after it are absent. That
+    partial trace is the whole account of what the run cost: a run that dies
+    writes no manifest for the peaks to be folded into.
+    """
+    def dying_run(*, viewer, output_dir, **_kwargs):
+        viewer.set_stage("startup", "running", "Loading camera + segmentation + mapping backends")
+        viewer.set_stage("preprocess", "running", "Rectifying + segmenting + masking")
+        viewer.set_stage("mapping", "running", "3D mapping pipeline in progress")
+        sampled()
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", dying_run)
+    measured: dict = {}
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        instrumented_reconstruction(
+            output_dir=out_dir,
+            viewer=None,
+            on_failure=measured.update,
+            manifest_extra={"survey": {"pass": {"direction": "forward"}}},
+            segmentation_name="segformer-b2",
+            mapping_name="loger_star",
+            processing_width=688,
+            processing_height=384,
+            fps=4,
+            preprocess_batch_size=8,
+        )
+
+    assert set(measured["stage_durations"]) == {"startup", "preprocess", "mapping"}
+    assert "mapping" in measured["stage_peaks"]
+    assert measured["stage_peaks"]["mapping"]["ram_bytes"] > 0
+    assert "cloud" not in measured["stage_peaks"]
+    assert measured["run_duration_s"] >= 0.0
+    assert measured["system_profile"]["os_name"]
+    # The grain the registry pools peaks at. Without it the failed run forms a
+    # group of its own instead of sitting beside the runs it should be compared
+    # with, which is the same question the pipeline never got to answer.
+    assert (measured["segmentation_model"], measured["mapping_backend"]) == (
+        "segformer-b2", "loger_star",
+    )
+    assert (measured["processing_width"], measured["processing_height"]) == (688, 384)
+    assert (measured["fps"], measured["preprocess_batch_size"]) == (4, 8)
+    assert measured["survey"]["pass"]["direction"] == "forward"
+    # Nothing on disk: a manifest beside a half-finished run reads as one that loads.
+    assert not (out_dir / "run_manifest.json").exists()
+
+
+def test_a_skipped_segmentation_failure_names_the_model_the_pipeline_would_have(
+    out_dir, timings, monkeypatch
+) -> None:
+    """The manifest spells a geometry-only run `__skip__`, and the row is grouped
+    on that string, so the failure path has to spell it the same way."""
+    def dying_run(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", dying_run)
+    measured: dict = {}
+
+    with pytest.raises(RuntimeError):
+        instrumented_reconstruction(
+            output_dir=out_dir,
+            viewer=None,
+            on_failure=measured.update,
+            segmentation_name="segformer-b2",
+            skip_segmentation=True,
+        )
+
+    assert measured["segmentation_model"] == "__skip__"
+
+
+def test_a_run_that_dies_before_any_stage_records_what_little_it_has(
+    out_dir, timings, monkeypatch
+) -> None:
+    """Nothing but the run's own start is marked, so the report is thin, not absent."""
+    def dying_run(**_kwargs):
+        raise RuntimeError("mapping backend died")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", dying_run)
+    measured: dict = {}
+
+    with pytest.raises(RuntimeError, match="mapping backend died"):
+        instrumented_reconstruction(output_dir=out_dir, viewer=None, on_failure=measured.update)
+
+    assert set(measured["stage_durations"]) == {"startup"}
+    assert set(measured["stage_peaks"]) <= {"startup"}
+    assert measured["run_duration_s"] >= 0.0
+
+
+def test_a_run_that_finishes_reports_no_failure(out_dir, timings, monkeypatch) -> None:
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+    measured: dict = {}
+
+    instrumented_reconstruction(output_dir=out_dir, viewer=None, on_failure=measured.update)
+
+    assert measured == {}
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert set(manifest["stage_durations"]) == {
+        "startup", "preprocess", "mapping", "cloud", "ortho", "save_view"
+    }
+
+
+def test_a_broken_failure_report_leaves_the_run_s_own_error_standing(
+    out_dir, timings, monkeypatch
+) -> None:
+    """The cause is what the diver needs off the failed row. Provenance is a bonus,
+    and a second failure recording it must not stand in for the first."""
+    def dying_run(**_kwargs):
+        raise RuntimeError("CUDA out of memory")
+
+    def broken(_manifest):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", dying_run)
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        instrumented_reconstruction(output_dir=out_dir, viewer=None, on_failure=broken)
 
 
 def test_a_run_that_wrote_no_manifest_records_nothing(out_dir, timings, monkeypatch) -> None:

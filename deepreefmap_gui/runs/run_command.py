@@ -275,9 +275,9 @@ def kwargs_from_manifest(manifest: Mapping[str, Any], run_dir: Path) -> dict[str
     """Rebuild the launch kwargs from a run manifest.
 
     The fallback for runs written before ``cli_command`` was recorded. The
-    manifest carries no ``preprocess_batch_size`` or ``require_gravity_telemetry``
-    and, on a skip-segmentation run, no segmentation model name. Those come back
-    as the CLI defaults, which is the closest honest answer available.
+    manifest carries no ``require_gravity_telemetry`` and, on a skip-segmentation
+    run, no segmentation model name. Those come back as the CLI defaults, which
+    is the closest honest answer available.
     """
     transect = manifest.get("transect")
     transect = transect if isinstance(transect, dict) else {}
@@ -299,6 +299,12 @@ def kwargs_from_manifest(manifest: Mapping[str, Any], run_dir: Path) -> dict[str
         "classes_path": manifest.get("classes"),
         "processing_width": manifest.get("processing_width"),
         "processing_height": manifest.get("processing_height"),
+        # Stamped by profiling/instrumentation.py, not by the pipeline, so it is
+        # absent from a manifest the GUI never folded into. Substituting the CLI
+        # default there changes the VRAM the rebuilt command asks for.
+        "preprocess_batch_size": manifest.get(
+            "preprocess_batch_size", CLI_DEFAULTS["preprocess_batch_size"]
+        ),
         "grid_bins": manifest.get("grid_bins", CLI_DEFAULTS["grid_bins"]),
         "replacement_radius_factor": manifest.get("replacement_radius_factor"),
         "replacement_radius_estimation_frames": manifest.get(

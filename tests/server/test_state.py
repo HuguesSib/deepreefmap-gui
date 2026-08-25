@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timedelta, timezone
+
 from _factories import make_transect
 
 from deepreefmap_gui.server.state import (
@@ -14,6 +17,7 @@ from deepreefmap_gui.server.state import (
     read_agreed_contract,
     read_state,
     remember_agreed_contract,
+    set_aside_names,
     summarise,
 )
 from deepreefmap_gui.survey.models import Site
@@ -26,6 +30,7 @@ from deepreefmap_gui.sync.engine import (
     PullReport,
     PushReport,
     SectionPush,
+    SyncEngine,
 )
 
 TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
@@ -90,11 +95,14 @@ def test_the_row_that_earned_the_watermark_is_not_still_waiting(store):
     """Scenario: a section is pushed, and its watermark is the stamp it earned.
 
     Expected behaviour: nothing is waiting. Counting the row that carries the
-    watermark would leave every synced survey owing one row for ever.
+    watermark would leave every synced survey owing one row for ever. The push
+    that earned the watermark also cleared the mark the edit left, so the
+    fixture does both.
     """
     transect = make_transect()
     store.add_transect(transect)
     store.set_sync_state(f"{WATERMARK_PREFIX}transects", transect.updated_at)
+    store.clear_pending_push("transects", [transect.id])
 
     assert pending_rows(store) == {}
 
@@ -127,6 +135,21 @@ def test_a_summary_counts_both_directions_and_what_was_refused():
     assert "sent 1 row(s)" in line
     assert "already held 1" in line
     assert "1 edit(s) made here were replaced" in line
+
+
+def test_a_set_aside_record_that_landed_reads_differently_to_one_discarded():
+    """Two endings, and only one of them puts the registry's data in the survey.
+    Counting a discard among the rows that finally landed announced an arrival
+    at the moment the registry's copy was being thrown away."""
+    landed = summarise(PullReport(set_aside_cleared=(uuid.uuid4(),)), PushReport())
+    assert "1 record(s) set aside earlier finally landed" in landed
+    assert "discarded" not in landed
+
+    dropped = summarise(PullReport(set_aside_discarded=(uuid.uuid4(),)), PushReport())
+    assert dropped != NOTHING_TO_SYNC
+    assert "1 record(s) set aside earlier were discarded" in dropped
+    assert "this laptop holds a newer copy" in dropped
+    assert "finally landed" not in dropped
 
 
 def test_an_unreachable_registry_is_a_retry():
@@ -206,3 +229,56 @@ def test_the_device_name_defaults_to_this_machine(monkeypatch):
     monkeypatch.setattr("socket.gethostname", lambda: "reef-laptop.local")
 
     assert default_device_name() == "reef-laptop"
+
+
+def test_what_the_registry_sent_and_could_not_be_taken_is_readable(store):
+    """Scenario: a pull set a record aside because a line here carries its name,
+    and the diver was on the boat when the notification went by.
+
+    Expected behaviour: the page can still name it. The two copies go on
+    differing until somebody renames one, and a record nothing can show is one
+    nobody will ever act on.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs = uuid.uuid4()
+    engine = SyncEngine(
+        store,
+        _RegistrySending([{
+            "id": str(theirs),
+            "site_id": str(site.id),
+            "name": "Reef Wall",
+            "description": "",
+            "start_lat": -17.5,
+            "start_lon": 177.1,
+            "end_lat": -17.5005,
+            "end_lon": 177.1005,
+            "length_m": 50.0,
+            "created_at": BEFORE_ANY_CLOCK,
+            "updated_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "deleted_at": None,
+        }]),
+        out_root=store.path.parent,
+    )
+    engine.pull()
+    credentials.save("https://reef.example.org", TOKEN)
+
+    assert read_state(store).set_aside == ("Reef Wall",)
+    assert set_aside_names(None) == (), "no survey open is not an empty quarantine"
+
+
+class _RegistrySending:
+    """One page of transects and then nothing, which is all this needs."""
+
+    def __init__(self, transects):
+        self._pages = [{"cursor": 10, "has_more": False, "sections": {"transects": transects}}]
+
+    def pull(self, since=None, limit=1000):
+        return self._pages.pop(0) if self._pages else {
+            "cursor": 10, "has_more": False, "sections": {}
+        }
+
+    def push(self, sections):
+        return {"cursor": 10, "sections": {}}

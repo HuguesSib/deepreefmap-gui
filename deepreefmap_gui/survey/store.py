@@ -47,6 +47,11 @@ SURVEY_DB_NAME = "survey.db"
 # default, while the attribution it produces lands on the pass rows and syncs.
 DEFAULT_CAMPAIGN_KEY = "survey.default_campaign"
 
+# One key per section, holding the newest stamp the registry has accepted from
+# it. The sync engine owns what they mean; the store needs the prefix because no
+# stamp it mints may land at or under one. See _stamp.
+WATERMARK_PREFIX = "sync.push_watermark."
+
 # Left on a run row the process abandoned. Short on purpose: it shows in the run
 # list and the pass status, so it reads as a fact, not a stack trace.
 _INTERRUPTED_REASON = "The app closed before this run finished."
@@ -248,6 +253,69 @@ def _assert_chain_is_contiguous() -> None:
 
 
 _assert_chain_is_contiguous()
+
+# The sections this device authors, and the table behind each. Only these can
+# owe the registry anything, so only these are marked when a person edits one.
+_PENDING_TABLES: dict[str, str] = {
+    "transects": "transect",
+    "videos": "video_asset",
+    "passes": "transect_pass",
+    "runs": "run_record",
+}
+
+
+def _pending_push_triggers() -> str:
+    """Mark every locally written row of an authored table, whatever wrote it.
+
+    Triggers rather than calls in the write helpers: a merge, a session delete
+    and a run's status all bump ``updated_at`` with SQL of their own, and one
+    forgotten call is a row that never reaches the registry again. The update
+    trigger fires only on a stamp that actually moved, so adopting a pulled
+    chapter order stays what it is -- the registry's data, not an edit to send
+    back.
+    """
+    return "".join(
+        f"""
+        CREATE TRIGGER pending_push_{table}_insert AFTER INSERT ON {table}
+        BEGIN
+            INSERT OR IGNORE INTO pending_push (section, row_id)
+            VALUES ('{section}', new.id);
+        END;
+        CREATE TRIGGER pending_push_{table}_update AFTER UPDATE OF updated_at ON {table}
+        WHEN new.updated_at IS NOT old.updated_at
+        BEGIN
+            INSERT OR IGNORE INTO pending_push (section, row_id)
+            VALUES ('{section}', new.id);
+        END;
+        """
+        for section, table in _PENDING_TABLES.items()
+    )
+
+
+def _pending_push_backfill() -> str:
+    """Everything the previous build would have called unpushed, marked once.
+
+    That build read a stamp at or past the section's watermark as a local edit,
+    so that is what the marks start as. An empty table would instead tell a
+    laptop mid-season that it owed the registry nothing.
+
+    At the watermark and not merely past it, matching the inclusive comparison
+    that build used. changed_since is exclusive now, so a row edited in the same
+    second the last push was accepted in would have neither a mark nor a stamp
+    to carry it, and would be the one row this laptop never sent. The row that
+    earned the watermark is marked too and goes once more, which the registry
+    answers with a skip.
+    """
+    return "".join(
+        f"""
+        INSERT OR IGNORE INTO pending_push (section, row_id)
+        SELECT '{section}', id FROM {table}
+        WHERE updated_at >= COALESCE(
+            (SELECT value FROM sync_state WHERE key = '{WATERMARK_PREFIX}{section}'), '');
+        """
+        for section, table in _PENDING_TABLES.items()
+    )
+
 
 # Steps taken after the baseline was cut. Appended to, never renumbered. Both
 # the fresh path and the carry-forward path land on SCHEMA_VERSION first, so
@@ -571,6 +639,43 @@ _MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    # The grain a peak is comparable at, which the local timing profile has
+    # always keyed on and the registry now collates at too. The two sizes are
+    # pixel counts the run processed at, never the name of a resolution preset.
+    # Existing rows stay NULL: the values were only ever in the manifest, and
+    # reading every run directory to backfill would be a scan of the disk.
+    Migration(
+        14,
+        "runs carry the configuration they ran at",
+        """
+        ALTER TABLE run_record ADD COLUMN processing_width INTEGER;
+        ALTER TABLE run_record ADD COLUMN processing_height INTEGER;
+        ALTER TABLE run_record ADD COLUMN fps INTEGER;
+        ALTER TABLE run_record ADD COLUMN preprocess_batch_size INTEGER;
+        """,
+    ),
+    # Which rows a person here has changed since the registry last answered for
+    # them. Until now that was inferred from updated_at against the push
+    # watermark, which cannot tell a row a pull has just written from one
+    # somebody typed: every pulled row looked like a local edit, and every sync
+    # of a quiet survey reported conflicts nobody had caused.
+    #
+    # Sites and campaigns get no trigger. They only ever come down, and the
+    # registry refuses them on the way back, so a mark on one would name a debt
+    # that could never be paid.
+    Migration(
+        15,
+        "local edits are marked rather than inferred from their stamps",
+        """
+        CREATE TABLE pending_push (
+            section TEXT NOT NULL,
+            row_id TEXT NOT NULL,
+            PRIMARY KEY (section, row_id)
+        );
+        """
+        + _pending_push_triggers()
+        + _pending_push_backfill(),
+    ),
 ]
 
 
@@ -750,6 +855,17 @@ def _ids_of(value: Any) -> list[uuid.UUID]:
     return list(value) if isinstance(value, list) else [value]
 
 
+def _next_second(stamp: str) -> str:
+    """One second past a stamp, or the stamp unchanged if it cannot be read."""
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
+
+
 def _insert_sql(table: str, row: dict[str, Any]) -> str:
     columns = ", ".join(row)
     params = ", ".join(f":{c}" for c in row)
@@ -759,6 +875,114 @@ def _insert_sql(table: str, row: dict[str, Any]) -> str:
 def _update_sql(table: str, row: dict[str, Any]) -> str:
     sets = ", ".join(f"{c} = :{c}" for c in row if c != "id")
     return f"UPDATE {table} SET {sets} WHERE id = :id"
+
+
+def _patch_sql(
+    table: str, row: dict[str, Any], carried: set[str]
+) -> tuple[str, dict[str, Any]]:
+    """An update over the fields a pulled row actually carried, and nothing else.
+
+    The device-local columns a registry has never held -- a clip's path, a run's
+    session -- survive an update this way, rather than being written back as the
+    defaults the wire supplied for them.
+    """
+    patch = {k: v for k, v in row.items() if k in carried}
+    patch["id"] = row["id"]
+    patch["updated_at"] = row["updated_at"]
+    return _update_sql(table, patch), patch
+
+
+def _row_name(row: Mapping[str, Any]) -> str:
+    """What to call a row in a message: its name where it has one, else its id."""
+    return str(row.get("name") or row["id"])
+
+
+def _blocked_only_by_each_other(
+    conn: sqlite3.Connection, table: str, refused: Sequence[_Landing]
+) -> list[_Landing]:
+    """The refused rows whose way is blocked by nothing but the others.
+
+    Follow what holds each row's name. A chain that ends at a line no row here
+    is rewriting cannot be freed by anything on the page, and every row along it
+    is stuck behind that same line, so the chain drops out a link at a time.
+    What survives is a permutation of names, which lands once they are parked
+    out of the way first.
+    """
+    holders = {
+        str(landing.row_id): SurveyStore._name_holder(conn, table, landing.row)
+        for landing in refused
+    }
+    cycling = set(holders)
+    while True:
+        stuck = {
+            key
+            for key, holder in holders.items()
+            if key in cycling and (holder is None or holder not in cycling)
+        }
+        if not stuck:
+            break
+        cycling -= stuck
+    return [landing for landing in refused if str(landing.row_id) in cycling]
+
+
+# What each table's unique index is fought over: the columns that scope the name,
+# with the name itself compared case-insensitively. Every one of them is partial
+# on ``deleted_at IS NULL``, so a tombstone collides with nothing. A table absent
+# from here carries no unique index a pulled row can land on.
+_UNIQUE_NAME_SCOPE: dict[str, tuple[str, ...]] = {
+    "site": (),
+    "campaign": (),
+    "transect": ("site_id",),
+}
+
+
+@dataclass
+class _Landing:
+    """One pulled row's write, kept so a refused name can be offered again.
+
+    A page carries whatever a curator did between two syncs, and two of those
+    things are ordinary: renaming a line to a name another line is about to give
+    up, and swapping two names outright. Neither can land on the first attempt in
+    every order they can arrive in, so the statement is built once and re-run.
+    """
+
+    row_id: uuid.UUID
+    row: dict[str, Any]
+    statement: str
+    values: dict[str, Any]
+    inserting: bool
+
+    @property
+    def carries_a_name(self) -> bool:
+        """Whether this write sets the name, which is what makes parking it safe.
+
+        A row that collided on the site it moved to rather than on the name it
+        carries would keep the parked value, since the write that follows never
+        touches the column.
+        """
+        return "name" in self.values
+
+
+@dataclass(frozen=True)
+class Collision:
+    """A pulled row this database would not take.
+
+    ``name`` is what the operator calls it, so a report can say which line
+    rather than which id. The row is kept whole because the pull cursor steps
+    past it for good: this copy is the only one left of what the registry sent.
+
+    ``holder`` is the live row already carrying the name, and None where the
+    database refused the row for some other reason of its own -- a column it
+    left empty, a value outside an allowed set. Both are set aside the same way,
+    and they are not the same thing to tell somebody: only one of them is fixed
+    by renaming something.
+    """
+
+    section: str
+    row_id: uuid.UUID
+    name: str
+    row: dict[str, Any]
+    holder: uuid.UUID | None = None
 
 
 @dataclass
@@ -773,6 +997,9 @@ class ApplyResult:
     # The id where the row carried a readable one, section and index where it did
     # not.
     unreadable: list[tuple[str, str]] = field(default_factory=list)
+    # Rows a unique index refused. Not applied, not lost, and never retried: the
+    # local row holding that name is not going away by itself.
+    collided: list[Collision] = field(default_factory=list)
 
     @property
     def applied(self) -> int:
@@ -799,6 +1026,10 @@ class SurveyStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._local = threading.local()
+        # The newest stamp this store has issued, shared across its threads so
+        # two of them cannot walk backwards past each other. See _stamp.
+        self._stamp_lock = threading.Lock()
+        self._issued = ""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
         # A store is opened once per output root, on the GUI thread, before any
@@ -930,8 +1161,44 @@ class SurveyStore:
         """
         write_backup(self._db_path, version)
 
+    def _watermark_floor(self) -> str:
+        """The newest stamp the registry has already accepted from this device.
+
+        Nothing minted here may land at or under it: a push document is built
+        from the rows stamped past the watermark, so such a row is one no push
+        would ever offer again.
+        """
+        row = self._conn().execute(
+            "SELECT MAX(value) AS newest FROM sync_state WHERE key LIKE ?",
+            (f"{WATERMARK_PREFIX}%",),
+        ).fetchone()
+        return "" if row is None else (row["newest"] or "")
+
+    def _stamp(self) -> str:
+        """A stamp for a local edit, which never runs backwards.
+
+        Stamps decide last-write-wins and the push watermark is one of them, so a
+        laptop whose clock jumps back would write rows underneath the watermark
+        and quietly drop them from every push that followed. A clock behind the
+        watermark gets the second after it instead, which keeps each edit moving
+        forwards until the real clock catches up.
+        """
+        with self._stamp_lock:
+            stamp = utc_now_iso()
+            floor = self._watermark_floor()
+            if floor and stamp <= floor:
+                stamp = _next_second(floor)
+            self._issued = max(stamp, self._issued)
+            return self._issued
+
     def _add(self, table: str, model: Any) -> None:
         row = to_row(model)
+        floor = self._watermark_floor() if table in _TOMBSTONED_TABLES else ""
+        if floor and str(row["updated_at"]) <= floor:
+            # Moved forward, never replaced: a caller that set a stamp on purpose
+            # keeps it, and a clock that has jumped back cannot file a new row
+            # under the push watermark where nothing would offer it again.
+            row["updated_at"] = model.updated_at = self._stamp()
         with self._conn() as conn:
             conn.execute(_insert_sql(table, row), row)
 
@@ -962,7 +1229,7 @@ class SurveyStore:
         Re-deleting an already tombstoned row is a no-op, so the original stamp
         stands rather than being moved forward.
         """
-        now = utc_now_iso()
+        now = self._stamp()
         with self._conn() as conn:
             conn.execute(
                 f"UPDATE {table} SET deleted_at = ?, updated_at = ? "
@@ -989,7 +1256,7 @@ class SurveyStore:
         self._add("site", site)
 
     def update_site(self, site: Site) -> None:
-        site.updated_at = utc_now_iso()
+        site.updated_at = self._stamp()
         self._update("site", site)
 
     def get_site(self, site_id: uuid.UUID) -> Site | None:
@@ -1004,7 +1271,7 @@ class SurveyStore:
         self._add("campaign", campaign)
 
     def update_campaign(self, campaign: Campaign) -> None:
-        campaign.updated_at = utc_now_iso()
+        campaign.updated_at = self._stamp()
         self._update("campaign", campaign)
 
     def get_campaign(self, campaign_id: uuid.UUID) -> Campaign | None:
@@ -1045,7 +1312,7 @@ class SurveyStore:
 
     def update_transect(self, transect: Transect) -> None:
         self._refuse_a_taken_name(transect)
-        transect.updated_at = utc_now_iso()
+        transect.updated_at = self._stamp()
         self._update("transect", transect)
 
     def _refuse_a_taken_name(self, transect: Transect) -> None:
@@ -1086,10 +1353,48 @@ class SurveyStore:
         self._tombstone("transect", transect_id)
 
     def get_transect(self, transect_id: uuid.UUID) -> Transect | None:
+        """A transect somebody may choose, which a retired one is not."""
         return self._get("transect", Transect, transect_id)
+
+    def get_transect_for_reference(self, transect_id: uuid.UUID) -> Transect | None:
+        """The line a pass was swum on, retired or not.
+
+        Two questions were being answered by one method. "Which transects may a
+        person pick?" hides a retired one, and rightly. "What line was this pass
+        swum on?" cannot: the tape length is what scales the reconstruction and
+        the identity is what the manifest records. delete_transect refuses to
+        retire a line that has passes, but a tombstone pulled from the registry
+        lands as a column with no such check, and answering None there turned
+        finished field work into unscaled science.
+        """
+        return self._row_including_deleted("transect", transect_id)
 
     def list_transects(self) -> list[Transect]:
         return self._list("transect", Transect, "name")
+
+    def list_transects_for_reference(self) -> list[Transect]:
+        """Every line with work recorded against it, retired ones included.
+
+        The list form of get_transect_for_reference, and the same division:
+        list_transects answers "which line may a person choose". Analysis asks
+        the other question, and a swim made before the registry withdrew its line
+        is still work that happened. Leaving it out drops finished science from
+        the export, from the cover the registry is sent, and from the only view
+        the diver has of it.
+
+        A retired line nothing was swum on is left out: it is neither choosable
+        nor evidence of anything.
+        """
+        rows = self._conn().execute(
+            """
+            SELECT * FROM transect
+            WHERE deleted_at IS NULL
+               OR id IN (SELECT transect_id FROM transect_pass
+                          WHERE transect_id IS NOT NULL AND deleted_at IS NULL)
+            ORDER BY name
+            """
+        ).fetchall()
+        return [from_row(Transect, row) for row in rows]
 
     def transect_usage_counts(self) -> dict[uuid.UUID, tuple[int, int]]:
         """(passes, runs) per transect, for every transect that has either.
@@ -1189,7 +1494,7 @@ class SurveyStore:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
 
     def update_video(self, asset: VideoAsset) -> None:
-        asset.updated_at = utc_now_iso()
+        asset.updated_at = self._stamp()
         self._update("video_asset", asset)
 
     def set_video_hash(self, video_id: object, digest: str) -> None:
@@ -1236,7 +1541,7 @@ class SurveyStore:
             moved += 1
         # A tombstone keeps its hash, and every read of the hash is filtered on
         # deleted_at, so re-scanning the same file lands on the keeper.
-        now = utc_now_iso()
+        now = self._stamp()
         with self._conn() as conn:
             conn.executemany(
                 "UPDATE video_asset SET deleted_at = ?, updated_at = ? "
@@ -1322,7 +1627,7 @@ class SurveyStore:
         to travel, or the next pull hands them back.
         """
         key = str(batch_id)
-        now = utc_now_iso()
+        now = self._stamp()
         with self._conn() as conn:
             conn.execute("DELETE FROM batch_item WHERE batch_id = ?", (key,))
             conn.execute(
@@ -1473,7 +1778,7 @@ class SurveyStore:
         return None
 
     def update_pass(self, pass_: TransectPass) -> None:
-        pass_.updated_at = utc_now_iso()
+        pass_.updated_at = self._stamp()
         self._update("transect_pass", pass_)
 
     def set_pass_chapters(self, pass_: TransectPass) -> None:
@@ -1536,8 +1841,11 @@ class SurveyStore:
     def set_run_status(self, run_id: uuid.UUID, status: str, error: str = "") -> None:
         if status not in RUN_STATUSES:
             raise ValueError(f"status must be one of {RUN_STATUSES}, got {status!r}")
+        # updated_at is the sync stamp and takes the guarded one; started_at and
+        # finished_at are when the work happened, and a guard that nudged those
+        # would make the run list read wrong.
         sets = "status = ?, error = ?, updated_at = ?"
-        params: list[Any] = [status, error, utc_now_iso()]
+        params: list[Any] = [status, error, self._stamp()]
         if status == "running":
             sets += ", started_at = ?"
             params.append(utc_now_iso())
@@ -1565,7 +1873,7 @@ class SurveyStore:
                 f"UPDATE run_record SET status = ?, finished_at = ?, error = ?, "
                 f"updated_at = ? WHERE deleted_at IS NULL AND status IN ({placeholders})",
                 [
-                    "interrupted", utc_now_iso(), _INTERRUPTED_REASON, utc_now_iso(),
+                    "interrupted", utc_now_iso(), _INTERRUPTED_REASON, self._stamp(),
                     *non_terminal,
                 ],
             )
@@ -1614,7 +1922,7 @@ class SurveyStore:
         for name, value in provenance.items():
             if hasattr(run, name):
                 setattr(run, name, value)
-        run.updated_at = utc_now_iso()
+        run.updated_at = self._stamp()
         self._update("run_record", run)
 
     def run_by_dir_name(self, run_dir_name: str) -> RunRecord | None:
@@ -1748,41 +2056,75 @@ class SurveyStore:
                 (key, value, utc_now_iso()),
             )
 
+    def pending_push_ids(self, section: str) -> set[uuid.UUID]:
+        """Rows a person here has changed since the registry last answered.
+
+        The one answer to "did somebody type this", which a stamp cannot give: a
+        pull writes rows stamped newer than anything local, and reading those as
+        local edits reported a conflict on every sync of a quiet survey.
+        """
+        rows = self._conn().execute(
+            "SELECT row_id FROM pending_push WHERE section = ?", (_section_of(section),)
+        ).fetchall()
+        return {uuid.UUID(row["row_id"]) for row in rows}
+
+    def clear_pending_push(self, section: str, ids: Iterable[uuid.UUID]) -> None:
+        """Forget the marks on rows the registry has now answered for.
+
+        Answered covers a refusal and a collision as well as a write: all three
+        are terminal, and a mark kept over one would re-offer the same row on
+        every sync for as long as the survey lasted.
+        """
+        name = _section_of(section)
+        with self.transaction() as conn:
+            conn.executemany(
+                "DELETE FROM pending_push WHERE section = ? AND row_id = ?",
+                [(name, str(row_id)) for row_id in ids],
+            )
+
     def changed_since(self, section: str, since: str | None = None) -> list[Any]:
-        """Every row of a section edited after ``since``, tombstones included.
+        """Every row of a section still owed to the registry, tombstones included.
 
         This is what a push document is built from, so a tombstone has to be
         here: a delete only travels as a row. ``since`` is the local push
         watermark and None means everything. Takes either a section name
         (``passes``) or the table behind it (``transect_pass``).
 
-        The watermark second is included, not excluded. Stamps are written to the
-        second, so an exclusive comparison loses an edit made in the same second
-        as the push that set the watermark; re-offering a row the registry already
-        holds costs it one skip.
+        Strictly after the watermark, and the pending marks alongside it. The
+        watermark is a stamp the registry accepted, so a row carrying it is a row
+        it already holds, and an inclusive comparison had a laptop whose clock
+        had drifted re-offering the same rows on every sync forever. What the
+        boundary used to carry -- an edit made in the second the push was
+        accepted in -- is carried explicitly now, by a mark that stands until
+        the registry answers for it.
         """
         table = SYNC_SECTIONS[_section_of(section)]
         sql = f"SELECT * FROM {table}"
         params: list[Any] = []
         if since is not None:
-            sql += " WHERE updated_at >= ?"
-            params.append(since)
+            sql += (
+                " WHERE updated_at > ? "
+                "OR id IN (SELECT row_id FROM pending_push WHERE section = ?)"
+            )
+            params.extend([since, _section_of(section)])
         rows = self._conn().execute(f"{sql} ORDER BY updated_at, rowid", params).fetchall()
         return [from_row(_SYNC_MODELS[table], r) for r in rows]
 
     def count_changed_since(self, section: str, since: str | None = None) -> int:
         """How many rows are waiting to push, without loading any of them.
 
-        Strictly after the watermark, matching the engine: the row carrying the
-        watermark is the row that was accepted. The badge polls this on a
-        timer, which is why it must stay a count and never a row load.
+        The same set changed_since builds, counted in SQL: the badge polls this
+        on a timer, which is why it must stay a count and never a row load.
         """
         table = SYNC_SECTIONS[_section_of(section)]
         sql = f"SELECT COUNT(*) AS n FROM {table}"
         params: list[Any] = []
         if since is not None:
-            sql += " WHERE updated_at > ?"
-            params.append(since)
+            sql += (
+                " WHERE updated_at > ? "
+                "OR id IN (SELECT row_id FROM pending_push WHERE section = ?)"
+            )
+            params.extend([since, _section_of(section)])
         return int(self._conn().execute(sql, params).fetchone()["n"])
 
     def apply_from_server(
@@ -1804,15 +2146,23 @@ class SurveyStore:
         so the rest of the page lands and the cursor moves on. So is a row whose
         ``updated_at`` does not parse or sits in the future: last-write-wins
         compares stamps as strings, so a garbage or far-future stamp would win
-        every comparison forever. An integrity error is not caught: a child whose
-        parent is missing has to take the page down, because the alternative is a
-        survey with a hole in it.
+        every comparison forever.
+
+        The two integrity errors are told apart by _missing_parent rather than by
+        reading what sqlite wrote in English. A child whose parent has not
+        arrived yet takes the page down, because the page is asked for again and
+        lands whole once the parent is there. A row a unique index refuses is
+        held back and offered again, twice: once after the rest of the page has
+        landed, in case a later row freed the name, and once with the group's
+        names parked out of the way, which is what lets a swap or a rotation of
+        names land. Only what still cannot go in is named in ``collided``.
         """
         section = _section_of(section)
         table = SYNC_SECTIONS[section]
         cls = _SYNC_MODELS[table]
         result = ApplyResult()
         with self.transaction() as conn:
+            refused: list[_Landing] = []
             for index, incoming in enumerate(rows):
                 result.received += 1
                 try:
@@ -1833,19 +2183,228 @@ class SurveyStore:
                 except _UNREADABLE_ROW as exc:
                     result.unreadable.append((row_id, str(exc)))
                     continue
-                if stored is None:
-                    conn.execute(_insert_sql(table, row), row)
-                    result.inserted += 1
-                    continue
-                if str(row["updated_at"]) <= str(stored["updated_at"] or ""):
+                if stored is not None and str(row["updated_at"]) <= str(
+                    stored["updated_at"] or ""
+                ):
                     result.skipped.append(uuid.UUID(row["id"]))
                     continue
-                patch = {k: v for k, v in row.items() if k in carried}
-                patch["id"] = row["id"]
-                patch["updated_at"] = row["updated_at"]
-                conn.execute(_update_sql(table, patch), patch)
-                result.updated += 1
+                statement, values = (
+                    (_insert_sql(table, row), row)
+                    if stored is None
+                    else _patch_sql(table, row, carried)
+                )
+                landing = _Landing(
+                    row_id=uuid.UUID(row_id),
+                    row=dict(row),
+                    statement=statement,
+                    values=values,
+                    inserting=stored is None,
+                )
+                if not self._land(conn, table, section, landing, result):
+                    refused.append(landing)
+            refused = self._land_freed_names(conn, table, section, refused, result)
+            refused = self._land_swapped_names(conn, table, section, refused, result)
+            for landing in refused:
+                holder = self._name_holder(conn, table, landing.row)
+                logger.warning(
+                    "Setting aside %s %s: %s",
+                    section,
+                    landing.row_id,
+                    "the name is taken here" if holder else "this database refused it",
+                )
+                result.collided.append(
+                    Collision(
+                        section,
+                        landing.row_id,
+                        _row_name(landing.row),
+                        landing.row,
+                        None if holder is None else uuid.UUID(holder),
+                    )
+                )
         return result
+
+    @staticmethod
+    def _land(
+        conn: sqlite3.Connection,
+        table: str,
+        section: str,
+        landing: _Landing,
+        result: ApplyResult,
+    ) -> bool:
+        """Write one pulled row, answering False where a unique index refused it.
+
+        A missing parent still raises: the page is asked for again and lands
+        whole once the parent is there, while a name this database is already
+        using would fail identically on every attempt at that page forever.
+        """
+        try:
+            conn.execute(landing.statement, landing.values)
+        except sqlite3.IntegrityError:
+            if SurveyStore._missing_parent(conn, table, landing.row):
+                raise
+            return False
+        if landing.inserting:
+            result.inserted += 1
+        else:
+            result.updated += 1
+        # The registry's own data, whatever the row was before it: a mark left
+        # here would offer the registry back what it just sent.
+        conn.execute(
+            "DELETE FROM pending_push WHERE section = ? AND row_id = ?",
+            (section, str(landing.row_id)),
+        )
+        return True
+
+    def _land_freed_names(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        section: str,
+        refused: list[_Landing],
+        result: ApplyResult,
+    ) -> list[_Landing]:
+        """Offer the refused rows again until an attempt frees nothing.
+
+        Where a row sits in a page must not decide whether it lands. A page that
+        renames B onto a name A holds and then renames A away has freed that
+        name by the time it is over, so B is owed the answer it would have had
+        if it had arrived second.
+        """
+        while refused:
+            still = [
+                landing
+                for landing in refused
+                if not self._land(conn, table, section, landing, result)
+            ]
+            if len(still) == len(refused):
+                return still
+            refused = still
+        return refused
+
+    def _land_swapped_names(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        section: str,
+        refused: list[_Landing],
+        result: ApplyResult,
+    ) -> list[_Landing]:
+        """Land the rows that are in nothing's way but each other's.
+
+        A curator swapping two line names is an ordinary morning's work, and it
+        arrives as two rows each holding the name the other wants, so neither can
+        go first. Their names are parked on their own ids, which the primary key
+        guarantees nothing else carries, and then written over. Anything that
+        turns out to be blocked from outside the group takes the whole group back
+        with it, because a half-applied permutation would leave a line named
+        after its id.
+        """
+        cycling = _blocked_only_by_each_other(conn, table, refused)
+        if not cycling:
+            return refused
+        staged = ApplyResult()
+        conn.execute("SAVEPOINT swapped_names")
+        landed = self._park_names(conn, table, cycling) and all(
+            self._land(conn, table, section, landing, staged) for landing in cycling
+        )
+        if not landed:
+            conn.execute("ROLLBACK TO swapped_names")
+            conn.execute("RELEASE swapped_names")
+            return refused
+        conn.execute("RELEASE swapped_names")
+        result.inserted += staged.inserted
+        result.updated += staged.updated
+        parked = {landing.row_id for landing in cycling}
+        return [landing for landing in refused if landing.row_id not in parked]
+
+    @staticmethod
+    def _park_names(
+        conn: sqlite3.Connection, table: str, cycling: Sequence[_Landing]
+    ) -> bool:
+        """Move every stored name in the group onto its own id, or none of them.
+
+        Answering False rather than raising, because a database whose data
+        happens to defeat this must not take the page down over it.
+        """
+        try:
+            for landing in cycling:
+                if not landing.inserting and landing.carries_a_name:
+                    conn.execute(
+                        f"UPDATE {table} SET name = id WHERE id = ?", (str(landing.row_id),)
+                    )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    @staticmethod
+    def _name_holder(
+        conn: sqlite3.Connection, table: str, row: Mapping[str, Any]
+    ) -> str | None:
+        """The id of the live row already carrying this row's name, if there is one.
+
+        Which row is in the way, not merely that something is. Asked so a set of
+        rows waiting only on each other can be told apart from one waiting on a
+        line the page never mentions, which no amount of retrying will free.
+        """
+        scope = _UNIQUE_NAME_SCOPE.get(table)
+        if scope is None or row.get("deleted_at") is not None:
+            return None
+        scoped = "".join(f" AND {column} IS ?" for column in scope)
+        found = conn.execute(
+            f"SELECT id FROM {table} WHERE id != ? AND deleted_at IS NULL "
+            f"AND LOWER(name) = LOWER(?){scoped}",
+            (str(row["id"]), row.get("name"), *(row.get(column) for column in scope)),
+        ).fetchone()
+        return None if found is None else str(found["id"])
+
+    def points_at(self, section: str, row: Mapping[str, Any]) -> list[uuid.UUID]:
+        """Every parent id a row of this section names.
+
+        Which column points where is declared beside the tables, so it is
+        answered here. The sync engine asks in order to hold back a child whose
+        parent it has just set aside, rather than letting the foreign key take
+        a whole page down.
+        """
+        found: list[uuid.UUID] = []
+        for attribute, _parent in _SYNC_PARENTS[_section_of(section)]:
+            for value in _ids_of(row.get(attribute)):
+                try:
+                    found.append(uuid.UUID(str(value)))
+                except ValueError:
+                    logger.warning("Ignoring an unreadable %s parent %r", section, value)
+        return found
+
+    def parents_are_here(self, section: str, row: Mapping[str, Any]) -> bool:
+        """Whether everything this row points at is already in the database.
+
+        apply_from_server lets a missing parent take the page down, because the
+        page comes back and lands whole once the parent is there. A row offered
+        again on its own has no page behind it, so its caller has to ask first.
+        """
+        table = SYNC_SECTIONS[_section_of(section)]
+        return not self._missing_parent(self._conn(), table, row)
+
+    @staticmethod
+    def _missing_parent(
+        conn: sqlite3.Connection, table: str, row: Mapping[str, Any]
+    ) -> bool:
+        """Whether this row names a parent the database does not hold yet.
+
+        How the two integrity errors are told apart. Asked of the table's own
+        foreign keys rather than of a map kept alongside them, so a column added
+        later is covered without anybody remembering to say so, and never of the
+        message sqlite wrote, which is prose in one language.
+        """
+        for key in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall():
+            value = row.get(key["from"])
+            if value is None:
+                continue
+            parent = conn.execute(
+                f"SELECT 1 FROM {key['table']} WHERE {key['to'] or 'id'} = ?", (str(value),)
+            ).fetchone()
+            if parent is None:
+                return True
+        return False
 
     def dependency_closure(
         self, section: str, ids: Iterable[uuid.UUID]
@@ -1890,7 +2449,9 @@ class SurveyStore:
         doc = build_document(
             sites=self.list_sites(),
             campaigns=self.list_campaigns(),
-            transects=self.list_transects(),
+            # Retired lines that still carry passes, or the document would name
+            # a transect it does not contain and could not be imported whole.
+            transects=self.list_transects_for_reference(),
             videos=self.list_videos(),
             batches=self.list_batches(),
             passes=self.list_passes(),
@@ -1985,6 +2546,9 @@ class SurveyStore:
     def _restore_transect(self, snapshot: dict[str, Any], report: RebuildReport) -> uuid.UUID:
         transect_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("transects", transect_id):
+            # A line the run was swum on after it had been retired comes back
+            # retired. It still names and scales the run, and reviving it would
+            # put a withdrawn line back in front of whoever withdrew it.
             self.add_transect(Transect(
                 id=transect_id,
                 name=snapshot["name"],
@@ -1994,6 +2558,7 @@ class SurveyStore:
                 end_lon=snapshot["end_lon"],
                 length_m=snapshot.get("length_m"),
                 depth_m=snapshot.get("depth_m"),
+                deleted_at=snapshot.get("deleted_at"),
             ))
             report.transects += 1
         return transect_id

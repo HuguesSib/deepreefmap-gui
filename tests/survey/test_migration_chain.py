@@ -323,3 +323,36 @@ def test_can_open_agrees_with_what_the_storedoes(tmp_path):
     assert all(can_open(v) for v in SUPPORTED)
     # A file sqlite has only just created, which the baseline writes whole.
     assert can_open(0)
+
+
+def test_a_row_stamped_in_the_second_of_the_last_push_is_still_owed(tmp_path):
+    """Scenario: a laptop mid-season on v14, where the push watermark decided
+    what was owed and carried the row sitting exactly on it.
+
+    Expected behaviour: the upgrade marks that row, because the comparison it
+    lands on is exclusive. Without a mark it is the one row the registry never
+    receives, and the backfill exists precisely so a laptop mid-season is not
+    told it owes nothing.
+    """
+    path = tmp_path / "survey.db"
+    _database_at(path, 14)
+    on_the_watermark = "2026-08-01T09:15:00+00:00"
+    conn = sqlite3.connect(path)
+    transect_id = str(uuid.uuid4())
+    with conn:
+        conn.execute(
+            "INSERT INTO transect (id, name, start_lat, start_lon, end_lat, end_lon, "
+            "created_at, updated_at) VALUES (?, 'T1', 0, 0, 0, 0, ?, ?)",
+            (transect_id, on_the_watermark, on_the_watermark),
+        )
+        conn.execute(
+            "INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?)",
+            (f"{store.WATERMARK_PREFIX}transects", on_the_watermark, on_the_watermark),
+        )
+    conn.close()
+
+    opened = SurveyStore(path)
+
+    assert opened.pending_push_ids("transects") == {uuid.UUID(transect_id)}
+    assert [t.name for t in opened.changed_since("transects", on_the_watermark)] == ["T1"]
+    opened.close()

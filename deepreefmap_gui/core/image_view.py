@@ -155,7 +155,7 @@ class ZoomableImageView(QGraphicsView):
         event.accept()
         self.zoom_by_notches(event.angleDelta().y() / 120.0, event.position())
 
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseDoubleClickEvent(self, event) -> None:
         self.reset_zoom()
         event.accept()
 

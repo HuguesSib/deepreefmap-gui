@@ -305,6 +305,9 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
         self._section_detail.delete_requested.connect(self._on_section_delete)
         self._section_detail.run_activated.connect(self._on_section_run_activated)
+        # Same handler as the run card in Browse, so the press lands on the
+        # Server view with its progress and summary showing.
+        self._section_detail.archive_run_requested.connect(self._archive_run)
         self._section_detail.setVisible(False)
         detail.addWidget(self._section_detail)
         split.addWidget(detail)
@@ -647,6 +650,9 @@ class VideoLibraryMixin(MixinBase):
         entry = run_detail.entry if run_detail is not None else None
         if run_detail is not None and entry is not None and entry.db_run is not None:
             run_detail.set_archive_state(self._archive_state_for_run(entry.db_run.id))
+        section_detail = getattr(self, "_section_detail", None)
+        if section_detail is not None:
+            section_detail.paint_archive_states(self._archive_state_for_run)
 
     def _selected_clip(self) -> VideoLibraryEntry | None:
         return self._clip_by_id(self._video_list.selected)
@@ -666,7 +672,9 @@ class VideoLibraryMixin(MixinBase):
         if store is None:
             return None
         try:
-            transect = store.get_transect(transect_id)
+            # The line the section was cut against, retired or not: this names a
+            # swim that already happened, not a line anybody is choosing.
+            transect = store.get_transect_for_reference(transect_id)
         except Exception:
             logger.exception("Could not read the transect for a section")
             return None
@@ -864,7 +872,9 @@ class VideoLibraryMixin(MixinBase):
             in_cart=self._pass_in_current_cart(pass_id),
             output_bytes=sum(sizes.get(r.run_dir_name, 0) for r in runs),
         )
+        self._section_detail.paint_archive_states(self._archive_state_for_run)
         self._section_detail.setVisible(True)
+        self._maybe_refresh_archive_badges()
 
     def _session_name_for(self, batch_id) -> str | None:
         if batch_id is None:

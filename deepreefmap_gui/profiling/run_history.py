@@ -244,9 +244,12 @@ def summarise_recorded_runs(path: Path | None = None) -> list[dict]:
                     "run_seconds": run_seconds,
                     "peak_ram_bytes": max(rams) if rams else None,
                     "peak_swap_bytes": max(swaps) if swaps else 0,
-                    # Distinguish "measured 0 swap" from "predates swap capture", so
+                    # Distinguish "measured 0 swap" from "never measured it", so
                     # the UI can show "not recorded" rather than a misleading 0%.
-                    "swap_recorded": any("swap_bytes" in s for s in peaks.values()),
+                    # A null is the second case: entries predating swap capture
+                    # carry no key, and a machine that cannot read per-process
+                    # swap carries the key with nothing in it.
+                    "swap_recorded": any(s.get("swap_bytes") is not None for s in peaks.values()),
                     "peak_vram_bytes": max(vrams) if vrams else None,
                     # Whether the RAM and swap figures are the run's own or the
                     # whole machine's. Old entries measured the machine, and a

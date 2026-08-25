@@ -17,7 +17,10 @@ class ResourceSample:
     t: float  # time.monotonic() timestamp, comparable to the orchestrator's stage marks
     ram_bytes: int
     vram_bytes: int | None
-    swap_bytes: int = 0  # this run's own pages in swap: secondary RAM once RAM fills
+    # This run's own pages in swap: secondary RAM once RAM fills. None, never
+    # zero, where the platform will not report it, so an unmeasurable machine
+    # stays out of the fleet's swap statistics rather than voting nothing into them.
+    swap_bytes: int | None = None
 
 
 class ResourceSampler:
@@ -55,6 +58,8 @@ class ResourceSampler:
                 # The machine-wide reading is the fallback, not the measurement:
                 # it is what a platform that will not report per-process memory
                 # leaves us with, and it counts the whole desktop as the run's.
+                # Its swap half is null where the machine would not report swap,
+                # so an unmeasurable figure stays unmeasurable down this path too.
                 mine = sample_process_memory()
                 ram, swap = mine or (util.ram_used_bytes, util.swap_used_bytes)
                 self.samples.append(
@@ -77,6 +82,11 @@ def peaks_from_marks(
     100% and shows its real demand as swap, so a stage's true peak is RAM plus swap.
     Both are the run's own (see ResourceSampler), which is what makes them
     comparable to an estimate and to each other across backends.
+
+    Swap and VRAM are null where nothing observed them, and a reader counts an
+    observation rather than a key: a machine with no discrete card and a machine
+    that will not report per-process swap both have to stay out of the averages
+    instead of voting a zero into them.
     """
     peaks: dict[str, dict[str, int | None]] = {}
     for begin, end, stage in spans:
@@ -87,9 +97,10 @@ def peaks_from_marks(
         if not window:
             continue
         vrams = [s.vram_bytes for s in window if s.vram_bytes is not None]
+        swaps = [s.swap_bytes for s in window if s.swap_bytes is not None]
         peaks[stage] = {
             "ram_bytes": max(s.ram_bytes for s in window),
             "vram_bytes": max(vrams) if vrams else None,
-            "swap_bytes": max(s.swap_bytes for s in window),
+            "swap_bytes": max(swaps) if swaps else None,
         }
     return peaks

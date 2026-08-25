@@ -77,17 +77,40 @@ class HoverDismissFilter(QObject):
     def __init__(self, hide: Callable[[], None], parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._hide = hide
+        # The window this was installed on, so it can stop watching one that
+        # outlives what it hides.
+        self._watching: QObject | None = None
+
+    def watch(self, window: QObject) -> None:
+        window.installEventFilter(self)
+        self._watching = window
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() in _DISMISS_EVENTS:
             try:
                 self._hide()
-            except (AttributeError, RuntimeError):
+            except RuntimeError:
                 # Reached while the owner is being torn down, when there is no
                 # card left to take down. Raising here corrupts Qt's dispatch.
                 pass
+            except AttributeError:
+                # The owner's state is gone for good: PySide6 discards a
+                # subclass instance's __dict__ while C++ still references it,
+                # so nothing asked of it from here can ever answer again. The
+                # window it watches outlives that, so come off it rather than
+                # reaching into a dead widget on every leave.
+                self.stop_watching()
         # Never consumed: these are all events somebody else is also acting on.
         return False
+
+    def stop_watching(self) -> None:
+        window, self._watching = self._watching, None
+        if window is None:
+            return
+        try:
+            window.removeEventFilter(self)
+        except RuntimeError:
+            pass  # The window went first, which takes the filter with it.
 
 
 class _DismissHost(Protocol):
@@ -105,7 +128,7 @@ def install_dismiss_filter(owner: QWidget, hide: Callable[[], None]) -> HoverDis
     """
     window = owner.window()
     handler = HoverDismissFilter(hide, owner)
-    window.installEventFilter(handler)
+    handler.watch(window)
     kept = getattr(owner, "_hover_dismiss_filters", None)
     if kept is None:
         kept = []

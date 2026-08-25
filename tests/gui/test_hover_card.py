@@ -170,6 +170,37 @@ def test_a_hidden_window_is_left_to_its_own_hide_event(qapp) -> None:
     assert hidden == []
 
 
+def test_a_filter_stops_watching_a_window_its_owner_did_not_outlive(qapp) -> None:
+    """Scenario: the owner is gone but the window it was in is not, which is what
+    a discarded __dict__ leaves behind.
+
+    Expected behaviour: the filter comes off. There is no card left to take
+    down and no state to find one with, so answering for that window again only
+    reaches further into a widget that cannot answer.
+    """
+    owner = QWidget()
+    owner.show()
+    hidden: list[bool] = []
+    alive = [True]
+
+    def hide() -> None:
+        if not alive[0]:
+            raise AttributeError("_card")
+        hidden.append(True)
+
+    handler = install_dismiss_filter(owner, hide)
+    QApplication.sendEvent(owner.window(), QEvent(QEvent.Type.Leave))
+    assert hidden == [True]
+
+    alive[0] = False
+    QApplication.sendEvent(owner.window(), QEvent(QEvent.Type.Leave))
+    alive[0] = True
+    QApplication.sendEvent(owner.window(), QEvent(QEvent.Type.Leave))
+
+    assert hidden == [True]
+    assert handler._watching is None
+
+
 def test_the_filter_consumes_nothing_it_watches(qapp) -> None:
     """Everything it acts on is an event somebody else is also handling."""
     owner = QWidget()

@@ -7,6 +7,7 @@ import pytest
 from deepreefmap_gui.simple.section_state import (
     ATTENTION,
     BLOCKED,
+    CAUSE_RETIRED_TRANSECT,
     FIX_HERE,
     FIX_MACHINE,
     FIX_SETTINGS,
@@ -96,6 +97,164 @@ def test_an_unscaled_transect_is_reported_but_never_blocks():
 
     both = gate(pass_count=2, remaining=2, unassigned=1, unscaled=1)
     assert "without a transect" in both.count
+
+
+def test_a_retired_transect_is_reported_and_never_blocks():
+    """Scenario: the registry retired the line a queued pass was swum on, and it
+    recorded a tape length before it went.
+
+    Expected behaviour: the session still runs, scaled by that length, and the
+    step says so. Blocking would strand footage already collected, and the diver
+    cannot un-retire a line somebody else withdrew. Above the other warnings
+    because nothing else on screen would mention it.
+    """
+    state = gate(pass_count=2, remaining=2, retired=1, failed=1, unassigned=1, unscaled=1)
+    assert state.state == ATTENTION
+    assert "retired transect" in state.count
+    assert "scaled by the length recorded for it" in state.reason
+    assert "web console" in state.reason
+    assert "un-retire" not in state.reason
+
+
+def test_a_retired_transect_with_no_length_says_the_run_will_be_unscaled():
+    """Scenario: the line was withdrawn and it never carried a tape length, so
+    the length handed to the reconstruction is nothing at all.
+
+    Expected behaviour: the verdict says the runs will be unscaled. Testing
+    retired before unscaled had it promise a scale the code cannot deliver, and
+    it is the retired branch that has to carry the fact, because it hides the
+    unscaled one underneath it.
+    """
+    state = gate(pass_count=2, remaining=2, retired=2, retired_unscaled=2, unscaled=2)
+
+    assert "will run unscaled" in state.reason
+    assert "scaled by the length recorded" not in state.reason
+    assert "Set the length under Transects" not in state.reason, "nothing lists the line"
+    assert "cannot be given a length here" in state.reason
+    assert "will run unscaled" in headline(state.reason), "the notification's own title"
+
+
+def test_a_retired_transect_says_how_many_of_its_passes_lose_their_scale():
+    """Two lines were withdrawn and only one of them recorded a length, so
+    neither "they scale" nor "they do not" is true of the group."""
+    state = gate(pass_count=3, remaining=3, retired=3, retired_unscaled=1, unscaled=1)
+
+    assert "1 of them will run unscaled" in state.reason
+    assert "cannot be given a length here" in state.reason
+
+
+def test_a_group_spread_over_two_withdrawn_lines_says_two():
+    """The count of passes says nothing about how many lines they are on, and
+    two passes of one withdrawn line is the ordinary case. Saying "a transect"
+    of a group swum on two of them named a line that does not exist."""
+    one = gate(pass_count=2, remaining=2, retired=2, retired_lines=1)
+    assert "2 passes are on a transect the registry no longer lists" in one.reason
+    assert "the length recorded for it" in one.reason
+    assert "Ask whoever removed it" in one.reason
+
+    two = gate(pass_count=2, remaining=2, retired=2, retired_lines=2)
+    assert "2 passes are on 2 transects the registry no longer lists" in two.reason
+    assert "the length recorded for them" in two.reason
+    assert "Ask whoever removed them" in two.reason
+
+    withdrawn = gate(
+        pass_count=2, remaining=2, retired=2, retired_unscaled=2, unscaled=2, retired_lines=2
+    )
+    assert "no tape length was recorded for them" in withdrawn.reason
+    assert "whether they should come back with their tape lengths" in withdrawn.reason
+
+
+def test_the_mixed_sentence_does_not_claim_they_share_a_line():
+    """Some of the group lost its scale and some did not, which is only possible
+    across more than one line, so the clause cannot say "the line they are on"."""
+    state = gate(
+        pass_count=3, remaining=3, retired=3, retired_unscaled=1, unscaled=1, retired_lines=2
+    )
+
+    assert "1 of them will run unscaled" in state.reason
+    assert "no tape length was recorded for the line each was swum on" in state.reason
+
+
+def test_an_unscaled_pass_is_named_even_when_a_retired_line_is_the_reason():
+    """Scenario: one pass is on a withdrawn line that did record a tape length,
+    and another is on a line still listed that never had one.
+
+    Expected behaviour: both are named. Only one reason is shown and the retired
+    one outranks, so an unscaled reconstruction went unmentioned on every screen
+    a diver reads before pressing Start. Everything else this gate reports can be
+    put right afterwards; an unscaled run cannot.
+    """
+    state = gate(pass_count=2, remaining=2, retired=1, retired_unscaled=0, unscaled=1)
+
+    assert state.cause == CAUSE_RETIRED_TRANSECT, "still one reason, not two verdicts"
+    assert "the registry no longer lists" in state.reason
+    assert "1 pass is on a listed transect with no tape length" in state.reason
+    assert "Set the length under Transects" in state.reason
+    assert "1 unscaled" in state.count
+
+
+def test_the_unscaled_group_is_counted_over_the_lines_it_is_spread_across():
+    """The same defect the retired half carried: the count of passes says
+    nothing about how many lines they were swum on, and "a listed transect" of
+    a group spread over three names a line nothing here is on."""
+    one = gate(pass_count=4, remaining=4, retired=1, unscaled=2, unscaled_lines=1)
+    assert "2 passes are on a listed transect with no tape length" in one.reason
+
+    several = gate(pass_count=4, remaining=4, retired=1, unscaled=2, unscaled_lines=2)
+    assert "2 passes are on 2 listed transects with no tape length" in several.reason
+
+    alone = gate(pass_count=4, remaining=4, unscaled=3, unscaled_lines=2)
+    assert "3 passes are on 2 transects with no tape length" in alone.reason
+    assert "listed" not in alone.reason, "nothing was withdrawn to tell them apart from"
+
+    uncounted = gate(pass_count=4, remaining=4, unscaled=3)
+    assert "3 passes are on a transect with no tape length" in uncounted.reason
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"unscaled": 1, "unscaled_lines": 1},
+        {"unscaled": 3, "unscaled_lines": 2},
+        {"retired": 2, "retired_unscaled": 2, "unscaled": 2, "retired_lines": 2},
+        {"retired": 1, "retired_unscaled": 0, "unscaled": 2, "unscaled_lines": 2},
+        {"retired": 2, "retired_unscaled": 1, "unscaled": 3, "unscaled_lines": 2},
+    ],
+)
+def test_a_run_that_will_come_out_unscaled_is_never_the_half_that_is_buried(overrides):
+    """The notification splits a reason at its first full stop, headline from
+    body, so a fact in the second sentence never reaches a title. Of everything
+    this gate reports, an unscaled reconstruction is the only one nothing
+    afterwards can put right, so it is the one that cannot land in the body."""
+    state = gate(pass_count=5, remaining=5, **overrides)
+
+    assert "will run unscaled" in headline(state.reason)
+
+
+def test_a_retired_group_that_covers_every_unscaled_pass_says_it_once():
+    """The passes on the withdrawn line are the unscaled ones, so a second
+    clause about a listed line would be describing nobody."""
+    state = gate(pass_count=2, remaining=2, retired=2, retired_unscaled=2, unscaled=2)
+
+    assert "listed transect" not in state.reason
+    assert "unscaled" not in state.count
+
+
+def test_one_pass_reads_as_one_pass():
+    """A count and the verbs that follow it have to agree, in every branch that
+    puts them in one sentence."""
+    alone = gate(pass_count=1, retired=1)
+    assert "1 pass is on" in alone.reason
+    assert "still runs scaled" in alone.reason
+
+    unscaled = gate(pass_count=1, retired=1, retired_unscaled=1)
+    assert "so it will run unscaled" in unscaled.reason
+    assert "1 pass is on" in gate(pass_count=1, unscaled=1).reason
+    assert "so it will run unscaled" in gate(pass_count=1, unscaled=1).reason
+
+    several = gate(pass_count=2, retired=2, retired_unscaled=2)
+    assert "2 passes are on" in several.reason
+    assert "so they will run unscaled" in several.reason
 
 
 def test_a_real_blocker_outranks_a_skipped_transect():
@@ -244,6 +403,7 @@ def _speaking_verdicts():
         gate(gpu_only_mapper="loger"),
         gate(missing_models=["dinov3"]),
         gate(failed=3),
+        gate(retired=2),
         gate(unassigned=3),
         gate(unscaled=3),
         machine_state(unmet=2),

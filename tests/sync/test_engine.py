@@ -17,7 +17,7 @@ from deepreefmap_gui.survey.models.notification import SURVEY, WARNING
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
 from deepreefmap_gui.sync import wire
 from deepreefmap_gui.sync.client import ConflictError, ServerUnreachableError
-from deepreefmap_gui.sync.contract import PUSH_SECTIONS
+from deepreefmap_gui.sync.contract import PULL_SECTIONS, PUSH_SECTIONS
 from deepreefmap_gui.sync.engine import (
     AUTHORED_SECTIONS,
     CONFLICT_DISCARDED,
@@ -30,12 +30,18 @@ from deepreefmap_gui.sync.engine import (
     HELD_KEY,
     PASS_WITHOUT_VIDEOS,
     PULL_LIMIT,
+    PULL_NAME_TAKEN,
+    PULL_PARENT_SET_ASIDE,
+    PULL_ROW_REFUSED,
     PULL_STALLED,
+    PUSH_CONFLICTED,
     PUSH_UNACCOUNTED,
     RUN_PASS_DELETED,
     RUN_WITHOUT_PASS,
     SECTION_NOT_UNDERSTOOD,
     SECTION_REFUSED,
+    SET_ASIDE_DISCARDED,
+    TRANSECT_WITHOUT_SITE,
     UNREADABLE_ROW,
     WATERMARK_PREFIX,
     SyncEngine,
@@ -46,6 +52,8 @@ from deepreefmap_gui.sync.engine import (
 # tolerance the apply path allows a pulled stamp.
 EARLIER = "2000-01-01T00:00:00+00:00"
 LATER = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+# Newer again, for a second pull that has to beat the first one's rows.
+MUCH_LATER = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
 
 # The full section set, agreed explicitly. The vendored contract pulls only the
 # ancestor sections and _asked_for drops what was never agreed, so the tests
@@ -58,7 +66,8 @@ class FakeRegistry:
     """Answers like the registry and remembers everything it was told.
 
     ``skipped`` names rows it claims to hold a newer copy of, per section.
-    ``refused`` does the same for rows it says another origin owns.
+    ``refused`` does the same for rows it says another origin owns, and
+    ``conflicted`` for rows its own database would not take at all.
     ``unaccounted`` names a section it answers about without saying what became of
     the rows, which is the shape of a half-answer the engine must not trust.
     A section devices do not author is answered like the real registry answers
@@ -66,12 +75,14 @@ class FakeRegistry:
     """
 
     def __init__(
-        self, pages=(), fail=None, skipped=None, refused=None, unaccounted=(), cursor=4830
+        self, pages=(), fail=None, skipped=None, refused=None, conflicted=None,
+        unaccounted=(), cursor=4830,
     ):
         self._pages = list(pages)
         self._fail = fail
         self._skipped = skipped or {}
         self._refused = refused or {}
+        self._conflicted = conflicted or {}
         self._unaccounted = set(unaccounted)
         self._cursor = cursor
         self.pulls: list[int | None] = []
@@ -110,11 +121,13 @@ class FakeRegistry:
             }
         skipped = [str(row_id) for row_id in self._skipped.get(name, ())]
         refused = [str(row_id) for row_id in self._refused.get(name, ())]
+        conflicted = [str(row_id) for row_id in self._conflicted.get(name, ())]
         return {
             "received": len(rows),
-            "applied": len(rows) - len(skipped) - len(refused),
+            "applied": len(rows) - len(skipped) - len(refused) - len(conflicted),
             "skipped": skipped,
             "refused": refused,
+            "conflicted": conflicted,
         }
 
 
@@ -251,9 +264,12 @@ def test_a_push_records_a_watermark_per_section(store, tmp_path):
 
 
 def test_a_section_whose_rows_all_predate_its_watermark_sends_nothing(store, tmp_path):
+    """A watermark is a push the registry accounted for, which is also what
+    clears the marks the local edits left, so both are set up here."""
     seed_pass(store)
     for section in SYNC_SECTIONS:
         store.set_sync_state(f"{WATERMARK_PREFIX}{section}", LATER)
+        store.clear_pending_push(section, store.pending_push_ids(section))
     registry = FakeRegistry()
 
     report = SyncEngine(store, registry, out_root=tmp_path).push()
@@ -308,9 +324,9 @@ def test_a_row_the_registry_already_held_newer_is_reported_not_raised(store, tmp
 
 
 def test_a_skip_that_was_not_a_local_edit_is_not_a_conflict(store, tmp_path):
-    """Scenario: a survey already in step, pushed a second time.
+    """Scenario: a survey in step, pushed again because one run was recorded.
 
-    Expected behaviour: the ancestors dragged in by the closure and the derived
+    Expected behaviour: the ancestors the closure drags in and the derived
     chapter rows come back skipped, and none of that is reported. Warning about a
     survey where nothing is wrong would train the reader to ignore the warning.
     """
@@ -318,17 +334,36 @@ def test_a_skip_that_was_not_a_local_edit_is_not_a_conflict(store, tmp_path):
     store.add_site(site)
     transect, video, pass_ = seed_pass(store, transect=make_transect(site_id=site.id))
     notifications = NotificationCenter()
-    every = {"sites": [site.id], "transects": [transect.id], "videos": [video.id],
-             "passes": [pass_.id], "pass_videos": [wire.pass_video_id(pass_.id, video.id)]}
+    ancestors = {"sites": [site.id], "transects": [transect.id], "videos": [video.id],
+                 "passes": [pass_.id], "pass_videos": [wire.pass_video_id(pass_.id, video.id)]}
     SyncEngine(store, FakeRegistry(), out_root=tmp_path, notifications=notifications).push()
-    registry = FakeRegistry(skipped=every)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
+    registry = FakeRegistry(skipped=ancestors)
 
     report = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications).push()
 
-    assert registry.pushes[0].keys() == every.keys(), "the whole closure went again"
-    assert report.applied == 0, "and the registry skipped all of it"
+    sent = registry.pushes[0]
+    assert set(sent) == {*ancestors, "runs"}, "the whole closure went with the run"
+    assert report.applied == 1, "and the registry skipped every ancestor"
     assert report.skipped == []
     assert notifications.active() == []
+
+
+def test_a_survey_nobody_has_touched_since_the_last_push_sends_nothing(store, tmp_path):
+    """Scenario: sync pressed twice with nothing typed in between.
+
+    Expected behaviour: the second push has no document to build. Re-offering the
+    rows the first push earned its watermark with is what a laptop whose clock
+    had drifted did on every sync, forever.
+    """
+    seed_pass(store)
+    SyncEngine(store, FakeRegistry(), out_root=tmp_path).push()
+    registry = FakeRegistry()
+
+    report = SyncEngine(store, registry, out_root=tmp_path).push()
+
+    assert registry.pushes == []
+    assert report.sections == {}
 
 
 def test_the_push_cursor_is_reported_and_never_adopted(store, tmp_path):
@@ -1257,3 +1292,796 @@ def test_a_published_preset_lands_in_its_own_table(store, tmp_path):
     assert [(p.name, p.version) for p in landed] == [("Deep reef", 2)]
     assert landed[0].settings == {"fps": 4, "mapping_name": "loger_star"}
     assert store.get_server_preset("deep REEF", 2) is not None
+
+
+# --- Pull: a name a live row here already holds ---
+
+
+def one_note(notifications, fingerprint):
+    """The single active notification carrying this fingerprint."""
+    found = [note for note in notifications.active() if note.fingerprint == fingerprint]
+    assert len(found) == 1, f"{fingerprint} was posted {len(found)} time(s)"
+    return found[0]
+
+
+def test_a_pulled_transect_whose_name_is_taken_is_set_aside(store, tmp_path):
+    """Scenario: a curator renames one of a site's lines to a name a line on this
+    laptop already carries, which is what swapping two names looks like halfway.
+
+    Expected behaviour: the colliding row is set aside whole and everything else
+    on the page lands. The alternative is what shipped: the unique index takes
+    the page down, the cursor never moves, and every sync from then on replays
+    the same page and fails on it identically.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs, other = uuid.uuid4(), uuid.uuid4()
+    notifications = NotificationCenter()
+    registry = FakeRegistry(pages=[page(10, {
+        "transects": [
+            transect_row(theirs, "Reef Wall", site_id=str(site.id)),
+            transect_row(other, "Sand Chute", site_id=str(site.id)),
+        ],
+    })])
+    engine = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications)
+
+    report = engine.pull()
+
+    assert store.get_transect(theirs) is None
+    assert store.get_transect(ours.id).name == "Reef Wall", "nothing here changed"
+    assert store.get_transect(other) is not None, "the rest of the page landed"
+    assert engine.cursor() == 10, "and the laptop is not stuck on this page"
+    assert [(c.section, c.row_id, c.name) for c in report.collided] == [
+        ("transects", theirs, "Reef Wall")
+    ]
+    assert "Reef Wall" in one_note(notifications, PULL_NAME_TAKEN).body
+
+
+def test_a_row_set_aside_is_still_there_after_a_restart(store, tmp_path):
+    """The cursor has stepped past it for good, so this copy is the only one
+    left, and the diver is rarely watching at the moment it happens."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    store.add_transect(make_transect("Reef Wall", site_id=site.id))
+    theirs = uuid.uuid4()
+    registry = FakeRegistry(pages=[page(10, {
+        "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+    })])
+    SyncEngine(store, registry, out_root=tmp_path).pull()
+
+    kept = SyncEngine(store, FakeRegistry(), out_root=tmp_path).quarantined()
+
+    assert [(entry["section"], entry["id"], entry["name"]) for entry in kept] == [
+        ("transects", str(theirs), "Reef Wall")
+    ]
+    assert kept[0]["row"]["length_m"] == 50.0, "the registry's row is kept whole"
+
+
+def test_the_same_collision_twice_is_one_row_set_aside(store, tmp_path):
+    """A registry that edits the colliding line again sends it again, and a
+    record growing a line per sync would be unreadable by the season's end."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    store.add_transect(make_transect("Reef Wall", site_id=site.id))
+    row = transect_row(uuid.uuid4(), "Reef Wall", site_id=str(site.id))
+    for cursor in (10, 20):
+        SyncEngine(
+            store,
+            FakeRegistry(pages=[page(cursor, {"transects": [row]})]),
+            out_root=tmp_path,
+        ).pull()
+
+    assert len(SyncEngine(store, FakeRegistry(), out_root=tmp_path).quarantined()) == 1
+
+
+def test_a_page_that_frees_the_name_it_collided_on_sets_nothing_aside(store, tmp_path):
+    """Scenario: one page renames B onto the name A carries and then renames A
+    away, in that order, which is what a curator tidying two lines looks like.
+
+    Expected behaviour: both land, nothing is set aside, and no notification is
+    posted. Judging B where it sat in the page had the laptop keep the old pair
+    for good while telling the diver to rename something no record carried.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    store.add_transect(first)
+    store.add_transect(second)
+    notifications = NotificationCenter()
+    registry = FakeRegistry(pages=[page(10, {
+        "transects": [
+            transect_row(second.id, "T1", site_id=str(site.id)),
+            transect_row(first.id, "T3", site_id=str(site.id)),
+        ],
+    })])
+    engine = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications)
+
+    report = engine.pull()
+
+    assert report.collided == ()
+    assert (store.get_transect(second.id).name, store.get_transect(first.id).name) == ("T1", "T3")
+    assert engine.quarantined() == []
+    assert PULL_NAME_TAKEN not in {note.fingerprint for note in notifications.active()}
+
+
+def test_two_lines_whose_names_the_registry_swapped_both_land(store, tmp_path):
+    """A curator swapping two names is ordinary work and has to converge. Each
+    row holds the name the other wants, so no single retry unpicks it, and
+    setting both aside left the laptop mirror-imaged against the registry."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect("T1", site_id=site.id)
+    second = make_transect("T2", site_id=site.id)
+    store.add_transect(first)
+    store.add_transect(second)
+    registry = FakeRegistry(pages=[page(10, {
+        "transects": [
+            transect_row(first.id, "T2", site_id=str(site.id)),
+            transect_row(second.id, "T1", site_id=str(site.id)),
+        ],
+    })])
+    engine = SyncEngine(store, registry, out_root=tmp_path)
+
+    report = engine.pull()
+
+    assert report.collided == ()
+    assert (store.get_transect(first.id).name, store.get_transect(second.id).name) == ("T2", "T1")
+    assert engine.quarantined() == []
+
+
+def test_a_row_set_aside_lands_on_the_sync_after_the_name_is_freed(store, tmp_path):
+    """The obstacle is a name, and what frees it happens in the web console
+    where this device cannot watch, so the entry is offered again after every
+    pull rather than left to sit for the rest of the season."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs = uuid.uuid4()
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+        })]),
+        out_root=tmp_path,
+    ).pull()
+
+    freeing = FakeRegistry(pages=[page(20, {
+        "transects": [
+            transect_row(ours.id, "Sand Chute", site_id=str(site.id), updated_at=MUCH_LATER),
+        ],
+    })])
+    engine = SyncEngine(store, freeing, out_root=tmp_path)
+    report = engine.pull()
+
+    assert report.set_aside_cleared == (theirs,)
+    assert store.get_transect(theirs).name == "Reef Wall"
+    assert engine.quarantined() == []
+
+
+def test_a_row_the_database_refuses_for_its_own_reasons_is_said_differently(store, tmp_path):
+    """Scenario: a registry sends a site carrying no created_at, which this
+    database's NOT NULL refuses just as flatly as a duplicate name.
+
+    Expected behaviour: it is set aside like any other, and reported as what it
+    is. Telling the diver a record here carries the same name would send them
+    looking for a record that does not exist, over a name nothing is using.
+    """
+    notifications = NotificationCenter()
+    registry = FakeRegistry(pages=[page(10, {
+        "sites": [site_row(uuid.uuid4(), "Reef", created_at=None)],
+    })])
+    engine = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications)
+
+    report = engine.pull()
+
+    assert [row.holder for row in report.collided] == [None]
+    assert engine.cursor() == 10
+    posted = {note.fingerprint for note in notifications.active()}
+    assert PULL_ROW_REFUSED in posted
+    assert PULL_NAME_TAKEN not in posted
+
+
+def test_renaming_the_line_here_also_lets_a_set_aside_row_land(store, tmp_path):
+    """The other half of the same fix. A diver who reads the notification and
+    renames the line on this laptop has freed the name just as surely as a
+    curator would have, and a sync that carried nothing new must still notice.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs = uuid.uuid4()
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+        })]),
+        out_root=tmp_path,
+    ).pull()
+
+    ours.name = "Reef Wall north"
+    store.update_transect(ours)
+    engine = SyncEngine(store, FakeRegistry(), out_root=tmp_path)
+    report = engine.pull()
+
+    assert report.set_aside_cleared == (theirs,)
+    assert store.get_transect(theirs).name == "Reef Wall"
+    assert engine.quarantined() == []
+
+
+# --- Pull: a set-aside row the copy here has outlived ---
+
+
+def test_a_set_aside_row_this_laptop_has_outlived_is_discarded_not_landed(store, tmp_path):
+    """Scenario: the registry's rename of a line was set aside on a name clash,
+    and the line here has been edited since, so last-write-wins throws the
+    registry's copy away rather than recording it.
+
+    Expected behaviour: it is reported as discarded. Counting it among the rows
+    that finally landed told the diver the registry's version was now in the
+    survey at the moment it was being deleted.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(ours.id, "Sand Chute", site_id=str(site.id))],
+        })]),
+        out_root=tmp_path,
+    ).pull()
+    assert len(SyncEngine(store, FakeRegistry(), out_root=tmp_path).quarantined()) == 1
+
+    # A watermark ahead of the clock is how an edit made now comes to outrank an
+    # hour-old pull: _stamp refuses to mint a stamp under one.
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", LATER)
+    ours.name = "Reef Wall north"
+    store.update_transect(ours)
+    notifications = NotificationCenter()
+    engine = SyncEngine(store, FakeRegistry(), out_root=tmp_path, notifications=notifications)
+
+    report = engine.pull()
+
+    assert report.set_aside_discarded == (ours.id,)
+    assert report.set_aside_cleared == ()
+    assert store.get_transect(ours.id).name == "Reef Wall north", "the edit here stands"
+    assert engine.quarantined() == [], "and the registry's copy is not kept for ever"
+    assert SET_ASIDE_DISCARDED in {note.fingerprint for note in notifications.active()}
+
+
+def test_a_row_the_store_could_not_read_is_no_proof_the_registry_s_copy_landed(
+    store, tmp_path
+):
+    """Scenario: the same discard, except the registry also sends that line again
+    in a shape no model can be built from, so it goes nowhere.
+
+    Expected behaviour: still reported as discarded. What separates a landing
+    from a discard is the ids this pull actually put in, and a row the store
+    could not read is not one of them. Counting it made an unreadable arrival
+    stand as proof that the copy being deleted had gone in instead.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(ours.id, "Sand Chute", site_id=str(site.id))],
+        })]),
+        out_root=tmp_path,
+    ).pull()
+
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", LATER)
+    ours.name = "Reef Wall north"
+    store.update_transect(ours)
+    # A missing key would be refilled from the stored row by the merge, so the
+    # unreadable shape has to be a value no model can take.
+    unreadable = transect_row(ours.id, "Reef Wall west", site_id=str(site.id))
+    unreadable["length_m"] = "wide"
+    engine = SyncEngine(
+        store,
+        FakeRegistry(pages=[page(20, {"transects": [unreadable]})]),
+        out_root=tmp_path,
+    )
+
+    report = engine.pull()
+
+    assert [named for named, _why in report.unreadable] == [str(ours.id)]
+    assert report.set_aside_discarded == (ours.id,)
+    assert report.set_aside_cleared == ()
+    assert store.get_transect(ours.id).name == "Reef Wall north", "the edit here stands"
+
+
+def test_a_set_aside_row_the_registry_itself_replaced_is_cleared_not_discarded(store, tmp_path):
+    """The other way a set-aside entry stops being applicable: the registry sent
+    the same line again, newer, and that copy landed. Its data is in the survey,
+    so the stale entry is spent rather than thrown away, and nobody needs
+    warning about a laptop that discarded nothing."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(ours.id, "Sand Chute", site_id=str(site.id))],
+        })]),
+        out_root=tmp_path,
+    ).pull()
+
+    engine = SyncEngine(store, FakeRegistry(pages=[page(20, {
+        "transects": [
+            transect_row(ours.id, "Reef Wall west", site_id=str(site.id), updated_at=MUCH_LATER),
+        ],
+    })]), out_root=tmp_path)
+    report = engine.pull()
+
+    assert report.set_aside_cleared == (ours.id,)
+    assert report.set_aside_discarded == ()
+    assert store.get_transect(ours.id).name == "Reef Wall west"
+    assert engine.quarantined() == []
+
+
+def test_a_set_aside_site_this_laptop_has_outlived_is_discarded_too(store, tmp_path):
+    """Scenario: the same thing one section up. The registry's rename of a site
+    was set aside on a name clash, and the site here has been edited since.
+
+    Expected behaviour: it is reported as discarded, exactly as a line is. The
+    split was read off the pending-push marks, and those cover only the four
+    sections this device authors, so on a site -- one of the three the contract
+    pulls and never marks -- a copy being thrown away reported itself as one
+    that had finally landed. Nothing calls update_site today, which is what made
+    this worth closing rather than leaving for whoever writes the first caller.
+    """
+    ours = Site(name="Reef")
+    store.add_site(ours)
+    store.add_site(Site(name="Lagoon"))
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {"sites": [site_row(ours.id, "Lagoon")]})]),
+        out_root=tmp_path,
+    ).pull()
+    assert len(SyncEngine(store, FakeRegistry(), out_root=tmp_path).quarantined()) == 1
+
+    store.set_sync_state(f"{WATERMARK_PREFIX}transects", LATER)
+    ours.name = "Reef North"
+    store.update_site(ours)
+    notifications = NotificationCenter()
+    engine = SyncEngine(store, FakeRegistry(), out_root=tmp_path, notifications=notifications)
+
+    report = engine.pull()
+
+    assert report.set_aside_discarded == (ours.id,)
+    assert report.set_aside_cleared == ()
+    assert store.get_site(ours.id).name == "Reef North", "the edit here stands"
+    assert engine.quarantined() == []
+    assert SET_ASIDE_DISCARDED in {note.fingerprint for note in notifications.active()}
+    assert store.pending_push_ids("sites") == set(), "and no mark was what proved it"
+
+
+def test_a_set_aside_site_the_registry_itself_replaced_is_cleared_not_discarded(
+    store, tmp_path
+):
+    """The other half, on the same unmarked section: the registry sent that site
+    again, newer, and that copy landed. Its data is in the survey, so the stale
+    entry is spent rather than thrown away. Without this the split would have
+    inverted the other way and warned about a laptop that discarded nothing."""
+    ours = Site(name="Reef")
+    store.add_site(ours)
+    store.add_site(Site(name="Lagoon"))
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {"sites": [site_row(ours.id, "Lagoon")]})]),
+        out_root=tmp_path,
+    ).pull()
+
+    engine = SyncEngine(store, FakeRegistry(pages=[page(20, {
+        "sites": [site_row(ours.id, "Reef West", updated_at=MUCH_LATER)],
+    })]), out_root=tmp_path)
+    report = engine.pull()
+
+    assert report.set_aside_cleared == (ours.id,)
+    assert report.set_aside_discarded == ()
+    assert store.get_site(ours.id).name == "Reef West"
+    assert engine.quarantined() == []
+
+
+# --- Pull: a child of a row that could not be taken ---
+
+
+def test_a_pass_naming_a_set_aside_transect_waits_instead_of_stalling(store, tmp_path):
+    """Scenario: a page carries a transect whose name a line here already holds,
+    and a pass swum on that transect.
+
+    Expected behaviour: the transect is set aside, the pass waits with it, and
+    the cursor still moves. Letting the pass go in behind a parent that never
+    landed fails the foreign key, rolls the page back whole, and restores the
+    permanent deadlock the setting-aside exists to end: no cursor, no
+    quarantine, and no notification either.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    store.add_transect(make_transect("Reef Wall", site_id=site.id))
+    theirs, pass_id, video_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    notifications = NotificationCenter()
+    registry = FakeRegistry(pages=[page(10, {
+        "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+        "videos": [video_row(video_id)],
+        "passes": [pass_row(pass_id, theirs)],
+        "pass_videos": [chapter_row(pass_id, video_id, 0)],
+    })])
+    engine = SyncEngine(
+        store, registry, out_root=tmp_path, notifications=notifications, pull_sections=WIDE_PULL
+    )
+
+    report = engine.pull()
+
+    assert engine.cursor() == 10
+    assert report.behind_set_aside == (pass_id,)
+    assert store.get_pass(pass_id) is None
+    assert [entry["id"] for entry in engine.quarantined()] == [str(theirs)]
+    assert PULL_PARENT_SET_ASIDE in {note.fingerprint for note in notifications.active()}
+    assert report.passes_without_videos == (), "the footage arrived; the parent did not"
+
+
+def test_a_result_whose_section_is_waiting_waits_with_it(store, tmp_path):
+    """Scenario: the same page again, with the result of processing that pass on
+    it as well.
+
+    Expected behaviour: all three wait together and the cursor still moves. Only
+    the pass was held, so the result went in against a section that was not
+    there, failed the foreign key and took the page down: the same deadlock, one
+    generation further from the row that caused it.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs, pass_id, video_id, run_id = (uuid.uuid4() for _ in range(4))
+    engine = SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+            "videos": [video_row(video_id)],
+            "passes": [pass_row(pass_id, theirs)],
+            "pass_videos": [chapter_row(pass_id, video_id, 0)],
+            "runs": [run_row(run_id, pass_id)],
+        })]),
+        out_root=tmp_path,
+        pull_sections=WIDE_PULL,
+    )
+
+    report = engine.pull()
+
+    assert engine.cursor() == 10
+    assert set(report.behind_set_aside) == {pass_id, run_id}
+    assert report.runs_without_passes == (), "its section arrived; its transect did not"
+    assert not store.holds_id("runs", run_id)
+
+    ours.name = "Sand Chute"
+    store.update_transect(ours)
+    SyncEngine(store, FakeRegistry(), out_root=tmp_path, pull_sections=WIDE_PULL).pull()
+
+    assert store.holds_id("runs", run_id), "and all three come in on the sync that frees it"
+    assert store.sync_state(HELD_KEY) is None
+
+
+def test_a_pass_lands_once_the_name_blocking_its_transect_is_freed(store, tmp_path):
+    """The pass waits like any other orphan, so the page that frees the name has
+    to bring both in without the registry sending either of them again."""
+    site = Site(name="Reef")
+    store.add_site(site)
+    ours = make_transect("Reef Wall", site_id=site.id)
+    store.add_transect(ours)
+    theirs, pass_id, video_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "transects": [transect_row(theirs, "Reef Wall", site_id=str(site.id))],
+            "videos": [video_row(video_id)],
+            "passes": [pass_row(pass_id, theirs)],
+            "pass_videos": [chapter_row(pass_id, video_id, 0)],
+        })]),
+        out_root=tmp_path,
+        pull_sections=WIDE_PULL,
+    ).pull()
+
+    freeing = FakeRegistry(pages=[page(20, {
+        "transects": [
+            transect_row(ours.id, "Sand Chute", site_id=str(site.id), updated_at=MUCH_LATER),
+        ],
+    })])
+    report = SyncEngine(store, freeing, out_root=tmp_path, pull_sections=WIDE_PULL).pull()
+
+    assert store.get_transect(theirs) is not None
+    assert store.get_pass(pass_id) is not None
+    assert report.behind_set_aside == ()
+    assert store.sync_state(HELD_KEY) is None
+
+
+def test_a_line_behind_a_set_aside_site_outlives_the_holding_pen(store, tmp_path):
+    """Scenario: a site arrives carrying a name a site here already holds, so it
+    is set aside, and a line naming that site comes down with it. Nobody frees
+    the name for a fortnight of syncs.
+
+    Expected behaviour: the line waits for exactly as long as its site is kept,
+    and what the diver is told stays true throughout. Re-deriving the reason on
+    each page read the site as one the registry had never sent, so the pen gave
+    the line up at HELD_ATTEMPTS while the record kept its site for ever: the
+    cursor had stepped past that line on the first sync, and there was no copy
+    of it left anywhere but the pen it had just been dropped from.
+    """
+    ours = Site(name="Reef")
+    store.add_site(ours)
+    theirs, line = uuid.uuid4(), uuid.uuid4()
+    notifications = NotificationCenter()
+    report = SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "sites": [site_row(theirs, "Reef")],
+            "transects": [transect_row(line, "Wall", site_id=str(theirs))],
+        })]),
+        out_root=tmp_path,
+        notifications=notifications,
+        pull_sections=PULL_SECTIONS,
+    ).pull()
+
+    for _ in range(HELD_ATTEMPTS + 1):
+        assert report.behind_set_aside == (line,)
+        assert report.transects_without_sites == (), "its site did arrive"
+        assert report.given_up == ()
+        report = SyncEngine(
+            store,
+            FakeRegistry(),
+            out_root=tmp_path,
+            notifications=notifications,
+            pull_sections=PULL_SECTIONS,
+        ).pull()
+
+    posted = {note.fingerprint for note in notifications.active()}
+    assert PULL_PARENT_SET_ASIDE in posted
+    assert TRANSECT_WITHOUT_SITE not in posted, "the site is here, in the set-aside record"
+    assert HELD_GIVEN_UP not in posted, "and nothing that is still being kept was given up"
+
+    ours.name = "Reef South"
+    store.update_site(ours)
+    engine = SyncEngine(store, FakeRegistry(), out_root=tmp_path, pull_sections=PULL_SECTIONS)
+    freed = engine.pull()
+
+    assert freed.set_aside_cleared == (theirs,)
+    assert store.get_transect(line).site_id == theirs, "the line came in with its site"
+    assert engine.quarantined() == []
+    assert store.sync_state(HELD_KEY) is None
+
+
+def test_a_line_behind_a_set_aside_site_is_never_dropped_for_space(
+    store, tmp_path, monkeypatch
+):
+    """Scenario: the same set-aside site, with more lines naming it than the
+    holding pen has room for.
+
+    Expected behaviour: not one of them is dropped while their site is still on
+    record, and the two notices agree with each other. The pen and the record
+    are bounded by different numbers, so the pen filled first and gave lines up
+    for space while the record kept the site they were waiting on for ever. The
+    cursor stepped past those lines on the first sync, so the pen held the only
+    copy of them, and the pull said "neither is given up on" in one notice and
+    named the rows it had given up in the next.
+    """
+    monkeypatch.setattr("deepreefmap_gui.sync.engine.HELD_MAX", 3)
+    ours = Site(name="Reef")
+    store.add_site(ours)
+    theirs = uuid.uuid4()
+    lines = [uuid.uuid4() for _ in range(5)]
+    notifications = NotificationCenter()
+    report = SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "sites": [site_row(theirs, "Reef")],
+            "transects": [
+                transect_row(line, f"Wall {number}", site_id=str(theirs))
+                for number, line in enumerate(lines)
+            ],
+        })]),
+        out_root=tmp_path,
+        notifications=notifications,
+        pull_sections=PULL_SECTIONS,
+    ).pull()
+
+    assert set(report.behind_set_aside) == set(lines)
+    assert report.given_up == (), "the pen holds them all while their site is kept"
+    posted = {note.fingerprint for note in notifications.active()}
+    assert PULL_PARENT_SET_ASIDE in posted
+    assert HELD_GIVEN_UP not in posted, "so the two notices cannot contradict each other"
+
+    ours.name = "Reef South"
+    store.update_site(ours)
+    engine = SyncEngine(store, FakeRegistry(), out_root=tmp_path, pull_sections=PULL_SECTIONS)
+    engine.pull()
+
+    assert [line for line in lines if store.get_transect(line) is None] == []
+    assert engine.quarantined() == []
+    assert store.sync_state(HELD_KEY) is None
+
+
+def test_a_row_given_up_on_is_never_one_still_waiting_on_a_set_aside_parent(
+    store, tmp_path, monkeypatch
+):
+    """The pen can hold both kinds at once, and only one of them is ever given
+    up on, so the two lists the pull reports have to stay disjoint. A row in
+    both would be told to keep waiting by one notice and written off by the
+    next."""
+    monkeypatch.setattr("deepreefmap_gui.sync.engine.HELD_MAX", 1)
+    ours = Site(name="Reef")
+    store.add_site(ours)
+    theirs, orphan = uuid.uuid4(), uuid.uuid4()
+    blocked = [uuid.uuid4() for _ in range(3)]
+    report = SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {
+            "sites": [site_row(theirs, "Reef")],
+            "transects": [
+                transect_row(orphan, "Chute", site_id=str(uuid.uuid4())),
+                *(
+                    transect_row(line, f"Wall {number}", site_id=str(theirs))
+                    for number, line in enumerate(blocked)
+                ),
+            ],
+        })]),
+        out_root=tmp_path,
+        pull_sections=PULL_SECTIONS,
+    ).pull()
+
+    assert set(report.behind_set_aside) == set(blocked)
+    assert report.given_up == (orphan,), "the one whose site nothing here is keeping"
+    assert set(report.given_up).isdisjoint(report.behind_set_aside)
+
+
+# --- Pull: a transect waiting for its site ---
+
+
+def test_a_transect_that_arrives_before_its_site_is_held(store, tmp_path):
+    """Sites sort ahead of transects within a page but not across pages, so a
+    site edited after its lines comes down behind them. The foreign key would
+    take the page down, and the page would come back identical on every sync."""
+    site_id, transect_id = uuid.uuid4(), uuid.uuid4()
+    notifications = NotificationCenter()
+    first = FakeRegistry(pages=[page(10, {
+        "transects": [transect_row(transect_id, "Reef Wall", site_id=str(site_id))],
+    })])
+
+    held = SyncEngine(store, first, out_root=tmp_path, notifications=notifications).pull()
+
+    assert held.transects_without_sites == (transect_id,)
+    assert store.get_transect(transect_id) is None
+    assert store.sync_state(HELD_KEY) is not None
+    assert TRANSECT_WITHOUT_SITE in {note.fingerprint for note in notifications.active()}
+
+    second = FakeRegistry(pages=[page(20, {"sites": [site_row(site_id, "Reef")]})])
+    landed = SyncEngine(store, second, out_root=tmp_path).pull()
+
+    assert store.get_transect(transect_id).site_id == site_id
+    assert landed.transects_without_sites == ()
+    assert store.sync_state(HELD_KEY) is None
+
+
+def test_a_transect_lands_with_the_site_it_arrives_beside(store, tmp_path):
+    """The ordinary case, which must not start waiting a sync for its parent."""
+    site_id, transect_id = uuid.uuid4(), uuid.uuid4()
+    registry = FakeRegistry(pages=[page(10, {
+        "sites": [site_row(site_id, "Reef")],
+        "transects": [transect_row(transect_id, "Reef Wall", site_id=str(site_id))],
+    })])
+
+    report = SyncEngine(store, registry, out_root=tmp_path).pull()
+
+    assert report.transects_without_sites == ()
+    assert store.get_transect(transect_id).site_id == site_id
+
+
+# --- Push: a row the registry's own database would not take ---
+
+
+def test_a_conflicted_row_is_accounted_for_and_reported(store, tmp_path):
+    """Scenario: the registry answers that its database refused a transect,
+    which is what a name another record there already carries looks like.
+
+    Expected behaviour: the section is fully accounted for, so its watermark
+    moves and the row stops being re-offered on every sync forever. The diver
+    hears that it did not land, rather than that the registry is misbehaving.
+    """
+    transect, _video, _pass = seed_pass(store)
+    notifications = NotificationCenter()
+    registry = FakeRegistry(conflicted={"transects": [transect.id]})
+    engine = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications)
+
+    report = engine.push()
+
+    assert report.conflicted == [transect.id]
+    assert report.unaccounted == ()
+    assert engine.watermark("transects") is not None
+    assert PUSH_UNACCOUNTED not in {note.fingerprint for note in notifications.active()}
+    note = one_note(notifications, PUSH_CONFLICTED)
+    assert (note.severity, note.scope) == (WARNING, SURVEY)
+
+
+def test_a_conflicted_row_stops_being_offered_until_it_changes(store, tmp_path):
+    """Re-sending cannot help, so the mark goes with the watermark. Changing what
+    made it conflict marks it again, which is the one thing that can help."""
+    transect, _video, _pass = seed_pass(store)
+    registry = FakeRegistry(conflicted={"transects": [transect.id]})
+    SyncEngine(store, registry, out_root=tmp_path).push()
+
+    quiet = FakeRegistry()
+    assert SyncEngine(store, quiet, out_root=tmp_path).push().sections == {}
+
+    transect.name = "Reef Wall"
+    store.update_transect(transect)
+    again = FakeRegistry()
+    SyncEngine(store, again, out_root=tmp_path).push()
+
+    assert [row["name"] for row in again.pushes[0]["transects"]] == ["Reef Wall"]
+
+
+# --- Pull: what a person typed, as opposed to what a pull wrote ---
+
+
+def test_a_row_a_pull_wrote_is_not_read_as_a_local_edit(store, tmp_path):
+    """A pulled row carries a stamp newer than anything local, so a device
+    reading the edit off the stamp found one where nobody had typed anything:
+    the registry skipping back its own row came out as a conflict every sync."""
+    transect_id = uuid.uuid4()
+    registry = FakeRegistry(pages=[page(10, {"transects": [transect_row(transect_id)]})])
+    SyncEngine(store, registry, out_root=tmp_path).pull()
+    notifications = NotificationCenter()
+    pushing = FakeRegistry(skipped={"transects": [transect_id]})
+
+    report = SyncEngine(
+        store, pushing, out_root=tmp_path, notifications=notifications
+    ).push()
+
+    assert store.pending_push_ids("transects") == set()
+    assert report.skipped == []
+    assert notifications.active() == []
+
+
+def test_a_pull_over_a_row_nobody_touched_is_not_an_overwrite(store, tmp_path):
+    """The registry's copy replacing an untouched row is a download, not a
+    conflict. Warning about one on every sync teaches the reader to ignore the
+    warnings that matter."""
+    transect_id = uuid.uuid4()
+    first = FakeRegistry(pages=[page(10, {"transects": [transect_row(transect_id)]})])
+    SyncEngine(store, first, out_root=tmp_path).pull()
+    second = FakeRegistry(pages=[page(20, {
+        "transects": [transect_row(transect_id, "Renamed there", updated_at=MUCH_LATER)],
+    })])
+    notifications = NotificationCenter()
+
+    report = SyncEngine(
+        store, second, out_root=tmp_path, notifications=notifications
+    ).pull()
+
+    assert store.get_transect(transect_id).name == "Renamed there"
+    assert report.overwritten == ()
+    assert notifications.active() == []
+
+
+def test_the_marks_are_only_read_for_sections_that_carry_them():
+    """A mark exists only where the store puts a trigger, and the pull's
+    overwritten report is the one inference still resting on one. Asked about a
+    section outside that table it would answer "nobody typed this" for ever,
+    silently and without ever being wrong out loud, which is exactly how the
+    set-aside split came to call a discarded site one that had landed."""
+    from deepreefmap_gui.survey.store import _PENDING_TABLES
+
+    assert set(AUTHORED_SECTIONS) == set(_PENDING_TABLES)

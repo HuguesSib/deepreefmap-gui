@@ -213,6 +213,11 @@ def survey_manifest_block(
         # None for a pass run without one. rebuild_from_scan reads the absence
         # rather than a placeholder, so a copied output folder restores the pass
         # unassigned instead of inventing a transect to hang it on.
+        #
+        # deleted_at is carried because a line retired in the registry still
+        # scales the passes already swum on it. Reading the run later, that stamp
+        # is the difference between a live transect and one somebody withdrew
+        # after the fact, and it is only ever recorded here.
         "transect": None if transect is None else {
             "id": str(transect.id),
             "name": transect.name,
@@ -222,5 +227,6 @@ def survey_manifest_block(
             "end_lon": transect.end_lon,
             "length_m": transect.length_m,
             "depth_m": transect.depth_m,
+            "deleted_at": transect.deleted_at,
         },
     }

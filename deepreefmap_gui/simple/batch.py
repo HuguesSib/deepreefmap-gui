@@ -508,6 +508,10 @@ class SimpleBatchMixin(MixinBase):
         # Table row -> index into _survey_rows, with None for a group heading.
         self._survey_table_index: list[int | None] = []
         self._survey_transects = []
+        # Lines the registry has retired, looked up once each and kept: a retired
+        # line never comes back to the live list without a pull that would put it
+        # there, so nothing here goes stale. See _transect_for_row.
+        self._retired_transects = {}
         self._survey_batch = None
         # The order currently running, distinct from _survey_batch, which a cart
         # minted mid-run takes over.
@@ -1084,6 +1088,9 @@ class SimpleBatchMixin(MixinBase):
         order, which stays continuable while it has queued items.
         """
         store = self._try_survey_store()
+        # Dropped whenever the live list is re-read, which is after every change
+        # to the survey: a pull can edit a retired line as readily as revive it.
+        self._retired_transects = {}
         if store is None:
             self._survey_transects = []
             self._rebuild_survey_table()
@@ -1178,8 +1185,29 @@ class SimpleBatchMixin(MixinBase):
         """
         store = self._try_survey_store()
         self._survey_transects = store.list_transects() if store is not None else []
+        self._retired_transects = {}
         for index in range(len(self._survey_rows)):
             self._refresh_row_widgets(index)
+
+    def _transect_for_row(self, transect_id: uuid.UUID | None) -> Transect | None:
+        """The line a queued pass was cut against, retired or not.
+
+        list_transects hides a line the registry has retired, which is right for
+        a picker and wrong for a pass already swum on it: the tape length still
+        scales the run and the identity still reaches the manifest. Retired lines
+        are remembered on first lookup, because this is read on every repaint.
+        """
+        if transect_id is None:
+            return None
+        for transect in self._survey_transects:
+            if transect.id == transect_id:
+                return transect
+        if transect_id not in self._retired_transects:
+            store = self._try_survey_store()
+            self._retired_transects[transect_id] = (
+                None if store is None else store.get_transect_for_reference(transect_id)
+            )
+        return self._retired_transects[transect_id]
 
     def _transect_cell_text(self, transect_id: uuid.UUID | None) -> str:
         """The transect a pass is filed against, or that it is filed against none.
@@ -1187,14 +1215,15 @@ class SimpleBatchMixin(MixinBase):
         "No transect" rather than a blank: the pass runs either way, so this is
         a choice with a consequence you can read. What it costs is comparison --
         a pass filed against no transect cannot be set beside repeat passes of
-        the same place.
+        the same place. A retired line is named and said to be retired, because
+        the pass still runs against it and the name is how anyone recognises it.
         """
         if transect_id is None:
             return "No transect"
-        return next(
-            (t.name for t in self._survey_transects if t.id == transect_id),
-            "Unknown transect",
-        )
+        transect = self._transect_for_row(transect_id)
+        if transect is None:
+            return "Unknown transect"
+        return f"{transect.name} (retired)" if transect.deleted_at else transect.name
 
     # --- Table shape ---
 
@@ -2004,17 +2033,21 @@ class SimpleBatchMixin(MixinBase):
 
         Repeat passes are normally swum out and back, and nothing downstream can
         tell a deliberate one-way survey from a row of directions nobody set.
+
+        The name comes through _transect_for_row, because this asks which line
+        the passes were swum on: a line the registry has retired still answers
+        that, and reading it off the picker's list called it "Unnamed transect".
         """
         directions: dict[uuid.UUID, list[str]] = {}
         for row in self._survey_rows:
             if row.transect_id is not None:
                 directions.setdefault(row.transect_id, []).append(row.direction)
-        names = {transect.id: transect.name for transect in self._survey_transects}
         flagged = {}
         for transect_id, values in directions.items():
             if len(values) < 2 or len(set(values)) != 1:
                 continue
-            name = names.get(transect_id, "Unnamed transect")
+            line = self._transect_for_row(transect_id)
+            name = "Unnamed transect" if line is None else line.name
             flagged[transect_id] = (
                 f"All {len(values)} passes of {name} are set to {values[0]}. "
                 "Repeat passes are usually swum out and back."
@@ -2212,12 +2245,39 @@ class SimpleBatchMixin(MixinBase):
             return
 
         unassigned = sum(1 for row in self._survey_rows if row.transect_id is None)
-        # Assigned to a transect that has no tape length: runs, but unscaled.
-        lengths = {t.id: t.length_m for t in self._survey_transects}
-        unscaled = sum(
-            1
+        # Resolved through _transect_for_row, so a line the registry retired is
+        # still found: its tape length is what scales these passes, and reading
+        # it as absent is what turned a retired line into an unscaled run.
+        assigned = [
+            (row.transect_id, self._transect_for_row(row.transect_id))
             for row in self._survey_rows
-            if row.transect_id is not None and lengths.get(row.transect_id) is None
+            if row.transect_id is not None
+        ]
+        lines = [line for _, line in assigned]
+        # On a transect that has no tape length: runs, but unscaled.
+        unscaled = sum(1 for line in lines if line is None or line.length_m is None)
+        retired = sum(1 for line in lines if line is not None and line.deleted_at)
+        # Counted separately because the retired warning outranks and hides the
+        # unscaled one, so it is the only place these passes can be told which
+        # of the two they are.
+        retired_unscaled = sum(
+            1 for line in lines if line is not None and line.deleted_at and line.length_m is None
+        )
+        # Distinct lines, not passes: two passes of one withdrawn line is the
+        # ordinary case, and the sentence has to say "a transect" for that and
+        # "2 transects" when they were swum on different ones.
+        retired_lines = len(
+            {line.id for line in lines if line is not None and line.deleted_at}
+        )
+        # The same count for the unscaled clause, which the retired verdict
+        # carries as well as raising on its own. Withdrawn lines are left out:
+        # they are the other half of that sentence and are counted above.
+        unscaled_lines = len(
+            {
+                transect_id
+                for transect_id, line in assigned
+                if line is None or (line.length_m is None and not line.deleted_at)
+            }
         )
         remaining = self._survey_remaining_rows() if self._survey_rows else []
         missing = self._survey_missing_models() if self._survey_preset is not None else []
@@ -2231,6 +2291,10 @@ class SimpleBatchMixin(MixinBase):
             missing_models=missing,
             gpu_only_mapper=self._gpu_only_mapper(),
             unscaled=unscaled,
+            unscaled_lines=unscaled_lines,
+            retired=retired,
+            retired_unscaled=retired_unscaled,
+            retired_lines=retired_lines,
         )
         self._survey_gate = gate
         self._paint_not_ready_strip(gate)
@@ -2433,8 +2497,11 @@ class SimpleBatchMixin(MixinBase):
             pass_ = store.get_pass(row.pass_id)
             if pass_ is None:
                 continue
+            # Resolved retired lines included: the length is what scales the run
+            # and the identity is what the manifest records, and a line the
+            # registry withdrew after the swim changes neither.
             transect = (
-                store.get_transect(pass_.transect_id)
+                store.get_transect_for_reference(pass_.transect_id)
                 if pass_.transect_id is not None
                 else None
             )
@@ -2571,6 +2638,9 @@ class SimpleBatchMixin(MixinBase):
                         )
                     break
                 log_handler = None
+                # Filled by instrumented_reconstruction only if the pass raises,
+                # with the manifest the run never got to write.
+                measured: dict = {}
                 try:
                     # The transect name reads as a place, not the run-dir slug:
                     # the panel already carries the "pass N of M" number, so the
@@ -2621,6 +2691,7 @@ class SimpleBatchMixin(MixinBase):
                         cancel_event=cancel_event,
                         pause_event=pause_event,
                         scene_writer=self._write_scene_file,
+                        on_failure=measured.update,
                         manifest_extra={
                             "survey": survey_manifest_block(
                                 job.run, job.pass_, job.transect, batch,
@@ -2645,6 +2716,15 @@ class SimpleBatchMixin(MixinBase):
                     logger.exception("Pass %s failed", job.dir_name)
                     last_error = f"{job.dir_name}: {exc}"
                     store.set_run_status(job.run.id, "failed", error=str(exc)[:300])
+                    # A pass killed by memory is the one whose peaks are worth
+                    # having, and it is the one that writes no manifest to read
+                    # them back out of. Recorded after the status so the row the
+                    # provenance lands on is already the failed one. Partial:
+                    # nothing past the stage it died in was ever measured.
+                    if measured:
+                        store.record_run_provenance(
+                            job.run.id, wire.provenance_from_manifest(measured)
+                        )
                 finally:
                     # Closed per pass, not per batch: the next pass opens its
                     # own, and a handler left attached would keep writing into
@@ -2877,7 +2957,8 @@ class SimpleBatchMixin(MixinBase):
                 continue
             if runs[-1].status != "failed":
                 continue
-            transect = store.get_transect(row.transect_id) if row.transect_id else None
+            # A retired line still names the pass that failed on it.
+            transect = self._transect_for_row(row.transect_id)
             labels.append(_failed_pass_label(transect, runs[-1].run_dir_name))
         return labels
 

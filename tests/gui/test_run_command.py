@@ -229,6 +229,7 @@ def test_a_manifest_without_a_recorded_command_is_rebuilt_from_its_fields(tmp_pa
         "end_s": None,
         "processing_width": 1024,
         "processing_height": 576,
+        "preprocess_batch_size": 8,
         "grid_bins": 1500,
         "enable_tsdf": True,
         "mapping_options": {"window_size": 32, "overlap_size": 3},
@@ -242,8 +243,21 @@ def test_a_manifest_without_a_recorded_command_is_rebuilt_from_its_fields(tmp_pa
     assert flag_value(argv, "--segmentation") == "segformer-b2"
     assert flag_value(argv, "--transect-length") == "10.0"
     assert flag_value(argv, "--begin") == "5.0"
+    # The GUI stamps this one, not the pipeline, so it was being missed and the
+    # rebuilt command asked for a different amount of graphics memory than the
+    # run it claims to reproduce.
+    assert flag_value(argv, "--preprocess-batch-size") == "8"
     assert "--tsdf" in argv
     assert "--no-tsdf" not in argv
+
+
+def test_a_manifest_with_no_batch_size_falls_back_to_the_cli_default(tmp_path):
+    """Manifests written before the GUI folded it in carry no batch size at all."""
+    manifest = {"input_videos": [str(tmp_path / "dive.mp4")], "camera_profile": "gopro_hero_10"}
+
+    argv = build_reconstruct_argv(kwargs_from_manifest(manifest, tmp_path))
+
+    assert flag_value(argv, "--preprocess-batch-size") == "4"
 
 
 def test_a_skip_segmentation_run_is_recognised_from_its_mode(tmp_path):

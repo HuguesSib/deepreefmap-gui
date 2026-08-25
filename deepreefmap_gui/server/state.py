@@ -28,6 +28,7 @@ from deepreefmap_gui.sync.engine import (
     WATERMARK_PREFIX,
     PullReport,
     PushReport,
+    set_aside_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,14 @@ DISCLAIMER = (
     "hardware totals, free space on the survey disk, and the name of the "
     "preset it runs under. No file paths, and nothing about what this laptop "
     "is otherwise doing.",
-    "The registry can assign this device a default preset, which is followed "
-    "until a choice made here or an administrator's settings file outranks "
-    "it. The registry never deletes or changes anything on this laptop.",
+    "Presets, sites, campaigns and transects come down from the registry: one "
+    "edited or deleted in the web console replaces or removes the copy here, "
+    "and the app says so when that overwrites an edit made on this laptop. The "
+    "registry can also assign this device a default preset, which is followed "
+    "until a choice made here or an administrator's settings file outranks it.",
+    "Nothing else comes down. The clips, sections and runs recorded here are "
+    "only ever sent. A sync writes nothing on this laptop but the survey "
+    "itself, and never deletes or changes footage or run outputs.",
 )
 
 # Said when the registry held sections back because this build never asked for
@@ -96,6 +102,13 @@ OMITTED_SECTIONS = (
 # Said after any failure that leaves work undone. True of all of them: a push is
 # one transaction, and both halves resume from where they stopped.
 RETRY_LATER = "Nothing was lost. The next sync sends whatever this one did not."
+
+# Said when one half of a sync worked and the other did not. Which half is the
+# fact worth stating: a diver told only that the sync failed assumes the day's
+# records are still stuck on the laptop, and being wrong about that in either
+# direction is worse than the failure itself.
+PUSH_LANDED = "Everything recorded on this laptop was still sent."
+PULL_LANDED = "Everything the registry had for this survey still arrived."
 
 
 @dataclass(frozen=True)
@@ -123,6 +136,10 @@ class ServerState:
     # Whether a survey database was open to be read. Without one the pending
     # counts are empty because nothing was counted, not because nothing waits.
     has_survey: bool = False
+    # Records the registry sent that this device would not take, by name. Named
+    # here rather than left in the sync report: the disagreement outlives the
+    # sync that found it, and until somebody sees it the two copies just differ.
+    set_aside: tuple[str, ...] = ()
 
     @property
     def waiting(self) -> int:
@@ -137,6 +154,42 @@ class Failure:
     detail: str
     # True when only a fresh connect code fixes it, so the page offers one.
     reconnect: bool = False
+
+
+@dataclass(frozen=True)
+class SyncOutcome:
+    """Both halves of one sync, and whichever of them did not finish.
+
+    They are separate because they fail separately, and because they are not
+    worth the same: the push carries records that exist nowhere else, so a pull
+    that cannot land somebody else's page must never keep it from running.
+    """
+
+    pull: PullReport | None = None
+    push: PushReport | None = None
+    pull_failure: Failure | None = None
+    push_failure: Failure | None = None
+
+    @property
+    def complete(self) -> bool:
+        """Whether both halves ran, which is what dates the survey's last sync."""
+        return self.pull is not None and self.push is not None
+
+    @property
+    def blocker(self) -> Failure | None:
+        """The failure the page leads with, which is the push where there is one."""
+        return self.push_failure or self.pull_failure
+
+
+def half_note(outcome: SyncOutcome | None) -> str:
+    """Which half of a part-finished sync still did its work."""
+    if outcome is None or outcome.complete:
+        return ""
+    if outcome.push is not None:
+        return PUSH_LANDED
+    if outcome.pull is not None:
+        return PULL_LANDED
+    return ""
 
 
 def read_state(
@@ -160,6 +213,21 @@ def read_state(
         pending=pending_rows(store) if store is not None else {},
         sync_fault=(store.sync_state(SYNC_ERROR_KEY) or "") if store is not None else "",
         has_survey=store is not None,
+        set_aside=set_aside_names(store),
+    )
+
+
+def set_aside_names(store: SurveyStore | None) -> tuple[str, ...]:
+    """What the registry sent that this device would not take, by name.
+
+    Named rather than counted: the whole disagreement is over a name, and a
+    diver reading "1 record" would have nowhere to go with it. An entry that
+    somehow lost its name falls back to its id, which is at least searchable.
+    """
+    if store is None:
+        return ()
+    return tuple(
+        str(entry.get("name") or entry.get("id") or "") for entry in set_aside_rows(store)
     )
 
 
@@ -218,18 +286,43 @@ def pending_rows(store: SurveyStore) -> dict[str, int]:
     return counts
 
 
-def summarise(pull: PullReport, push: PushReport) -> str:
+def summarise(pull: PullReport | None, push: PushReport | None) -> str:
     """One line for the page: what came down, what went up, what was refused.
 
     Sections the registry withheld are said here rather than as a blocker. The
     sync did everything it could, and a blocker reads as work that did not land.
+
+    Either half may be None, which is a half that did not finish rather than one
+    that did nothing, so it is said in words instead of counted as zero.
     """
-    if not pull.applied and not push.sent and not pull.stopped and not pull.omitted_sections:
+    if push is None:
+        return "" if pull is None else f"Pulled {pull.applied} row(s). The push did not finish."
+    if pull is None:
+        return f"The pull did not finish. Sent {push.applied} row(s)."
+    if (
+        not pull.applied
+        and not push.sent
+        and not pull.stopped
+        and not pull.omitted_sections
+        and not pull.set_aside_cleared
+        and not pull.set_aside_discarded
+    ):
         return NOTHING_TO_SYNC
     line = f"Pulled {pull.applied} row(s), sent {push.applied} row(s)."
     skipped = len(push.skipped)
     if skipped:
         line += f" The registry already held {skipped} of ours newer."
+    # Said because somebody went and freed the name that was in the way, and
+    # this is the only sign they get back that it worked.
+    if pull.set_aside_cleared:
+        line += f" {len(pull.set_aside_cleared)} record(s) set aside earlier finally landed."
+    # The other ending, and not the same news: the registry's copy lost to an
+    # edit made here and was thrown away rather than recorded.
+    if pull.set_aside_discarded:
+        line += (
+            f" {len(pull.set_aside_discarded)} record(s) set aside earlier were "
+            "discarded: this laptop holds a newer copy."
+        )
     if pull.overwritten:
         line += f" {len(pull.overwritten)} edit(s) made here were replaced."
     if pull.stopped:

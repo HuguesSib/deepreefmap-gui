@@ -218,8 +218,12 @@ class SimpleAnalysisMixin(MixinBase):
         selected = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        for transect in (store.list_transects() if store is not None else []):
-            combo.addItem(transect.name, str(transect.id))
+        # Resolved, not picked: this chooses which finished work to read, and a
+        # line the registry retired after the swim still has results under it.
+        lines = store.list_transects_for_reference() if store is not None else []
+        for transect in lines:
+            label = f"{transect.name} (retired)" if transect.deleted_at else transect.name
+            combo.addItem(label, str(transect.id))
             if selected is not None and str(transect.id) == selected:
                 combo.setCurrentIndex(combo.count() - 1)
         combo.blockSignals(False)

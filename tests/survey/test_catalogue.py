@@ -198,6 +198,27 @@ def test_reconcile_database_wins_and_records_move(out_root, store):
     assert entry.moved_from == "T1"
 
 
+def test_reconcile_still_names_a_line_the_registry_retired(out_root, store):
+    """Scenario: a curator retires the line a finished run was swum on.
+
+    Expected behaviour: the run is still filed under it. Reading the retired
+    line as absent files the run as belonging to no transect, and Browse then
+    asks somebody to assign it to a line nothing lists any more.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    transect, _pass, _run = seed_survey_run(store, out_root, "run1")
+    retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    store.apply_from_server("transects", [
+        {"id": str(transect.id), "deleted_at": retired_at, "updated_at": retired_at}
+    ])
+
+    entry = scan(out_root, store)[0]
+
+    assert entry.db_transect_name == "T1"
+    assert entry.moved_from is None
+
+
 def test_rename_run_rewrites_manifest_in_place(out_root):
     run_dir = write_run(out_root, "run1")
     manifest = catalogue.rename_run(run_dir, "  reef north  ")

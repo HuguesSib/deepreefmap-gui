@@ -38,6 +38,31 @@ def test_the_log_lists_what_was_reported(reported):
     assert table.item(0, 4).text() == ""
 
 
+def test_every_section_a_message_is_filed_against_has_a_where(window):
+    """A section with no label renders a blank Where cell, saying nothing."""
+    from deepreefmap_gui.models.cache_ui import MODELS_SECTION
+    from deepreefmap_gui.notify.history_ui import _SECTION_LABELS
+    from deepreefmap_gui.server.state import SERVER_SECTION
+    from deepreefmap_gui.simple.mode import DESTINATIONS
+
+    for section in (*DESTINATIONS, "machine", SERVER_SECTION, MODELS_SECTION):
+        assert _SECTION_LABELS.get(section), section
+
+
+def test_a_message_about_the_registry_says_so_in_the_log(window):
+    window._notify_post(
+        {
+            "fingerprint": "sync.local_edit_overwritten",
+            "title": "The registry replaced 1 edited row(s)",
+            "section": "server",
+        }
+    )
+
+    window._set_machine_view("activity")
+
+    assert window._activity_panel._table.item(0, 3).text() == "Server"
+
+
 def test_a_cleared_episode_says_how_long_it_lasted(reported):
     reported._browse_state = browse_state(19, 0)
     reported._section_state_cache = None

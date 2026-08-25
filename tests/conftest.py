@@ -195,6 +195,46 @@ def _isolate_qsettings():
     yield
 
 
+@pytest.fixture
+def sampled(monkeypatch):
+    """A fast resource sampler, and a wait for its next reading.
+
+    A stage's peak is whichever samples landed inside its window. The sampler
+    polls twice a second, which suits a run that takes minutes; a stubbed run
+    opens and closes every stage inside a microsecond and would record no peak
+    at all, for reasons that have nothing to do with the code under test.
+    """
+    from deepreefmap_gui.profiling import instrumentation
+    from deepreefmap_gui.profiling.perf_sampler import ResourceSampler
+
+    created: list = []
+    real_init = instrumentation.RunInstrumentation.__init__
+
+    def spy(self, output_dir):
+        real_init(self, output_dir)
+        created.append(self)
+
+    monkeypatch.setattr(
+        instrumentation, "ResourceSampler", lambda: ResourceSampler(interval_s=0.01)
+    )
+    monkeypatch.setattr(instrumentation.RunInstrumentation, "__init__", spy)
+
+    def wait(timeout: float = 5.0) -> None:
+        """Block until the run in flight has one more reading than on entry.
+
+        Polled rather than slept: a loaded runner can miss a tick, and a fixed
+        sleep turns that into a flake.
+        """
+        before = len(created[-1]._sampler.samples) if created else 0
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if created and len(created[-1]._sampler.samples) > before:
+                return
+            time.sleep(0.005)
+
+    return wait
+
+
 @pytest.fixture(autouse=True)
 def _fresh_gpu_probe(tmp_path, monkeypatch):
     """One machine's card per test, remembered nowhere.

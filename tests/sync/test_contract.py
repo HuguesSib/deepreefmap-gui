@@ -37,6 +37,10 @@ def artefact() -> dict:
     return json.loads(raw.read_text(encoding="utf-8"))
 
 
+def _run_table(artefact: dict) -> dict:
+    return next(t for t in artefact["tables"] if t["section"] == "runs")
+
+
 def one_of_each() -> dict[str, object]:
     """One model per section, filled only where the constructor insists."""
     return {
@@ -107,6 +111,20 @@ def test_a_chapter_row_carries_every_column_the_registry_requires() -> None:
     row = wire.pass_video_rows(pass_)[0]
 
     assert sorted(set(contract.required_columns(wire.PASS_VIDEOS)) - set(row)) == []
+
+
+def test_a_run_row_fills_the_configuration_columns_the_registry_holds(tmp_path, artefact) -> None:
+    """Nullable, so nothing rejects a row that omits them. A column the registry
+    holds and this build never fills is a column that stays null forever, and the
+    performance grain it exists for collapses to one legacy group.
+    """
+    columns = {c["name"] for c in _run_table(artefact)["columns"]}
+    grain = {"processing_width", "processing_height", "fps", "preprocess_batch_size"}
+    assert grain <= columns
+
+    row = wire.run_rows_to_wire([one_of_each()["runs"]], tmp_path)[0]
+
+    assert grain <= set(row)
 
 
 def test_an_unnamed_section_is_an_error_and_not_an_empty_list() -> None:

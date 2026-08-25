@@ -520,7 +520,10 @@ class Utilisation:
     cpu_percent: float
     vram_used_bytes: int | None
     vram_total_bytes: int | None
-    swap_used_bytes: int = 0
+    # None, never zero, where the platform would not report swap at all. The
+    # sampler falls back to this reading when it cannot measure the run's own
+    # pages, and a zero there is an observation the fleet's statistics count.
+    swap_used_bytes: int | None = None
     swap_total_bytes: int = 0
 
     @property
@@ -532,7 +535,7 @@ class Utilisation:
     @property
     def swap_percent(self) -> float | None:
         """Swap in use as a percent, or None when the machine has no swap."""
-        if not self.swap_total_bytes:
+        if self.swap_used_bytes is None or not self.swap_total_bytes:
             return None
         return 100.0 * self.swap_used_bytes / self.swap_total_bytes
 
@@ -548,7 +551,11 @@ def sample_utilisation() -> Utilisation:
         sw = psutil.swap_memory()
         swap_used, swap_total = int(sw.used), int(sw.total)
     except Exception:
-        swap_used = swap_total = 0
+        # Null rather than zero, for the reason sample_process_memory gives: the
+        # sampler falls back to this figure, and a machine that will not report
+        # swap must stay out of the fleet's swap statistics rather than vote a
+        # nothing into them. A machine with no swap still reports a real zero.
+        swap_used, swap_total = None, 0
     vram_used = vram_total = None
     # Driven from a repaint timer on the GUI thread, so it reports no VRAM until
     # the probe lands rather than freezing the window for the length of it.
@@ -575,7 +582,7 @@ def sample_utilisation() -> Utilisation:
 _PROCESS_SWAP_READABLE = sys.platform.startswith("linux")
 
 
-def sample_process_memory() -> tuple[int, int] | None:
+def sample_process_memory() -> tuple[int, int | None] | None:
     """This process tree's resident and swapped-out bytes, or None if unreadable.
 
     The pipeline runs inside this process, so its own footprint is the run's
@@ -585,11 +592,14 @@ def sample_process_memory() -> tuple[int, int] | None:
     too, which made a light mapping backend record a larger peak than a heavy one
     and left the memory grade unable to rank them.
 
-    Off Linux the swap half reads zero, so a run that pages out records low. That
-    is the safe direction here rather than a gap: a recorded peak only ever raises
-    the estimate's fixed term (memory_estimate.estimate_cost ignores a negative
-    shortfall), so an understated reading leaves the model's own figure standing
-    instead of talking the machine into a run that will not fit.
+    The swap half is None off Linux, where the figure cannot be read cheaply.
+    None rather than zero, because these peaks are pooled across the fleet: a
+    zero reads as an observation, and one from every Windows and macOS run pulled
+    the fleet's mean swap towards nothing and invented variance around it. A
+    Linux run that genuinely swapped nothing still reports zero. The local memory
+    estimate is unaffected either way: it reads an absent swap figure as no
+    spill, which is the direction that leaves the model's own estimate standing
+    rather than talking a machine into a run that will not fit.
     """
     try:
         me = psutil.Process()
@@ -606,7 +616,9 @@ def sample_process_memory() -> tuple[int, int] | None:
         rss += int(getattr(info, "rss", 0) or 0)
         swap += int(getattr(info, "swap", 0) or 0)
         read_any = True
-    return (rss, swap) if read_any else None
+    if not read_any:
+        return None
+    return (rss, swap if _PROCESS_SWAP_READABLE else None)
 
 
 def format_bytes(n: float | None) -> str:

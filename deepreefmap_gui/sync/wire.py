@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from typing import Any
 
-from deepreefmap_gui.survey.analysis import LongCoverRow, _run_manifest_provenance
+from deepreefmap_gui.survey.analysis import LongCoverRow
 from deepreefmap_gui.survey.models.convert import to_row
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
@@ -108,6 +108,10 @@ _PROVENANCE_FIELDS = (
     "library_version",
     "segmentation_model",
     "mapping_backend",
+    "processing_width",
+    "processing_height",
+    "fps",
+    "preprocess_batch_size",
     "taxonomy_version",
     "taxonomy_hash",
     "model_revisions",
@@ -195,12 +199,12 @@ def rows_to_wire(section: str, models: Iterable[Any]) -> list[dict[str, Any]]:
 
 
 def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str, Any]]:
-    """Run rows with their provenance, from the row or failing that the manifest.
+    """Run rows with their provenance, from the row and failing that the manifest.
 
-    The row is the durable copy, written when the run finished. Runs recorded
-    before the database held provenance fall back to reading the run directory,
-    degrading to nulls where it has been pruned. Taken from the model rather
-    than the encoded row so the JSON fields travel as objects, not text.
+    The row is the durable copy, written when the run finished. Anything it does
+    not hold is looked for in the run directory, degrading to nulls where that
+    has been pruned. Taken from the model rather than the encoded row so the JSON
+    fields travel as objects, not text.
 
     Error strings and deviating paths are scrubbed on the way out: a pipeline
     error routinely embeds an absolute path, and an absolute path routinely
@@ -209,8 +213,16 @@ def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str
     wire_rows = []
     for run, row in zip(runs, rows_to_wire("runs", runs), strict=True):
         stored = {name: getattr(run, name) for name in _PROVENANCE_FIELDS}
-        if all(value is None for value in stored.values()):
-            stored = run_provenance(out_root, run.run_dir_name)
+        if any(value is None for value in stored.values()):
+            # Field by field, not all or nothing. A row stamped by a build that
+            # knew only some of these columns is not a legacy row, so reading it
+            # whole left the columns that build never wrote pushing as nulls
+            # while the manifest beside it held every one of them.
+            from_manifest = run_provenance(out_root, run.run_dir_name)
+            stored = {
+                name: value if value is not None else from_manifest[name]
+                for name, value in stored.items()
+            }
         merged = {**row, **stored}
         if merged.get("error"):
             merged["error"] = scrub_home_paths(str(merged["error"]))
@@ -317,20 +329,45 @@ def cover_rows_to_wire(
 
 
 def run_provenance(out_root: Path, run_dir_name: str) -> dict[str, Any]:
+    """What produced a run, from the manifest in its directory.
+
+    A pruned or half-written run directory reads as nulls rather than stopping
+    the whole push.
+    """
+    return provenance_from_manifest(_manifest(out_root, run_dir_name))
+
+
+def provenance_from_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """What produced a run, from its manifest, as nulls where it cannot be read.
 
-    The database holds none of this. It is written by
-    ``convert.survey_manifest_block``, three fields at the manifest's top level
-    and the rest under ``survey.provenance``. A pruned or half-written run
-    directory degrades to nulls rather than stopping the whole push.
+    Software identity and the configuration the run ran at sit at the manifest's
+    top level, written by ``profiling.instrumentation``; taxonomy and preset
+    identity sit under ``survey.provenance``, written by
+    ``convert.survey_manifest_block``. This is the reading the row is stamped
+    from when a run finishes. A manifest written before any of these keys existed
+    degrades to nulls.
+
+    Takes the document rather than a directory because a run that died may never
+    have written one, and ``instrumentation.failed_run_manifest`` builds the same
+    shape in memory so its peaks reach the row through this same reading.
     """
     provenance: dict[str, Any] = dict.fromkeys(_PROVENANCE_FIELDS)
-    top = _run_manifest_provenance(out_root, run_dir_name)
-    provenance["library_version"] = top["deepreefmap_version"] or None
-    provenance["segmentation_model"] = top["segmentation_model"] or None
-    provenance["mapping_backend"] = top["mapping_backend"] or None
+    provenance["library_version"] = _text(manifest.get("deepreefmap_version"))
+    provenance["segmentation_model"] = _text(manifest.get("segmentation_model"))
+    provenance["mapping_backend"] = _text(manifest.get("mapping_backend"))
 
-    survey = _block(_manifest(out_root, run_dir_name), "survey")
+    # What the run actually processed at: the resolution presets resolve to real
+    # pixel counts in the form before launch, and these are the launch parameters
+    # the pipeline was handed. The same four are the local timing profile's key,
+    # so a registry peak and a local estimate stay comparable. A run's frame rate
+    # is whole wherever it is set, which is why it reads as one here; a clip's own
+    # fps is a different quantity and travels as a float on the video row.
+    provenance["processing_width"] = _whole(manifest.get("processing_width"))
+    provenance["processing_height"] = _whole(manifest.get("processing_height"))
+    provenance["fps"] = _whole(manifest.get("fps"))
+    provenance["preprocess_batch_size"] = _whole(manifest.get("preprocess_batch_size"))
+
+    survey = _block(manifest, "survey")
     block = _block(survey, "provenance")
     config = _block(block, "config")
     provenance["gui_version"] = _text(block.get("gui_version"))
@@ -344,10 +381,9 @@ def run_provenance(out_root: Path, run_dir_name: str) -> dict[str, Any]:
     # different fact from a run that recorded no configuration at all.
     if "deviations" in config:
         provenance["preset_deviations"] = config["deviations"]
-    top_level = _manifest(out_root, run_dir_name)
-    provenance["run_duration_s"] = _seconds(top_level.get("run_duration_s"))
-    provenance["stage_durations"] = _block(top_level, "stage_durations") or None
-    provenance["stage_peaks"] = _block(top_level, "stage_peaks") or None
+    provenance["run_duration_s"] = _seconds(manifest.get("run_duration_s"))
+    provenance["stage_durations"] = _block(manifest, "stage_durations") or None
+    provenance["stage_peaks"] = _block(manifest, "stage_peaks") or None
     return provenance
 
 

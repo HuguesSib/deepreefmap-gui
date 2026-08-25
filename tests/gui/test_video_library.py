@@ -5,6 +5,8 @@ from pathlib import Path
 from _factories import make_transect, write_test_mp4
 
 from deepreefmap_gui.core.theme import ERROR, PRIMARY
+from deepreefmap_gui.runs.section_detail import ARCHIVE_RUN_TOOLTIP, ARCHIVE_UNFINISHED
+from deepreefmap_gui.server.state import SERVER_SECTION
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 from deepreefmap_gui.survey.catalogue import (
     VIDEO_FAILED,
@@ -576,7 +578,7 @@ def test_a_section_shows_the_sessions_it_has_run_in(window):
     assert not window._section_detail.isHidden()
     assert window._section_detail.pass_ is not None
     assert window._section_detail.run_list.count() == 1
-    assert "2026-07-21" in window._section_detail.run_list.item(0).text()
+    assert "2026-07-21" in window._section_detail.run_rows()[0].text()
 
 
 def test_a_cart_row_opens_its_section_here(window):
@@ -671,6 +673,134 @@ def test_the_delete_gate_survives_the_move_into_the_menu(window):
     window._select_section(str(free.id))
     assert delete.isEnabled()
     assert "Browse" not in delete.toolTip()
+
+
+def test_each_finished_run_row_carries_an_archive_icon(window):
+    """Scenario: sending one run's outputs meant finding it in Browse.
+
+    Expected behaviour: every finished run row wears the archive icon in the
+    section rows' style, and pressing one offers exactly that run."""
+    store = window._survey_store()
+    video = _seed(store, "GX010070.MP4")
+    pass_ = _cut(store, video)
+    store.add_run(
+        RunRecord(
+            pass_id=pass_.id,
+            run_dir_name="older",
+            status="succeeded",
+            created_at="2026-07-01T10:00:00+00:00",
+        )
+    )
+    newest = RunRecord(
+        pass_id=pass_.id,
+        run_dir_name="newer",
+        status="succeeded",
+        created_at="2026-08-01T10:00:00+00:00",
+    )
+    store.add_run(newest)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    panel = window._section_detail
+    rows = panel.run_rows()
+    assert [row.run.run_dir_name for row in rows] == ["newer", "older"]
+    assert all(row.archivable and not row.archive_btn.icon().isNull() for row in rows)
+    assert rows[0].archive_btn.toolTip() == ARCHIVE_RUN_TOOLTIP
+    panel.archive_run_requested.disconnect(window._archive_run)
+    asked = []
+    panel.archive_run_requested.connect(asked.append)
+    rows[0].archive_btn.click()
+    assert asked == [newest.id]
+
+
+def test_an_archive_press_lands_on_the_server_view(window):
+    """The planning, progress and gauge are all on the Server view, so the press
+    has to take the reader there rather than report to a page nobody is on."""
+    store = window._survey_store()
+    video = _seed(store, "GX010073.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+    window._section_detail.run_rows()[0].archive_btn.click()
+
+    assert window._current_section() == "machine"
+    assert window._machine_view == SERVER_SECTION
+
+
+def test_an_unfinished_run_row_shows_a_dead_archive_icon(window):
+    """A run that did not finish left nothing to send, but the icon stays put and
+    says so: an icon that vanishes reads as a feature that is missing."""
+    store = window._survey_store()
+    video = _seed(store, "GX010071.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_, "failed")
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    panel = window._section_detail
+    rows = panel.run_rows()
+    assert len(rows) == 1
+    assert not rows[0].archivable
+    assert rows[0].archive_btn.toolTip() == ARCHIVE_UNFINISHED
+    panel.archive_run_requested.disconnect(window._archive_run)
+    asked = []
+    panel.archive_run_requested.connect(asked.append)
+    rows[0].archive_btn.click()
+    assert asked == []
+
+
+def test_a_long_session_name_cannot_widen_the_run_row(window):
+    """Scenario: the run line is as long as whoever named the session made it.
+
+    Expected behaviour: the line elides instead of stretching the row, which in
+    a list with no horizontal scrollbar carried the archive icon off the edge.
+    """
+    from _factories import make_batch
+
+    store = window._survey_store()
+    video = _seed(store, "GX010074.MP4")
+    long_pass = _cut(store, video)
+    short_pass = _cut(store, video, 40.0, 50.0)
+    long_name = "Bommie flats north-east repeat survey, morning session, boat two"
+    _seed_run(store, long_pass, "succeeded", make_batch(store, long_name))
+    _seed_run(store, short_pass, "succeeded", make_batch(store, "Tuesday"))
+
+    show_videos(window)
+    window._select_section(str(long_pass.id))
+    long_row = window._section_detail.run_rows()[0]
+    assert long_name in long_row.text()
+    wide = long_row.sizeHint().width()
+
+    window._select_section(str(short_pass.id))
+
+    assert wide == window._section_detail.run_rows()[0].sizeHint().width()
+
+
+def test_the_probe_dresses_the_run_rows_archive_icon(window):
+    from deepreefmap_gui.sync.archive import ArchiveStates
+
+    store = window._survey_store()
+    video = _seed(store, "GX010072.MP4")
+    pass_ = _cut(store, video)
+    run = _seed_run(store, pass_)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+    row = window._section_detail.run_rows()[0]
+    assert row.archive_btn.toolTip() == ARCHIVE_RUN_TOOLTIP
+
+    window._apply_archive_states(ArchiveStates(runs={str(run.id): "archived"}))
+    assert "Outputs on server" in row.archive_btn.toolTip()
+
+    window._apply_archive_states(ArchiveStates(runs={str(run.id): "failed"}))
+    assert "could not verify" in row.archive_btn.toolTip()
+
+    window._apply_archive_states(None)
+    assert row.archive_btn.toolTip() == ARCHIVE_RUN_TOOLTIP
 
 
 def test_the_detail_pane_takes_its_share_of_the_page(window, qapp):

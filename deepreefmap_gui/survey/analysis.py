@@ -354,7 +354,11 @@ def collate_long_format(
     gui_version = current_version()
     tax_version = taxonomy_version()
     tax_hash = taxonomy_hash()
-    transects = store.list_transects()
+    # Resolved rather than picked. A line the registry retired is not one anybody
+    # may choose any more, but the passes swum on it before it went are still
+    # results, and leaving them out drops them from the export and from the cover
+    # the registry is sent.
+    transects = store.list_transects_for_reference()
     if transect_ids is not None:
         wanted = set(transect_ids)
         transects = [t for t in transects if t.id in wanted]

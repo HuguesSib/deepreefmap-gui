@@ -25,6 +25,12 @@ class RunRecord:
     finishes, so pruning a run directory no longer degrades the next push to
     nulls. None means nothing was recorded; for the dict fields an empty value
     is itself a recorded fact, which is why they are optional rather than empty.
+
+    ``processing_width`` and ``processing_height`` are the pixel size the run
+    actually processed at, never the name of a resolution preset: Native, Half
+    and Quarter resolve to numbers in the form before the run starts. ``fps`` is
+    the rate frames were decoded at, which is a whole number and is not the
+    clip's own frame rate on ``VideoAsset``.
     """
 
     pass_id: uuid.UUID
@@ -38,6 +44,10 @@ class RunRecord:
     library_version: str | None = None
     segmentation_model: str | None = None
     mapping_backend: str | None = None
+    processing_width: int | None = None
+    processing_height: int | None = None
+    fps: int | None = None
+    preprocess_batch_size: int | None = None
     taxonomy_version: int | None = None
     taxonomy_hash: str | None = None
     model_revisions: dict[str, Any] | None = None

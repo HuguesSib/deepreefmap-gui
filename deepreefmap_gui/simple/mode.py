@@ -67,8 +67,8 @@ from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.notify.conditions import conditions_from_state
 from deepreefmap_gui.runs.run_cards import run_facts_line
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
-from deepreefmap_gui.server.state import SERVER_SECTION
 from deepreefmap_gui.simple.cart import CartButton
+from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.section_state import (
     SectionState,
     browse_state,
@@ -1006,12 +1006,14 @@ class InterfaceShellMixin(MixinBase):
             self._set_simple_section(name)
 
     def _set_simple_section(self, name: str) -> None:
-        if name == SERVER_SECTION:
-            # The Server page is a Setup view, but its old section name is
-            # stamped into persisted notifications and every caller landing
-            # sync or archive feedback, so the name keeps routing.
+        if name in MACHINE_VIEWS:
+            # Setup's views are section names too, so a message can name the one
+            # that carries it rather than settle for "machine" and reopen
+            # whichever view Setup was last left on. The Server page's own name
+            # is stamped into persisted notifications, and this is what keeps it
+            # routing.
             self._set_simple_section("machine")
-            self._set_machine_view(SERVER_SECTION)
+            self._set_machine_view(name)
             return
         if name not in SIMPLE_SECTIONS:
             raise ValueError(f"Unknown simple section: {name!r}")

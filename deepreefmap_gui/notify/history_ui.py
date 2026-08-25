@@ -57,12 +57,18 @@ _SEVERITY_CHOICES = (
 _SCOPE_CHOICES = (("All", ""), ("This survey", SURVEY), ("This computer", MACHINE))
 
 _SEVERITY_LABELS = {BLOCKER: "Blocking", SEVERITY_WARNING: "Attention", INFO: "Information"}
+# Every section a message is filed against, the destinations and the two Setup
+# views that are section names of their own. One missing here is a blank Where
+# cell, which is how a sync conflict, an archive failure and the missing-model
+# offer all came to say nothing about where they happened.
 _SECTION_LABELS = {
     "transects": "Transects",
     "videos": "Videos",
     "process": "Cart",
     "browse": "Browse",
     "machine": "Setup",
+    "models": "Models",
+    "server": "Server",
 }
 
 

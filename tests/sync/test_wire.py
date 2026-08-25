@@ -294,6 +294,51 @@ def test_run_provenance_comes_out_of_the_manifest(tmp_path):
     assert provenance["preset_deviations"] == {"fps": 4}
 
 
+def test_provenance_reads_a_manifest_that_was_never_written(tmp_path):
+    """A run that dies leaves no manifest, so what it measured arrives as a
+    document in memory rather than as a directory to open."""
+    run = seed_manifest(tmp_path)
+    on_disk = wire.run_provenance(tmp_path, run.run_dir_name)
+    document = json.loads((tmp_path / run.run_dir_name / "run_manifest.json").read_text())
+
+    assert wire.provenance_from_manifest(document) == on_disk
+    assert wire.provenance_from_manifest({}) == dict.fromkeys(on_disk)
+
+
+def test_the_configuration_a_run_processed_at_comes_out_of_the_manifest(tmp_path):
+    """The resolved pixel size, never the name of a resolution preset: Native,
+    Half and Quarter become numbers in the form before the run starts."""
+    run = seed_manifest(
+        tmp_path,
+        processing_width=1376,
+        processing_height=768,
+        fps=4,
+        preprocess_batch_size=8,
+    )
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["processing_width"] == 1376
+    assert provenance["processing_height"] == 768
+    assert provenance["fps"] == 4
+    assert provenance["preprocess_batch_size"] == 8
+
+
+def test_a_manifest_from_before_the_configuration_was_recorded_reads_as_nulls(tmp_path):
+    """An older run still pushes everything else it knows."""
+    run = seed_manifest(tmp_path)
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["gui_version"] == current_version()
+    assert (
+        provenance["processing_width"],
+        provenance["processing_height"],
+        provenance["fps"],
+        provenance["preprocess_batch_size"],
+    ) == (None, None, None, None)
+
+
 def test_a_pruned_run_directory_degrades_to_nulls(tmp_path):
     """An old run whose folder was reclaimed must not stop the whole push."""
     provenance = wire.run_provenance(tmp_path, "gone")
@@ -341,6 +386,10 @@ def test_a_run_row_carries_its_stored_provenance_without_the_manifest(tmp_path):
         library_version="1.2.3",
         segmentation_model="segformer-b2",
         mapping_backend="loger_star",
+        processing_width=1376,
+        processing_height=768,
+        fps=4,
+        preprocess_batch_size=8,
         taxonomy_version=2,
         taxonomy_hash="ab" * 32,
         model_revisions={"repo": "c0ffee"},
@@ -363,10 +412,22 @@ def test_a_run_row_carries_its_stored_provenance_without_the_manifest(tmp_path):
     assert row["run_duration_s"] == 321.5
     assert row["stage_durations"] == {"mapping": 200.0}
     assert row["stage_peaks"] == {"ram_bytes": 1024}
+    # The grain the registry collates peaks at, which is only comparable if a
+    # peak carries the configuration it was measured under.
+    assert (row["processing_width"], row["processing_height"]) == (1376, 768)
+    assert (row["fps"], row["preprocess_batch_size"]) == (4, 8)
 
 
 def test_a_legacy_run_row_still_reads_its_manifest(tmp_path):
-    run = seed_manifest(tmp_path, run_duration_s=88.0, stage_durations={"mapping": 60.0})
+    run = seed_manifest(
+        tmp_path,
+        run_duration_s=88.0,
+        stage_durations={"mapping": 60.0},
+        processing_width=688,
+        processing_height=384,
+        fps=2,
+        preprocess_batch_size=4,
+    )
 
     row = wire.run_rows_to_wire([run], tmp_path)[0]
 
@@ -374,6 +435,37 @@ def test_a_legacy_run_row_still_reads_its_manifest(tmp_path):
     assert row["preset_deviations"] == {"fps": 4}
     assert row["run_duration_s"] == 88.0
     assert row["stage_durations"] == {"mapping": 60.0}
+    assert (row["processing_width"], row["processing_height"]) == (688, 384)
+    assert (row["fps"], row["preprocess_batch_size"]) == (2, 4)
+
+
+def test_a_row_stamped_before_the_configuration_columns_is_completed_from_the_manifest(tmp_path):
+    """Scenario: a run stamped by a build that knew only some of these columns.
+
+    Expected behaviour: the row wins where it holds a value and the manifest
+    beside it fills the rest. Reading the row whole instead pushed the whole
+    existing corpus as nulls for the new columns, because one non-null field
+    was enough to decide the manifest need not be opened.
+    """
+    run = seed_manifest(tmp_path, processing_width=1376, fps=4)
+    run.gui_version = "0.9.0"
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert row["gui_version"] == "0.9.0"
+    assert (row["processing_width"], row["fps"]) == (1376, 4)
+
+
+def test_a_stored_field_outranks_the_manifest_beside_it(tmp_path):
+    """The row is the durable copy: a manifest edited or re-folded later does not
+    rewrite what the run recorded about itself when it finished."""
+    run = seed_manifest(tmp_path, processing_width=1376, fps=4)
+    run.fps = 2
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert row["fps"] == 2
+    assert row["processing_width"] == 1376
 
 
 def test_the_metric_source_follows_fusion(tmp_path):

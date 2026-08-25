@@ -40,6 +40,29 @@ def test_durations_from_marks_includes_scene_save_tail() -> None:
     assert durations["scene_save"] == 57.0
 
 
+def _marker(marks: dict) -> SimpleNamespace:
+    """The two attributes close_open_stage touches, marking at a fixed moment."""
+    stub = SimpleNamespace(marks=marks)
+    stub.mark = lambda name: marks.__setitem__(name, 99.0)
+    return stub
+
+
+def test_closing_the_open_stage_measures_the_one_a_run_died_in() -> None:
+    """A span needs both its marks, so the stage that killed a run is the only
+    stage with neither a duration nor a peak unless it is closed where it stopped."""
+    marks = {"start": 0.0, "preprocess": 2.0, "mapping": 12.0}
+    RunInstrumentation.close_open_stage(_marker(marks))
+    assert durations_from_marks(marks)["mapping"] == 87.0
+
+
+def test_a_run_that_marked_every_stage_gains_no_closing_mark() -> None:
+    marks = {"start": 0.0, "preprocess": 2.0, "mapping": 12.0, "cloud": 42.0,
+             "ortho": 47.0, "save": 55.0, "end": 58.0, "scene_end": 115.0}
+    RunInstrumentation.close_open_stage(_marker(marks))
+    assert marks["scene_end"] == 115.0
+    assert durations_from_marks(marks)["scene_save"] == 57.0
+
+
 def test_apply_manifest_timings_folds_measurements_into_manifest(tmp_path: Path) -> None:
     (tmp_path / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
     instr = SimpleNamespace(

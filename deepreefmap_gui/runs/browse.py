@@ -549,7 +549,12 @@ class BrowseMixin(MixinBase):
             return
         selected = _key_transect_id(self._data_selected_key)
         try:
-            overlays = transect_overlays(self._survey_store(), selected)
+            store = self._survey_store()
+            # Browse is a record of work, not a chooser: a run filed against a
+            # line the registry retired still has a place on the map.
+            overlays = transect_overlays(
+                store, selected, store.list_transects_for_reference()
+            )
         except Exception:
             logger.exception("Could not build the Browse transect overlays")
             return
@@ -726,7 +731,10 @@ class BrowseMixin(MixinBase):
             transects = []
             if getattr(self, "_data_store_ok", False):
                 try:
-                    transects = self._survey_store().list_transects()
+                    # Resolved rather than picked, matching the map beside it:
+                    # a line the registry retired still groups the work done on
+                    # it, and its passes are why it is still here at all.
+                    transects = self._survey_store().list_transects_for_reference()
                 except Exception:
                     logger.exception("Could not list transects")
             return catalogue.transects_facet(self._data_entries, transects)
@@ -1675,6 +1683,9 @@ class BrowseMixin(MixinBase):
             self._status_label.setText("Survey database unavailable; cannot assign.")
             return
         store = self._survey_store()
+        # The picker's list and not the reference one, unlike the grouping and
+        # the map on this page: this asks which line to file work against, and a
+        # line the registry retired is not one anybody may file against now.
         transects = store.list_transects()
         if not transects:
             QMessageBox.information(

@@ -23,6 +23,7 @@ from deepreefmap_gui.sync import archive
 from deepreefmap_gui.sync.archive import (
     ArchiveJob,
     ArchiveReport,
+    TransferMeter,
     archive_plan,
     run_archive,
 )
@@ -314,6 +315,113 @@ def test_a_cancelled_queue_stops_between_jobs(tmp_path):
 
     assert report == ArchiveReport(cancelled=True)
     assert client.initiated == []
+
+
+# --- the byte gauge ---------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_the_meter_counts_dedup_into_the_bar_but_not_the_speed():
+    """A file the registry already held is on the server without travelling, so
+    the clock has to have moved for the absent speed to mean anything."""
+    clock = Clock()
+    meter = TransferMeter(100, now=clock)
+    clock.t = 2.0
+
+    reading = meter.account(60, travelled=False)
+
+    assert (reading.done_bytes, reading.total_bytes, reading.speed_bps) == (60, 100, None)
+
+
+def test_dedup_stays_out_of_the_speed_a_later_part_reads():
+    """Sixty bytes that never travelled would be divided into the same seconds
+    as the twenty that did, and read as an uplink the field team does not have."""
+    clock = Clock()
+    meter = TransferMeter(100, now=clock)
+    clock.t = 2.0
+    meter.account(60, travelled=False)
+
+    clock.t = 4.0
+
+    assert meter.account(20, travelled=True).speed_bps == 5.0
+
+
+def test_the_meter_reads_speed_from_travelled_bytes_over_wall_time():
+    clock = Clock()
+    meter = TransferMeter(100, now=clock)
+
+    clock.t = 2.0
+    assert meter.account(20, travelled=True).speed_bps == 10.0
+    clock.t = 4.0
+    assert meter.account(20, travelled=True).speed_bps == 10.0
+
+
+def test_a_burst_too_short_to_time_reports_no_speed():
+    """Parts a millisecond apart divide into an absurd figure, so they do not.
+
+    The same guard is what keeps a zero span out of the division at all.
+    """
+    clock = Clock()
+    meter = TransferMeter(100, now=clock)
+
+    clock.t = 0.001
+
+    assert meter.account(50, travelled=True).speed_bps is None
+
+
+def test_the_speed_window_forgets_an_old_burst():
+    """A fast first part must stop propping the figure up minutes later."""
+    clock = Clock()
+    meter = TransferMeter(1000, now=clock)
+    clock.t = 1.0
+    meter.account(100, travelled=True)
+    clock.t = 100.0
+    meter.account(10, travelled=True)
+
+    clock.t = 101.0
+    reading = meter.account(10, travelled=True)
+
+    assert reading.speed_bps == 10.0
+
+
+def test_bytes_are_reported_per_part_as_they_land(tmp_path):
+    job = make_job(tmp_path, content=b"0123456789")
+    client = FakeArchive({job.content_hash: pending("o-1", 4)})
+    readings = []
+
+    run_archive(client, [job], no_progress, on_bytes=readings.append)
+
+    assert [r.done_bytes for r in readings] == [0, 0, 4, 8, 10]
+    assert readings[-1].total_bytes == 10
+
+
+def test_parts_a_prior_pass_stored_count_without_travelling(tmp_path):
+    job = make_job(tmp_path, content=b"0123456789")
+    client = FakeArchive({job.content_hash: pending("o-1", 4, parts_done=[1])})
+    readings = []
+
+    run_archive(client, [job], no_progress, on_bytes=readings.append)
+
+    assert [r.done_bytes for r in readings] == [0, 4, 8, 10]
+    assert readings[1].speed_bps is None
+
+
+def test_a_deduplicated_file_fills_the_bar_without_a_speed(tmp_path):
+    job = make_job(tmp_path)
+    client = FakeArchive({job.content_hash: {"object_id": "o-1", "status": "complete"}})
+    readings = []
+
+    run_archive(client, [job], no_progress, on_bytes=readings.append)
+
+    assert readings[-1].done_bytes == readings[-1].total_bytes == job.size_bytes
+    assert readings[-1].speed_bps is None
 
 
 # --- the raw part upload ----------------------------------------------------------

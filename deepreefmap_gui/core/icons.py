@@ -146,6 +146,7 @@ def direction_arrow_icon(
     return glyph(size, ink)
 check_icon = _glyph("check", size=ICON_SM, ink=SUCCESS)
 download_icon = _glyph("download")
+upload_icon = _glyph("upload", size=ICON_SM, ink=TEXT_MUTED)
 warning_icon = _glyph("triangle-alert", size=ICON_SM, ink=WARNING)
 blocked_icon = _glyph("ban", size=ICON_SM, ink=ERROR)
 cog_icon = _glyph("settings", size=ICON_SM, ink=TEXT_MUTED)

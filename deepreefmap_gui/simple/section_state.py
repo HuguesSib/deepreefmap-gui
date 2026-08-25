@@ -42,6 +42,7 @@ CAUSE_MISSING_MODELS = "process.missing_models"
 CAUSE_FAILED_PASSES = "process.failed_passes"
 CAUSE_UNASSIGNED_PASSES = "process.unassigned_passes"
 CAUSE_UNSCALED_PASSES = "process.unscaled_passes"
+CAUSE_RETIRED_TRANSECT = "process.retired_transect"
 CAUSE_UNMET_REQUIREMENTS = "machine.unmet_requirements"
 CAUSE_MACHINE_ADVISORY = "machine.advisory"
 
@@ -57,6 +58,7 @@ CAUSES = (
     CAUSE_FAILED_PASSES,
     CAUSE_UNASSIGNED_PASSES,
     CAUSE_UNSCALED_PASSES,
+    CAUSE_RETIRED_TRANSECT,
     CAUSE_UNMET_REQUIREMENTS,
     CAUSE_MACHINE_ADVISORY,
 )
@@ -173,6 +175,115 @@ def videos_state(clip_count: int, missing: int) -> SectionState:
     return SectionState(OK, counts)
 
 
+def _sit_on(count: int) -> str:
+    """"1 pass is on", "2 passes are on". The reasons below name a count and then
+    say something about it, so the verb has to follow the count."""
+    return f"{passes_phrase(count)} {'is' if count == 1 else 'are'} on"
+
+
+def _it_or_they(count: int) -> str:
+    """The subject of a clause whose sentence has already said how many."""
+    return "it" if count == 1 else "they"
+
+
+def _lines_phrase(count: int, described_as: str = "") -> str:
+    """"a transect", "2 transects", with the adjective inside the count.
+
+    Shared, because every clause that names the lines a group of passes sits on
+    pluralises the same way, and the count of passes says nothing about it: two
+    passes of one line is the ordinary case. Saying "a transect" of a group swum
+    on two of them names a line nothing here is on. A caller that has not
+    counted the lines passes 0 and gets the singular, which is what one line
+    reads as.
+    """
+    adjective = f"{described_as} " if described_as else ""
+    return f"a {adjective}transect" if count <= 1 else f"{count} {adjective}transects"
+
+
+def _unscaled_clause(count: int, lines: int, described_as: str = "") -> str:
+    """The passes on a line nobody recorded a length for, and what follows.
+
+    One clause in two places: on its own when nothing else outranks it, and
+    inside the retired verdict, which hides it. The two say the same thing about
+    the same passes, so they read it from here. Only the retired one calls those
+    lines listed, because only there is there a withdrawn line in the sentence
+    to tell them apart from.
+    """
+    return (
+        f"{_sit_on(count)} {_lines_phrase(lines, described_as)} with no tape "
+        f"length, so {_it_or_they(count)} will run unscaled"
+    )
+
+
+def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spread: int) -> str:
+    """What a withdrawn line means for the runs still to be made on it.
+
+    Two facts, and the second turns on the tape length: a line the registry
+    withdrew still scales a run where it recorded one and does not where it did
+    not. Saying only the first told a diver their unscaled run would come out
+    scaled, which is the one thing this app must never do.
+
+    Whichever of them says a run will be unscaled goes in the opening sentence,
+    because that sentence is the title of the notification this raises and the
+    strip's headline, and a run that comes out unscaled is the only thing here
+    nothing afterwards can put right. The advice turns on the same fact: "Set
+    the length under Transects" is what the unscaled warning says, and it is
+    unfollowable for a withdrawn line, since a line nothing lists is a line this
+    app offers no way to edit.
+
+    ``lines`` is how many withdrawn lines the retired passes are spread over.
+    ``elsewhere`` is the passes on a line that is still listed and has no tape
+    length, over ``spread`` of those lines: this verdict hides the unscaled one
+    below it, and an unscaled run is the defect the whole gate exists to warn
+    about, so it is carried here rather than swallowed.
+    """
+    them = "it" if lines <= 1 else "them"
+    withdrawn = (
+        f"{_sit_on(retired)} {_lines_phrase(lines)} the registry no longer lists"
+    )
+    ask = f"Ask whoever removed {them} in the web console"
+    if not unscaled:
+        scaled = (
+            f"{withdrawn}, and still {'runs' if retired == 1 else 'run'} scaled by "
+            f"the length recorded for {them}"
+        )
+        if not elsewhere:
+            return f"{scaled}. {ask} whether these results count."
+        # The unscaled group leads, because only its half of this is
+        # unrecoverable and only the first sentence reaches a title.
+        return (
+            f"{_unscaled_clause(elsewhere, spread, 'listed')}. {scaled}. Set the "
+            f"length under Transects. {ask} whether these results count."
+        )
+    consequence = (
+        f"and no tape length was recorded for {them}, so {_it_or_they(retired)} "
+        "will run unscaled"
+        if unscaled == retired
+        # "the line each was swum on" rather than "the line they are on": some
+        # of the group kept its scale and some did not, which can only happen
+        # across more than one line.
+        else f"and {unscaled} of them will run unscaled, because no tape length "
+        "was recorded for the line each was swum on"
+    )
+    coming_back = (
+        "whether it should come back with its tape length"
+        if lines <= 1
+        else "whether they should come back with their tape lengths"
+    )
+    reason = (
+        f"{withdrawn}, {consequence}. A line nothing lists any more cannot be "
+        f"given a length here. {ask} whether these results count, and {coming_back}."
+    )
+    if not elsewhere:
+        return reason
+    # The opening sentence already says runs will come out unscaled, so this
+    # group follows it rather than displacing it.
+    return (
+        f"{reason} {_unscaled_clause(elsewhere, spread, 'listed')}. Set the length "
+        "under Transects."
+    )
+
+
 def run_gate(
     *,
     pass_count: int,
@@ -183,6 +294,10 @@ def run_gate(
     missing_models: list[str],
     gpu_only_mapper: str = "",
     unscaled: int = 0,
+    unscaled_lines: int = 0,
+    retired: int = 0,
+    retired_unscaled: int = 0,
+    retired_lines: int = 0,
     missing_files: int = 0,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
@@ -191,6 +306,16 @@ def run_gate(
     them, since only the first one is shown. The graphics card outranks the
     models because changing the processing method changes which models a pass
     needs, so a download chased first can turn out to have been the wrong one.
+
+    One reason, with one exception: a pass that will run unscaled is named even
+    when a retired line is the reason on show, and named in the sentence that
+    becomes the title. Everything else the gate reports is recoverable
+    afterwards, and an unscaled reconstruction is not.
+
+    ``retired_lines`` is how many distinct withdrawn lines the retired passes are
+    on, and ``unscaled_lines`` how many still-listed lines the unscaled ones are.
+    A caller that does not count them gets the singular, which is what one line
+    reads as and what every caller before this said.
     """
     if pass_count == 0:
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
@@ -236,6 +361,37 @@ def run_gate(
             cause=CAUSE_MISSING_MODELS,
             n=len(missing_models),
         )
+    # First of the warnings, and above the failures, because it is the only one
+    # nothing else on screen would ever mention: the transect these passes are
+    # filed against has been withdrawn under them. Not a blocker, because the
+    # footage is already collected, the diver cannot un-retire the line, and
+    # refusing to process it would strand real work for good.
+    #
+    # It swallows the unscaled warning below, so it has to carry it: whether a
+    # run comes out scaled is the thing the diver acts on, and the withdrawal is
+    # exactly what makes the other branch's advice unfollowable. Passes unscaled
+    # for the ordinary reason -- a listed line nobody entered a tape reading for
+    # -- are carried with it rather than hidden, and their advice still works.
+    if retired:
+        elsewhere = max(unscaled - retired_unscaled, 0)
+        return SectionState(
+            ATTENTION,
+            " · ".join(
+                filter(
+                    None,
+                    [
+                        counts,
+                        f"{retired} on a retired transect",
+                        f"{elsewhere} unscaled" if elsewhere else "",
+                    ],
+                )
+            ),
+            _retired_reason(
+                retired, retired_unscaled, max(retired_lines, 1), elsewhere, unscaled_lines
+            ),
+            cause=CAUSE_RETIRED_TRANSECT,
+            n=retired,
+        )
     if failed:
         return SectionState(
             ATTENTION,
@@ -262,8 +418,7 @@ def run_gate(
         return SectionState(
             OK,
             f"{counts} · {unscaled} unscaled",
-            f"{passes_phrase(unscaled)} are on a transect with no tape length, so they "
-            "will run unscaled. Set the length under Transects.",
+            f"{_unscaled_clause(unscaled, unscaled_lines)}. Set the length under Transects.",
             cause=CAUSE_UNSCALED_PASSES,
             n=unscaled,
         )

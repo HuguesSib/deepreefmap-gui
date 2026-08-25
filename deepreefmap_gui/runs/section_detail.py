@@ -8,18 +8,29 @@ of one piece of it.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QColor
+from collections.abc import Callable
+
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QMouseEvent, QResizeEvent
 from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QSizePolicy,
     QToolButton,
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import status_dot_icon
-from deepreefmap_gui.core.theme import TEXT_MUTED
+from deepreefmap_gui.core.icons import (
+    ICON_SM,
+    check_icon,
+    icon_pixmap,
+    status_dot_icon,
+    upload_icon,
+)
+from deepreefmap_gui.core.theme import DISABLED_FG, ERROR, SPACE_SM, TEXT_MUTED, WARNING
 from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     direction_html,
@@ -30,13 +41,29 @@ from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
-RUN_DIR_ROLE = Qt.ItemDataRole.UserRole
-
 # The href behind the transect-and-direction fact. Both are set in one dialog,
 # so the fact that shows them is the way into it.
 _FILING_LINK = "filing"
 
 _NO_SESSION = "No session recorded"
+
+ARCHIVE_RUN = "Archive this run's outputs"
+ARCHIVE_RUN_TOOLTIP = (
+    "Send this run's outputs to the registry's archive. "
+    "The clip's own footage is archived from the clip card."
+)
+# Why the icon is dead on a run that never finished. The other reasons a run
+# cannot be archived (no database row, outputs cleared away) belong to the run
+# card in Browse, which can see them; a row here always has its record.
+ARCHIVE_UNFINISHED = "Only a finished run's outputs can be archived."
+
+# What the registry holds of one run, as its icon says it.
+_ARCHIVE_FACES = {
+    "archived": "Outputs on server. Archiving again verifies them and sends nothing new.",
+    "partial": "Some outputs are on the server. Press to send the rest.",
+    "pending": "Offered to the registry, not verified yet. Press to resume.",
+    "failed": "The registry could not verify an upload. Press to archive again.",
+}
 
 
 def section_window(pass_: TransectPass) -> str:
@@ -57,6 +84,104 @@ def _short_date(stamp: str | None) -> str:
     return (stamp or "").split("T")[0] or "unknown"
 
 
+class RunRow(QWidget):
+    """One session's attempt at this section, with its own archive control.
+
+    The trailing button follows the section rows' icon-button convention (cart,
+    trim, delete): one glyph wearing the probe's answer, with the words in the
+    tooltip. A run that cannot be archived keeps the glyph in the disabled ink
+    and says why in the tooltip rather than hiding it, and the press does
+    nothing. It stays enabled for the reason SectionRow gives: a disabled
+    QToolButton takes no mouse events, so the tooltip explaining the refusal
+    would never reach the pointer that went looking for it.
+    """
+
+    activated = Signal(str)
+    archive_requested = Signal(object)
+
+    def __init__(
+        self, run: RunRecord, text: str, tooltip: str, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.run = run
+        self._full = text
+        row = QHBoxLayout(self)
+        row.setContentsMargins(SPACE_SM, 0, SPACE_SM, 0)
+        row.setSpacing(SPACE_SM)
+        dot = QLabel()
+        dot.setFixedWidth(ICON_SM)
+        dot.setPixmap(icon_pixmap(status_dot_icon(STATUS_COLORS.get(run.status, TEXT_MUTED))))
+        row.addWidget(dot)
+        # Ignored rather than Preferred: a session is named by whoever ran it,
+        # and one long name made the row wider than the pane it sits in, which
+        # carried the archive button off the right-hand edge of a list that has
+        # no horizontal scrollbar to go looking for it with.
+        self.label = QLabel()
+        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(self.label, 1)
+        self.setToolTip(tooltip)
+        self.archive_btn = QToolButton()
+        self.archive_btn.setIconSize(QSize(ICON_SM, ICON_SM))
+        self.archive_btn.setAccessibleName(ARCHIVE_RUN)
+        self.archive_btn.setProperty("quiet", "true")
+        self.archive_btn.setProperty("pad", "none")
+        self.archive_btn.clicked.connect(self._on_archive_clicked)
+        row.addWidget(self.archive_btn)
+        self.set_archive_state(None)
+        self._apply_elide()
+
+    def text(self) -> str:
+        """The whole line, however much of it the pane has room to draw."""
+        return self._full
+
+    @property
+    def archivable(self) -> bool:
+        """A run that did not finish wrote no outputs to send."""
+        return self.run.status == "succeeded"
+
+    def set_archive_state(self, state: str | None) -> None:
+        """Dress the button as what the registry holds of this run, if asked."""
+        if not self.archivable:
+            self.archive_btn.setIcon(upload_icon(color=QColor(DISABLED_FG)))
+            self.archive_btn.setToolTip(ARCHIVE_UNFINISHED)
+            return
+        told = _ARCHIVE_FACES.get(state or "")
+        if told is None:
+            self.archive_btn.setIcon(upload_icon())
+            self.archive_btn.setToolTip(ARCHIVE_RUN_TOOLTIP)
+            return
+        # A tick for content already up, the upload glyph in the colour of what
+        # is still to do. The same vocabulary the run card in Browse paints.
+        if state == "archived":
+            self.archive_btn.setIcon(check_icon())
+        else:
+            self.archive_btn.setIcon(
+                upload_icon(color=QColor(ERROR if state == "failed" else WARNING))
+            )
+        self.archive_btn.setToolTip(told)
+
+    def _on_archive_clicked(self) -> None:
+        if self.archivable:
+            self.archive_requested.emit(self.run.id)
+
+    def _apply_elide(self) -> None:
+        """Fit the line to the label, from the middle: the session names it and
+        the outcome and date end it, so both ends carry something."""
+        shown = self.label.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideMiddle, self.label.width()
+        )
+        if shown != self.label.text():
+            self.label.setText(shown)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        self.activated.emit(self.run.run_dir_name)
+        super().mouseDoubleClickEvent(event)
+
+
 class SectionDetailPanel(DetailCard):
     """A titled card describing one section and the sessions that ran it."""
 
@@ -64,6 +189,8 @@ class SectionDetailPanel(DetailCard):
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
     run_activated = Signal(str)
+    # The database run id whose outputs to archive, from whichever row was pressed.
+    archive_run_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,7 +202,6 @@ class SectionDetailPanel(DetailCard):
         self.run_list.setAlternatingRowColors(True)
         self.run_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.run_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.run_list.itemDoubleClicked.connect(self._on_run_activated)
         # The list is always the list, empty or not, the same way the clip's own
         # section list is. Swapping it for a full-pane empty state moved every
         # control below it and left the pane a different shape for a section
@@ -85,7 +211,8 @@ class SectionDetailPanel(DetailCard):
         # A menu rather than a row of buttons the pane cannot hold without
         # truncating every label. The cart is not among them: the section's own
         # row carries that, and two cart controls on one screen disagree the
-        # moment one of them is stale.
+        # moment one of them is stale. Archiving is not either: each run row
+        # above carries its own icon, in the style of the section rows.
         self.more_btn = QToolButton()
         self.more_btn.setText("More…")
         self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -99,6 +226,7 @@ class SectionDetailPanel(DetailCard):
         self.facts.link_activated.connect(self._on_fact_link)
 
         self._pass: TransectPass | None = None
+        self._run_rows: list[RunRow] = []
 
     def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
         """Everything the menu offers on this section, in one list.
@@ -137,12 +265,17 @@ class SectionDetailPanel(DetailCard):
     def _emit_delete(self) -> None:
         self.delete_requested.emit(self._pass_id())
 
+    def run_rows(self) -> list[RunRow]:
+        return list(self._run_rows)
+
+    def paint_archive_states(self, state_for_run: Callable[[object], str | None]) -> None:
+        """Dress each run row's archive icon from the probe's answers."""
+        for row in self._run_rows:
+            row.set_archive_state(state_for_run(row.run.id))
+
     def _on_fact_link(self, href: str) -> None:
         if href == _FILING_LINK:
             self._emit_reassign()
-
-    def _on_run_activated(self, item: QListWidgetItem) -> None:
-        self.run_activated.emit(str(item.data(RUN_DIR_ROLE) or ""))
 
     def show_section(
         self,
@@ -178,15 +311,23 @@ class SectionDetailPanel(DetailCard):
         self.facts.set_rows(rows)
 
         self.run_list.clear()
+        self._run_rows = []
         # Newest first: the question asked of a repeated section is what happened
         # last time, not what happened first.
         for run in sorted(runs, key=lambda r: r.created_at or "", reverse=True):
             name = session_name(run.batch_id) or _NO_SESSION
-            item = QListWidgetItem(f"{name} · {run.status} · {_short_date(run.created_at)}")
-            item.setIcon(status_dot_icon(STATUS_COLORS.get(run.status, TEXT_MUTED)))
-            item.setData(RUN_DIR_ROLE, run.run_dir_name)
-            item.setToolTip(run.error or run.run_dir_name)
+            row = RunRow(
+                run,
+                f"{name} · {run.status} · {_short_date(run.created_at)}",
+                run.error or run.run_dir_name,
+            )
+            row.activated.connect(self.run_activated)
+            row.archive_requested.connect(self.archive_run_requested)
+            item = QListWidgetItem()
+            item.setSizeHint(row.sizeHint())
             self.run_list.addItem(item)
+            self.run_list.setItemWidget(item, row)
+            self._run_rows.append(row)
         if not runs:
             # In the list rather than instead of it, so the pane keeps its shape
             # and the empty case is answered where the answer would appear.
@@ -213,4 +354,5 @@ class SectionDetailPanel(DetailCard):
     def clear(self) -> None:
         super().clear()
         self.run_list.clear()
+        self._run_rows = []
         self._pass = None

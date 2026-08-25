@@ -49,7 +49,9 @@ def durations_from_marks(marks: dict[str, float]) -> dict[str, float]:
 class RunInstrumentation:
     """One run's stage marks, memory sampling and machine profile.
 
-    The real per-stage peaks land in the manifest and feed the pre-run memory check.
+    The real per-stage peaks land in the manifest and feed the pre-run memory
+    check. A run that dies writes no manifest, so ``failed_run_manifest`` reads
+    the same figures straight off here instead.
     """
 
     def __init__(self, output_dir: Path) -> None:
@@ -62,6 +64,22 @@ class RunInstrumentation:
 
     def mark(self, name: str) -> None:
         self.marks[name] = time.monotonic()
+
+    def close_open_stage(self) -> None:
+        """End the stage still in flight, so a run that died is measured up to there.
+
+        A span needs both marks before it has a duration or a peak, and the stage
+        a run dies in is the one that never gets its closing mark. Without this
+        the single most interesting stage of a failed run -- the one that
+        exhausted memory -- is the one stage with no figures at all.
+        """
+        open_ends = [
+            end for begin, end, _stage in STAGE_SPANS if begin in self.marks and end not in self.marks
+        ]
+        if open_ends:
+            # The last one: only one stage is genuinely running, and a gap earlier
+            # in the chain is a mark that was missed, not a stage still going.
+            self.mark(open_ends[-1])
 
     def stage_durations(self) -> dict[str, float]:
         return durations_from_marks(self.marks)
@@ -310,11 +328,47 @@ def _record_run_command(output_dir: Path, kwargs: dict) -> dict:
         return {}
 
 
+def failed_run_manifest(
+    output_dir: Path,
+    instr: RunInstrumentation,
+    kwargs: dict,
+    extra: dict,
+    run_started_at: str,
+) -> dict:
+    """The manifest a run that died would have written, assembled from memory.
+
+    A failed run may have left no manifest on disk at all, so the only route out
+    for the resources it reached is this one, and they are the figures worth
+    keeping: the stage that exhausted memory is the stage that killed the run.
+    Built in the shape ``apply_manifest_timings`` writes, so one reader serves
+    both, and left as partial as the run was -- nothing after the stage it died
+    in was ever measured, which is itself the signal.
+
+    Never written to disk. A manifest beside a half-finished run would read as a
+    run that can be loaded.
+    """
+    instr.close_open_stage()
+    manifest = dict(extra)
+    manifest.update(_run_identity_extra(output_dir, kwargs, run_started_at))
+    # From the launch parameters, not from the pipeline, which never reached the
+    # point of recording them. Spelled the way it would have spelled them.
+    manifest["segmentation_model"] = (
+        "__skip__" if kwargs.get("skip_segmentation") else kwargs.get("segmentation_name")
+    )
+    manifest["mapping_backend"] = kwargs.get("mapping_name")
+    manifest["stage_durations"] = instr.stage_durations()
+    manifest["stage_peaks"] = instr.stage_peaks()
+    manifest["run_duration_s"] = instr.total_seconds()
+    manifest["system_profile"] = instr.system_profile
+    return manifest
+
+
 def instrumented_reconstruction(
     *,
     run_name: str | None = None,
     manifest_extra: dict | None = None,
     scene_writer: "Callable[[Path, dict, dict], None] | None" = None,
+    on_failure: "Callable[[dict], None] | None" = None,
     **kwargs,
 ) -> None:
     """run_reconstruction with stage timing + memory sampling, folded into the
@@ -329,6 +383,12 @@ def instrumented_reconstruction(
     the scene_save span measurable. It runs inside the sampled window so its
     memory peak is recorded too, and a failure is logged rather than raised: the
     scene file is a cache, and losing it must not lose the run.
+
+    ``on_failure`` is handed the partial manifest of a run that raised, before
+    the exception carries on. The manifest on disk cannot carry it -- a run that
+    dies may never write one -- and a run that hit the ceiling is the one whose
+    resource trace is worth having. It decides nothing: a cancellation raises
+    through here too, and the caller is what tells the two apart.
     """
     from datetime import datetime, timezone
 
@@ -378,6 +438,16 @@ def instrumented_reconstruction(
                 manifest = apply_manifest_timings(
                     output_dir, instr, run_name=run_name, manifest_extra=extra
                 )
+    except Exception:
+        if on_failure is not None:
+            try:
+                on_failure(failed_run_manifest(output_dir, instr, kwargs, extra, run_started_at))
+            except Exception:
+                # Guarded because the run's own error is the one the user needs:
+                # losing it to a second failure here would leave a pass that says
+                # only that provenance could not be recorded.
+                logger.warning("Could not record what the failed run measured", exc_info=True)
+        raise
     finally:
         instr.stop()
     if manifest is not None:

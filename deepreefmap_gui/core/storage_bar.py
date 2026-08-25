@@ -487,8 +487,16 @@ class StorageBars(QWidget):
         self._refresh()
 
     def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        self._hover_timer.stop()
-        self._hide_card()
+        try:
+            self._hover_timer.stop()
+            self._hide_card()
+        except (AttributeError, RuntimeError):
+            # Reached on a resurrected wrapper, which has no timer and no card
+            # to take down: PySide6 discards a subclass instance's __dict__
+            # while C++ still references it, and Qt goes on hiding the widget
+            # afterwards. Raising here escapes through whatever event filter is
+            # on the stack and corrupts Qt's dispatch.
+            pass
         super().hideEvent(event)
 
     def _button(self, index: int) -> VolumeButton:

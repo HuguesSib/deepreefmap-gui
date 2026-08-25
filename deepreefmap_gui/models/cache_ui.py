@@ -41,6 +41,11 @@ from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 if TYPE_CHECKING:
     from deepreefmap_gui.models.cache import ModelInfo
 
+# The section key the model library is registered under, and where a message
+# about a missing weight sends a reader who presses the notification. Setup's
+# own name would reopen whichever of its views was last on screen.
+MODELS_SECTION = "models"
+
 
 class ModelManagementMixin(MixinBase):
     """DeepReefMapWindow methods for HF auth, model status, download, and delete."""

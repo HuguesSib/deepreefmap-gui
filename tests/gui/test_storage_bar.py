@@ -366,6 +366,32 @@ def test_the_dismissal_filter_lands_on_the_window_the_bars_end_up_in(qapp) -> No
     assert len(bars.findChildren(HoverDismissFilter)) == 1
 
 
+def test_hiding_bars_whose_state_has_been_discarded_raises_nothing(qapp) -> None:
+    """Scenario: PySide6 has dropped the wrapper's __dict__ while C++ still
+    holds the widget, and Qt goes on hiding it.
+
+    Expected behaviour: nothing. The hide runs inside whatever event filter is
+    on the stack, so an AttributeError here escapes into an unrelated widget's
+    dispatch and fails whichever test happens to be running when it lands.
+    """
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    bars = StorageBars()
+    layout.addWidget(bars)
+    bars.set_volumes([make_volume("a")])
+    host.show()
+    raise_card(bars)
+    card = bars._card
+
+    bars.__dict__.clear()
+
+    QApplication.sendEvent(bars, QEvent(QEvent.Type.Hide))
+    card.hide()
+
+
 def test_the_drive_list_shows_every_drive_at_once(qapp) -> None:
     """Scenario: more drives than the foot of the window has room for.
 

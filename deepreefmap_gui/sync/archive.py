@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,78 @@ STATE_UNKNOWN = "unknown"
 
 # The step's text, then jobs done and jobs total.
 ProgressFn = Callable[[str, int, int], None]
+
+# The speed reads over this much recent travel, so the figure holds still
+# enough to read rather than jumping with every part.
+_SPEED_WINDOW_S = 5.0
+# ...and under this much span it is not read at all. Two parts a millisecond
+# apart divide into an absurd figure, and a queue that empties that fast never
+# needed a speed on it.
+_SPEED_MIN_SPAN_S = 0.5
+
+
+@dataclass(frozen=True)
+class TransferProgress:
+    """How much of the queue's content has landed, and how fast it is moving.
+
+    ``done_bytes`` measures content on the server, so a file the registry
+    already held lands in it whole without travelling. ``speed_bps`` reads only
+    bytes that actually travelled this pass, so those files cannot spike it.
+    None until enough has travelled over enough time to measure.
+    """
+
+    done_bytes: int
+    total_bytes: int
+    speed_bps: float | None = None
+
+
+BytesFn = Callable[[TransferProgress], None]
+
+
+class _Landed(Protocol):
+    """Records bytes now on the server, saying whether they travelled to get there."""
+
+    def __call__(self, count: int, *, travelled: bool) -> None: ...
+
+
+class TransferMeter:
+    """Byte progress across one pass over the queue, with a smoothed speed.
+
+    Qt-free like the rest of this module: the worker feeds it and forwards each
+    reading over a signal. ``now`` is injectable so the smoothing is testable
+    without waiting.
+    """
+
+    def __init__(self, total_bytes: int, now: Callable[[], float] = time.monotonic) -> None:
+        self._total = int(total_bytes)
+        self._done = 0
+        self._now = now
+        # (moment, travelled bytes so far). Anchored at zero so the first part's
+        # reading divides by the time it really took to arrive.
+        self._travelled = 0
+        self._samples: deque[tuple[float, int]] = deque([(now(), 0)])
+
+    def account(self, count: int, *, travelled: bool) -> TransferProgress:
+        """Record ``count`` more bytes on the server, and say where that leaves us."""
+        self._done += int(count)
+        if travelled and count:
+            self._travelled += int(count)
+            moment = self._now()
+            self._samples.append((moment, self._travelled))
+            # At least two always stay, or there is no span left to divide by.
+            while len(self._samples) > 2 and moment - self._samples[0][0] > _SPEED_WINDOW_S:
+                self._samples.popleft()
+        return self.reading()
+
+    def reading(self) -> TransferProgress:
+        """The gauge's whole answer: bytes landed, bytes wanted, and the speed."""
+        first, sent_by_first = self._samples[0]
+        last, sent_by_last = self._samples[-1]
+        span = last - first
+        speed = None
+        if span >= _SPEED_MIN_SPAN_S and sent_by_last > sent_by_first:
+            speed = (sent_by_last - sent_by_first) / span
+        return TransferProgress(self._done, self._total, speed)
 
 
 class ArchiveTransport(Protocol):
@@ -356,17 +430,32 @@ def run_archive(
     jobs: Sequence[ArchiveJob],
     progress: ProgressFn,
     cancel_event: Any = None,
+    on_bytes: BytesFn | None = None,
 ) -> ArchiveReport:
-    """One pass over the queue. A job that fails is recorded and the rest still run."""
+    """One pass over the queue. A job that fails is recorded and the rest still run.
+
+    ``on_bytes`` gets a `TransferProgress` reading as content lands on the
+    server: once up front, then after every deduplicated file and every part
+    sent, so a gauge can show bytes and speed rather than a file count.
+    """
     report = ArchiveReport()
     total = len(jobs)
+    meter = TransferMeter(sum(job.size_bytes for job in jobs))
+
+    def landed(count: int, *, travelled: bool) -> None:
+        reading = meter.account(count, travelled=travelled)
+        if on_bytes is not None:
+            on_bytes(reading)
+
+    if on_bytes is not None:
+        on_bytes(meter.reading())
     for done, job in enumerate(jobs):
         if cancel_event is not None and cancel_event.is_set():
             report.cancelled = True
             break
         progress(f"Archiving {job.label}…", done, total)
         try:
-            _send_one(client, job, report, progress, done, total)
+            _send_one(client, job, report, progress, done, total, landed)
         except Exception as exc:
             logger.warning("Archive of %s failed: %s", job.label, exc)
             report.failed.append((job.label, str(exc)))
@@ -380,6 +469,7 @@ def _send_one(
     progress: ProgressFn,
     done: int,
     total: int,
+    landed: _Landed,
 ) -> None:
     """Offer one file, uploading whatever the registry says is still missing.
 
@@ -389,6 +479,9 @@ def _send_one(
     answer = client.archive_initiate(job.initiate_payload())
     if answer.get("status") == STATUS_COMPLETE:
         report.already += 1
+        # On the server already, which is what the gauge measures. Not
+        # travelled, so the dedup cannot spike the speed.
+        landed(job.size_bytes, travelled=False)
         return
     part_size = int(answer.get("part_size_bytes") or 0)
     if answer.get("status") != STATUS_PENDING or part_size < 1:
@@ -397,6 +490,11 @@ def _send_one(
     count = (job.size_bytes + part_size - 1) // part_size
     stored = {int(n) for n in answer.get("parts_done") or []}
     missing = [number for number in range(1, count + 1) if number not in stored]
+    # Parts a prior pass stored are on the server before this one sends a byte.
+    missing_bytes = sum(
+        min(part_size, job.size_bytes - (number - 1) * part_size) for number in missing
+    )
+    landed(job.size_bytes - missing_bytes, travelled=False)
     parts: list[dict[str, Any]] = []
     with job.path.open("rb") as handle:
         for sent, number in enumerate(missing):
@@ -416,5 +514,6 @@ def _send_one(
             if etag != hashlib.md5(chunk, usedforsecurity=False).hexdigest():
                 raise SyncError("The registry stored a part that differs from the one sent.")
             parts.append({"part_number": number, "etag": etag})
+            landed(len(chunk), travelled=True)
     client.archive_complete(object_id, parts)
     report.archived += 1

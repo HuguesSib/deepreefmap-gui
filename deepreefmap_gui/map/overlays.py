@@ -51,6 +51,10 @@ def transect_tooltip(store, transect, runs: list) -> str:
     done = sum(1 for run in runs if run.status == "succeeded")
     failed = sum(1 for run in runs if run.status == "failed")
     lines = [f"<b>{transect.name}</b>"]
+    # Said before the counts, because it changes what they are a record of: this
+    # line is no longer one anything new can be filed against.
+    if transect.deleted_at:
+        lines.append("Retired in the registry")
     lines.append(f"{len(videos)} video{'s' if len(videos) != 1 else ''}"
                  f" · {len(passes)} pass{'es' if len(passes) != 1 else ''}")
     if runs:
@@ -72,10 +76,17 @@ def transect_tooltip(store, transect, runs: list) -> str:
     return "<br>".join(lines)
 
 
-def transect_overlays(store, selected_id: uuid.UUID | None) -> list[OverlayTransect]:
-    """Every transect the survey knows, coloured by how its runs went."""
+def transect_overlays(store, selected_id: uuid.UUID | None, transects=None) -> list[OverlayTransect]:
+    """The transects to draw, coloured by how their runs went.
+
+    The caller decides which lines, because the two maps that use this are
+    asking different questions. A picker draws what somebody may choose, so a
+    retired line has no business on it. Browse draws where the work was done,
+    and a run filed against a line the registry has since withdrawn still
+    happened somewhere.
+    """
     overlays = []
-    for transect in store.list_transects():
+    for transect in (store.list_transects() if transects is None else transects):
         runs = store.runs_for_transect(transect.id)
         overlays.append(OverlayTransect(
             id=str(transect.id),

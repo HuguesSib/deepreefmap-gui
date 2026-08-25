@@ -6,21 +6,28 @@ No test here reaches the network. The registry is a fake object standing in for
 
 from __future__ import annotations
 
+import json
 import time
+import uuid
 
 import pytest
 from _factories import make_transect
 
 from deepreefmap_gui.server.page_ui import (
+    GAUGE_STEPS,
     NOT_CONNECTED,
     ONBOARDED_BY,
     SESSION_RUNNING,
+    SET_ASIDE,
+    _set_aside_value,
 )
 from deepreefmap_gui.server.state import (
     DEVICE_NAME_KEY,
     ENROLLED_BY_KEY,
     LAST_SYNC_KEY,
     NOTHING_TO_SYNC,
+    PULL_LANDED,
+    PUSH_LANDED,
     SERVER_SECTION,
     SYNC_ERROR_KEY,
 )
@@ -28,7 +35,11 @@ from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.sync import client as client_mod
 from deepreefmap_gui.sync import contract, credentials
-from deepreefmap_gui.sync.engine import CONFLICT_DISCARDED, CONTRACT_VERSION_KEY
+from deepreefmap_gui.sync.engine import (
+    CONFLICT_DISCARDED,
+    CONTRACT_VERSION_KEY,
+    QUARANTINE_KEY,
+)
 
 SERVER_URL = "https://reef.example.org"
 TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
@@ -39,12 +50,15 @@ AGREED = contract.CONTRACT_VERSION
 class FakeRegistry:
     """Answers like the registry, and records the order it was asked in."""
 
-    def __init__(self, base_url="", token="", fail=None, skipped=None, omitted=()):
+    def __init__(
+        self, base_url="", token="", fail=None, push_fail=None, skipped=None, omitted=()
+    ):
         self.base_url = base_url
         self.token = token
         # What the real client learns from the stamp on a response.
         self.agreed = None
         self._fail = fail
+        self._push_fail = push_fail
         self._skipped = skipped or {}
         self._omitted = list(omitted)
         self.calls: list[str] = []
@@ -66,6 +80,8 @@ class FakeRegistry:
 
     def push(self, sections):
         self.calls.append("push")
+        if self._push_fail is not None:
+            raise self._push_fail
         self.pushed.append(dict(sections))
         return {
             "cursor": CURSOR,
@@ -113,9 +129,12 @@ def registry(monkeypatch):
     """The one registry every sync in this file talks to."""
     made: list[FakeRegistry] = []
 
-    def build(*, fail=None, skipped=None, omitted=()):
+    def build(*, fail=None, push_fail=None, skipped=None, omitted=()):
         def factory(base_url, token=None, timeout=None, agreed=None):
-            fake = FakeRegistry(base_url, token or "", fail=fail, skipped=skipped, omitted=omitted)
+            fake = FakeRegistry(
+                base_url, token or "", fail=fail, push_fail=push_fail,
+                skipped=skipped, omitted=omitted,
+            )
             fake.agreed = agreed
             made.append(fake)
             return fake
@@ -157,6 +176,20 @@ def _rows(listing) -> dict[str, str]:
 def on_server_page(window) -> bool:
     """Whether the Server view is what the window is showing."""
     return window._current_section() == "machine" and window._machine_view == SERVER_SECTION
+
+
+def tinted(window, view: str) -> bool:
+    """Whether Setup's segment for `view` is painted as having something waiting."""
+    from deepreefmap_gui.core.theme import WARNING
+
+    return WARNING in window._machine_view_buttons[view].styleSheet()
+
+
+def one_note(window, fingerprint: str):
+    """The single active notification carrying this fingerprint."""
+    found = [note for note in window._notify.active() if note.fingerprint == fingerprint]
+    assert len(found) == 1, f"{fingerprint} was posted {len(found)} time(s)"
+    return found[0]
 
 
 def test_the_server_page_is_a_setup_view_not_a_section(window):
@@ -251,6 +284,40 @@ def test_the_page_counts_what_is_waiting_to_go(window):
 
     assert window._server_waiting_card.isVisibleTo(window)
     assert facts(window)["Waiting to send"] == "1 row(s)"
+
+
+def test_a_record_this_laptop_would_not_take_stays_readable_on_the_page(window):
+    """Scenario: a pull set the registry's copy aside because a line here
+    carries its name, days ago, while the diver was in the water.
+
+    Expected behaviour: the page still names it. The notification that
+    announced it has long gone, and the two records go on differing until
+    somebody renames one of them.
+    """
+    enrol_this_device()
+    window._survey_store().set_sync_state(QUARANTINE_KEY, json.dumps([
+        {"section": "transects", "id": str(uuid.uuid4()), "name": "Reef Wall", "row": {}}
+    ]))
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert facts(window)[SET_ASIDE] == "Reef Wall (held by the registry, not accepted here)"
+
+
+def test_a_long_list_of_untaken_records_is_capped():
+    """It survives every sync until somebody acts on it, so an argumentative
+    registry must not push the rest of the page off the bottom."""
+    value = _set_aside_value(["T1", "T2", "T3", "T4", "T5", "T6"])
+
+    assert value.startswith("T1, T2, T3, T4, and 2 more")
+    assert "T5" not in value
+
+
+def test_nothing_set_aside_leaves_the_row_out(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    assert SET_ASIDE not in facts(window)
 
 
 def test_a_successful_connection_reports_the_server_it_found(window, qapp, monkeypatch, caplog):
@@ -365,6 +432,48 @@ def test_an_offline_registry_is_a_retry_and_not_a_reconnection(window, qapp, reg
     # A retry, so the page does not offer a new connect code for it.
     assert window._server_blocker._action.text() == ""
     assert window._server_sync_btn.isEnabled()
+
+
+def test_a_pull_that_fails_still_lets_the_push_run(window, qapp, registry):
+    """Scenario: the registry cannot answer a pull, and this laptop is holding a
+    day of field records nothing else has a copy of.
+
+    Expected behaviour: the push runs anyway, and the message says which half
+    landed. Running both halves under one try meant a pull that failed the same
+    way every sync kept the day's work on the laptop for the rest of the season.
+    """
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect(name="Reef Wall"))
+    made = registry(fail=client_mod.ServerUnreachableError("Cannot reach the registry: timed out"))
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert made[0].calls[:2] == ["pull", "push"]
+    assert made[0].pushed[0]["transects"][0]["name"] == "Reef Wall"
+    reason = window._server_blocker._reason.text()
+    assert "timed out" in reason
+    assert PUSH_LANDED in reason
+    # Half an exchange does not date the survey: the badge would read as synced.
+    assert window._survey_store().sync_state(LAST_SYNC_KEY) is None
+
+
+def test_a_push_that_fails_says_the_pull_still_landed(window, qapp, registry):
+    """The other half of the same fact, and the one the reader is owed most:
+    the records made here did not leave, whatever else arrived."""
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect(name="Reef Wall"))
+    registry(push_fail=client_mod.ServerFaultError("the registry failed on its own side"))
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    reason = window._server_blocker._reason.text()
+    assert "failed on its own side" in reason
+    assert PULL_LANDED in reason
+    assert window._survey_store().sync_state(SYNC_ERROR_KEY)
 
 
 def test_a_revoked_device_is_asked_to_connect_again(window, qapp, registry):
@@ -701,6 +810,89 @@ def test_an_archive_that_cannot_reach_the_registry_is_a_retry(
     assert "archive.upload_failed" in posted
 
 
+def test_the_upload_gauge_paints_bytes_and_speed(window):
+    """Scenario: an archive on a field uplink showed only which file was in flight.
+
+    Expected behaviour: a bar fills with the queue's bytes, in the units the rest
+    of the app reads in, and says how fast they are moving.
+    """
+    from deepreefmap_gui.sync.archive import TransferProgress
+
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+    window._server_archiving = True
+
+    window._on_archive_bytes(TransferProgress(512 * 1024**2, 1024**3, 2 * 1024**2))
+
+    assert window._server_archive_bar.isVisibleTo(window)
+    assert window._server_archive_bar.value() == GAUGE_STEPS // 2
+    assert window._server_archive_bytes_label.text() == "512 MB of 1.0 GB · 2 MB/s"
+
+
+def test_the_gauge_empties_when_the_pass_ends(window):
+    """A bar left at yesterday's fill reads as an upload that is already running."""
+    from deepreefmap_gui.sync.archive import TransferProgress
+
+    window._server_archiving = True
+    window._on_archive_bytes(TransferProgress(1024**3, 1024**3, None))
+    assert window._server_archive_bar.value() == GAUGE_STEPS
+
+    window._server_archiving = False
+    window._set_server_busy(False)
+
+    assert not window._server_archive_bar.isVisibleTo(window)
+    assert window._server_archive_bar.value() == 0
+    assert window._server_archive_bytes_label.text() == ""
+
+
+def test_a_reading_that_arrives_after_the_pass_paints_nothing(window):
+    """The worker's last readings and its report race up the same queue, so an
+    emptied gauge must not fill again behind the summary."""
+    from deepreefmap_gui.sync.archive import TransferProgress
+
+    window._server_archiving = True
+    window._on_archive_bytes(TransferProgress(512 * 1024**2, 1024**3, None))
+    window._server_archiving = False
+    window._set_server_busy(False)
+
+    window._on_archive_bytes(TransferProgress(1024**3, 1024**3, None))
+
+    assert not window._server_archive_bar.isVisibleTo(window)
+    assert window._server_archive_bar.value() == 0
+
+
+def test_an_archive_fills_the_gauge_and_clears_it(
+    window, qapp, registry, tmp_path, accept_confirms
+):
+    """Scenario: the whole route from the upload thread to the widget.
+
+    Expected behaviour: readings reach the gauge over the window's own signal,
+    the last one has the whole queue on the server, and the gauge is empty and
+    hidden by the time the summary is painted.
+    """
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    window._survey_store().upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+    filled: list[int] = []
+    window._sig_archive_bytes.connect(lambda _: filled.append(window._server_archive_bar.value()))
+    readings = []
+    window._sig_archive_bytes.connect(readings.append)
+
+    window._server_archive_btn.click()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    assert readings[0].done_bytes == 0
+    assert readings[-1].done_bytes == readings[-1].total_bytes == clip.stat().st_size
+    assert filled[-1] == GAUGE_STEPS
+    assert not window._server_archive_bar.isVisibleTo(window)
+    assert window._server_archive_bar.value() == 0
+
+
 def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp, registry):
     """The planning, progress and summary widgets all live on the Server page,
     so an archive pressed from a Browse card must not report to a page nobody
@@ -811,6 +1003,48 @@ def test_the_offer_waits_for_the_preset_row_to_be_pulled(window):
     assign_preset(window, settings=PRESET_SETTINGS)
     window._offer_preset_model_downloads(store)
     assert window._preset_models_notice.isVisibleTo(window)
+
+
+def test_the_offer_reaches_a_reader_who_is_not_on_the_server_page(window, qapp, registry):
+    """Scenario: a sync run from the status-bar badge, which is the usual way.
+
+    Expected behaviour: the strip on the Server page is not the only telling.
+    Setup's Models segment is tinted, and the message the bell carries opens
+    the model library rather than whichever Setup view was last on screen.
+    """
+    from deepreefmap_gui.models.cache_ui import MODELS_SECTION
+
+    enrol_this_device()
+    assign_preset(window, settings=PRESET_SETTINGS)
+    window._last_model_states = model_states()
+    registry()
+    window._set_simple_section("videos")
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._current_section() == "videos"
+    assert tinted(window, "models")
+    note = one_note(window, "presets.models_missing.Expedition standard.2")
+    assert note.section == MODELS_SECTION
+
+    window._on_notification_activated(note.section)
+
+    assert window._current_section() == "machine"
+    assert window._machine_view == "models"
+
+
+def test_taking_the_offer_puts_the_models_segment_back(window, monkeypatch):
+    enrol_this_device()
+    store = assign_preset(window, settings=PRESET_SETTINGS)
+    window._last_model_states = model_states()
+    window._offer_preset_model_downloads(store)
+    assert tinted(window, "models")
+
+    monkeypatch.setattr(window, "_download_model", lambda name: None)
+    window._preset_models_notice._action.click()
+
+    assert not tinted(window, "models")
 
 
 def test_unchecked_models_are_not_offered_as_missing(window):

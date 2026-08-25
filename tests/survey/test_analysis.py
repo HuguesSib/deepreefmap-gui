@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from _factories import VIDEO_HASH, make_transect, make_video
@@ -345,3 +346,29 @@ def test_collate_long_format_rows_and_provenance(store, tmp_path, classes_config
     assert a_row.gui_version
     assert a_row.taxonomy_version == 1
     assert len(a_row.taxonomy_hash) == 64
+
+
+def test_a_retired_line_keeps_its_results_in_the_long_format(store, tmp_path, classes_config):
+    """Scenario: the registry retires a line after the passes on it were
+    processed, which is what a curator tidying an old site looks like here.
+
+    Expected behaviour: its rows are still collated. This is what the export
+    writes and what the registry is sent as cover, so reading the picker's list
+    had a retirement quietly delete finished science from both.
+    """
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run_counts(store, out_root, transect, "run_a", [90.0, 10.0], 100.0,
+                    classes_config=classes_config)
+    retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    store.apply_from_server("transects", [{
+        "id": str(transect.id),
+        "deleted_at": retired_at,
+        "updated_at": retired_at,
+    }])
+
+    rows = collate_long_format(store, out_root, classes_config, levels=("fine",))
+
+    assert store.list_transects() == []
+    assert {row.transect_id for row in rows} == {str(transect.id)}
+    assert [row for row in rows if row.estimator == "per_pass"]
