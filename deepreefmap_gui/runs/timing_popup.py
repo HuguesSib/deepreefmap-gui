@@ -72,6 +72,10 @@ class TimingPopup(QWidget):
                 # Prior-seeded early in the stage, live-measured later.
                 if row.state == "running" and row.remaining is not None:
                     remaining_text = f"· {format_remaining(row.remaining)} left"
+            elif row.state == "skipped":
+                # This mode never runs it. A dash, not an estimate: a figure here
+                # would be time the user is told to expect and never waits.
+                time_text = "—"
             elif row.seconds and row.seconds > 0:
                 # A weight- or prior-based over-estimate. Better an approximate
                 # number than a bare 0, so pending point stages never read "0s".

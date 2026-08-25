@@ -496,10 +496,12 @@ class RunEtaEstimator:
         viewer upload and the scene file all run on past 100%. Saying so beats
         both a countdown that has nothing left to count and a blank.
         """
-        for spec in STAGES:
+        # The fraction being spent, not merely the absence of a figure: a stage
+        # that has yet to give anything to go on is estimating, not finishing.
+        for spec in reversed(STAGES):
             run = self._runs[spec.key]
             if run.state == "running":
-                return self._running_remaining(spec, now) is None or run.frac >= _FRAC_EXHAUSTED
+                return run.frac >= _FRAC_EXHAUSTED
         return False
 
     def total_remaining_s(self, now: float) -> float | None:

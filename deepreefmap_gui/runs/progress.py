@@ -350,6 +350,7 @@ class ProgressBarsMixin(MixinBase):
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
+        self._status_stage_key = None
         self._status_phase_started = time.monotonic()
         # ETA only applies to a reconstruction; a cached-run load has its own model.
         self._eta = self._new_run_estimator(spec) if model is self._recon_model else None
@@ -416,6 +417,7 @@ class ProgressBarsMixin(MixinBase):
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
+        self._status_stage_key = None
         for sink in self._progress_sinks():
             sink.set_idle("No run in progress.")
 
@@ -441,6 +443,10 @@ class ProgressBarsMixin(MixinBase):
         stage_left = est.current_stage_remaining(now) if est is not None else None
         if stage_left is not None:
             parts.append(f"{format_remaining(stage_left)} left")
+        elif est is not None and est.is_finishing(now):
+            # The counter is spent but the stage is not: the last write, the
+            # viewer upload and the scene file all run on past 100%.
+            parts.append("finishing")
         metrics = " · ".join(parts)
         # Color the active coarse stage so the left text names it (and the stage
         # name is dropped from the bars). Plain-language here so the diver reads
@@ -468,9 +474,18 @@ class ProgressBarsMixin(MixinBase):
             return
         now = time.monotonic()
         visible = est.visible_remaining(now)
-        # Overall estimate shown plainly rather than buried in the hover. None
-        # means no trustworthy figure yet (a first run still calibrating).
-        eta_text = f"{format_remaining(visible)} left" if visible is not None else "estimating…"
+        # Overall estimate shown plainly rather than buried in the hover. Without
+        # a figure, say which of the three reasons applies: no timings for these
+        # models on this machine, a run past every estimate but not yet over, or
+        # a stage the run has yet to give anything to go on.
+        if visible is not None:
+            eta_text = f"{format_remaining(visible)} left"
+        elif est.learning():
+            eta_text = "no timings for these models yet — learning from this run"
+        elif est.is_finishing(now):
+            eta_text = "finishing…"
+        else:
+            eta_text = "estimating…"
         self._eta_total_label.setText(eta_text)
         for sink in self._progress_sinks():
             sink.set_eta(eta_text)
@@ -526,11 +541,15 @@ class ProgressBarsMixin(MixinBase):
         flush: bool = False,
     ) -> None:
         """Update the per-step bar/label and the unified total bar."""
-        # Reset the stage stopwatch when the phase key changes so elapsed time
-        # is per-stage, not per-run.
+        # Reset the stage stopwatch when the coarse stage changes, so elapsed is
+        # scoped to the same stage as the remainder beside it and the elapsed the
+        # hover breakdown reports. Restarting it per fine phase made one line
+        # carry two different scopes and read as one countdown.
         now = time.monotonic()
-        if getattr(self, "_status_phase_key", None) != phase_key:
-            self._status_phase_key = phase_key
+        self._status_phase_key = phase_key
+        coarse_key = stage_for_phase(phase_key) or phase_key
+        if getattr(self, "_status_stage_key", None) != coarse_key:
+            self._status_stage_key = coarse_key
             self._status_phase_started = now
 
         # Mapping and cloud fold several sub-phases into one monotonic 0-100 fill
