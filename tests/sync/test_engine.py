@@ -1314,6 +1314,27 @@ def test_a_published_preset_lands_in_its_own_table(store, tmp_path):
     assert store.get_server_preset("deep REEF", 2) is not None
 
 
+def test_a_preset_pulled_again_is_updated_in_place(store, tmp_path):
+    preset_id = uuid.uuid4()
+    def published(version, seq):
+        return page(seq, {
+            "presets": [{
+                "id": str(preset_id),
+                "name": "Deep reef",
+                "version": version,
+                "settings": {"fps": version},
+                "description": "",
+                **sync_fields(server_seq=seq),
+            }],
+        })
+
+    SyncEngine(store, FakeRegistry(pages=[published(1, 10)]), out_root=tmp_path).pull()
+    report = SyncEngine(store, FakeRegistry(pages=[published(2, 11)]), out_root=tmp_path).pull()
+
+    assert report.sections["presets"].updated == 1
+    assert [p.version for p in store.list_server_presets()] == [2]
+
+
 # --- Pull: a name a live row here already holds ---
 
 

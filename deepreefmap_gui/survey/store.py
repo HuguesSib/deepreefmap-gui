@@ -817,6 +817,11 @@ _MIGRATIONS: list[Migration] = [
         """
         + _pending_push_triggers({"transects": "transect", "passes": "transect_pass"}),
     ),
+    Migration(
+        18,
+        "presets carry the registry position they were last seen at",
+        "ALTER TABLE server_preset ADD COLUMN head_seq INTEGER;",
+    ),
 ]
 
 
