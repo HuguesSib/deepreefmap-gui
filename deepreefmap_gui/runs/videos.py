@@ -122,6 +122,11 @@ _PICK_HINT = "Ctrl-click or shift-click to pick more than one clip."
 _SWEEP_IDLE = "Remove clips with no sections"
 
 
+def captured_day(stamp: str | None) -> str | None:
+    """The day out of a capture stamp, which is the day the swim happened."""
+    return (stamp or "").split("T")[0] or None
+
+
 def _sections_phrase(count: int) -> str:
     return f"{count} section" if count == 1 else f"{count} sections"
 
@@ -291,6 +296,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
         self._video_detail.archive_requested.connect(self._archive_video)
+        self._video_detail.details_requested.connect(self._on_clip_details)
         # The pane keeps its place with nothing selected: a right half that
         # disappears re-lays the page every time a clip is picked or dropped.
         self._video_detail_stack = QStackedWidget()
@@ -970,7 +976,7 @@ class VideoLibraryMixin(MixinBase):
         # chosen, so the section is written unfiled and filed later.
         if not accepted and not assign.left_for_page:
             return
-        transect_id, direction = assign.choice() if accepted else (None, "forward")
+        transect_id, direction = assign.choice() if accepted else (None, None)
         # The dialog's pick when it was answered; the survey's remembered
         # default when the section is written unfiled on the way out.
         campaign_id = assign.campaign_choice() if accepted else store.default_campaign_id()
@@ -981,6 +987,8 @@ class VideoLibraryMixin(MixinBase):
             end_s=end_s,
             direction=direction,
             campaign_id=campaign_id,
+            quality=assign.quality_choice() if accepted else None,
+            surveyed_on=captured_day(clip.video.captured_at),
         )
         store.add_pass(pass_)
         self._refresh_video_library()
@@ -1083,7 +1091,7 @@ class VideoLibraryMixin(MixinBase):
         if clip is None or store is None:
             return
         pass_ = self._pass_by_id(store, pass_id)
-        if pass_ is None:
+        if pass_ is None or self._refuse_locked(pass_):
             return
         duration = clip.video.duration_s or 0.0
         if clip.link_state != LINK_LINKED or duration <= 0.0:
@@ -1107,6 +1115,39 @@ class VideoLibraryMixin(MixinBase):
         # window, and the run made from it processes the new window too.
         self._refresh_survey_batch_tab()
 
+    def _refuse_locked(self, row) -> bool:
+        """Say why a row another laptop made cannot be changed here, and refuse.
+
+        A row the console validated or authored is not refused: the change goes
+        up as a proposal, which the sync report says.
+        """
+        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_note, lock_state, own_device_id
+
+        mine = own_device_id()
+        if lock_state(row, mine) == OTHER_DEVICE:
+            self._status_label.setText(lock_note(row, mine))
+            return True
+        return False
+
+    def _on_clip_details(self, video_id: str) -> None:
+        """Camera, rig position, mounting and the review verdict on one clip."""
+        from deepreefmap_gui.runs.clip_details import ClipDetailsDialog
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id
+
+        store = self._try_survey_store()
+        clip = self._clip_by_id(video_id)
+        if store is None or clip is None or self._refuse_locked(clip.video):
+            return
+        video = store.get_video(clip.video.id)
+        if video is None:
+            return
+        dialog = ClipDetailsDialog(self, video, note=lock_note(video, own_device_id()))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog.apply_to(video)
+        store.update_video(video)
+        self._refresh_video_library()
+
     def _transect_picker(self, store, **kwargs):
         """The map-and-list dialog both filing steps use, wired to the page.
 
@@ -1129,15 +1170,20 @@ class VideoLibraryMixin(MixinBase):
         pass_ = self._pass_by_id(store, pass_id)
         if pass_ is None:
             return
+        if self._refuse_locked(pass_):
+            return
         dialog = self._transect_picker(
             store,
             transect_id=pass_.transect_id,
             direction=pass_.direction,
+            quality=pass_.quality,
             ok_label="Save",
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         pass_.transect_id, pass_.direction = dialog.choice()
+        pass_.quality = dialog.quality_choice()
+        pass_.campaign_id = dialog.campaign_choice()
         store.update_pass(pass_)
         self._refresh_video_library()
         self._select_section(pass_id)
@@ -1154,7 +1200,7 @@ class VideoLibraryMixin(MixinBase):
         if store is None:
             return
         pass_ = self._pass_by_id(store, pass_id)
-        if pass_ is None:
+        if pass_ is None or self._refuse_locked(pass_):
             return
         runs = store.runs_for_pass(pass_.id)
         if runs:

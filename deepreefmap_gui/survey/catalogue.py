@@ -823,7 +823,7 @@ def assign_to_transect(
     store: SurveyStore,
     entries: list[RunEntry],
     transect_id: uuid.UUID,
-    direction: str = "forward",
+    direction: str | None = "forward",
 ) -> None:
     """File runs under a transect. Runs with a database pass are moved (sibling
     reruns of the pass move with them); runs the database has never seen are
@@ -846,7 +846,7 @@ def ensure_pass_for_entry(
     store: SurveyStore,
     entry: RunEntry,
     transect_id: uuid.UUID | None = None,
-    direction: str = "forward",
+    direction: str | None = "forward",
 ) -> TransectPass:
     """The database pass behind a run entry, created from the manifest if missing.
 
@@ -895,7 +895,7 @@ def _adopt_group(
     store: SurveyStore,
     group: list[RunEntry],
     transect_id: uuid.UUID,
-    direction: str,
+    direction: str | None,
 ) -> None:
     pass_ = ensure_pass_for_entry(store, group[0], transect_id, direction)
     for entry in group:

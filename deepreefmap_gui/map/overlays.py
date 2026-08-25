@@ -87,11 +87,14 @@ def transect_overlays(store, selected_id: uuid.UUID | None, transects=None) -> l
     """
     overlays = []
     for transect in (store.list_transects() if transects is None else transects):
+        ends = transect.end_points()
+        if ends is None:
+            continue
         runs = store.runs_for_transect(transect.id)
         overlays.append(OverlayTransect(
             id=str(transect.id),
-            start=(transect.start_lat, transect.start_lon),
-            end=(transect.end_lat, transect.end_lon),
+            start=ends[0],
+            end=ends[1],
             color=transect_status_color([run.status for run in runs]),
             selected=transect.id == selected_id,
             label=transect.name,

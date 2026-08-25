@@ -72,14 +72,13 @@ def test_the_downward_claim_names_every_kind_the_registry_can_write_here():
         assert SECTION_LABELS[section].lower() in said
 
 
-def test_the_safe_claim_covers_only_what_the_registry_never_writes_here():
+def test_the_own_rows_claim_names_every_kind_that_comes_back_down():
     from deepreefmap_gui.sync import contract
 
-    said = sentence("only ever sent").lower()
-    only_ours = [name for name in AUTHORED_SECTIONS if name not in contract.PULL_SECTIONS]
-
-    assert only_ours
-    for section in only_ours:
+    said = sentence("come back down").lower()
+    own = [name for name in contract.OWN_ROWS_SECTIONS if name in SECTION_LABELS]
+    assert own
+    for section in own:
         assert SECTION_LABELS[section].lower() in said
     for section in contract.PULL_SECTIONS:
         assert SECTION_LABELS[section].lower() not in said

@@ -134,6 +134,9 @@ class VideoAsset:
         return cls(
             file_name=path.name,
             path=str(path),
+            # Field cards are copied one camera per folder, so the folder is the
+            # camera's name until somebody says otherwise.
+            camera_label=path.parent.name or None,
             hash=content_hash if isinstance(content_hash, str) else None,
             size_bytes=size_bytes if isinstance(size_bytes, int) else None,
             mtime=mtime if isinstance(mtime, str) else None,

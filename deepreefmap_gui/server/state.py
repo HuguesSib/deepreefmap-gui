@@ -54,13 +54,13 @@ DEVICE_NAME_KEY = "sync_device_name"
 ENROLLED_BY_KEY = "sync_enrolled_by"
 
 # What each section is called in this app's words: the registry says video_asset
-# and transect_pass, the interface says clip and section.
+# and transect_pass, the interface says clip and pass.
 SECTION_LABELS = {
     "sites": "Sites",
     "campaigns": "Campaigns",
     "transects": "Transects",
     "videos": "Clips",
-    "passes": "Sections",
+    "passes": "Passes",
     "runs": "Runs",
     "presets": "Presets",
 }
@@ -74,10 +74,10 @@ NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from her
 # actually travels.
 DISCLAIMER_TITLE = "What syncing shares"
 DISCLAIMER = (
-    "Syncing sends the survey records made here: transects, clips, sections, "
-    "and runs with their settings, software versions, timings and cover "
-    "numbers. Footage and run outputs never travel with a sync: they go only "
-    "when Archive to server is pressed.",
+    "Syncing sends the survey records made here: sites, campaigns, transects, "
+    "clips, passes, and runs with their settings, software versions, timings "
+    "and cover numbers. Footage and run outputs never travel with a sync: they "
+    "go only when Archive to server is pressed.",
     "Each sync also reports what this machine is: software versions, platform, "
     "hardware totals, free space on the survey disk, and the name of the "
     "preset it runs under. No file paths, and nothing about what this laptop "
@@ -87,9 +87,12 @@ DISCLAIMER = (
     "and the app says so when that overwrites an edit made on this laptop. The "
     "registry can also assign this device a default preset, which is followed "
     "until a choice made here or an administrator's settings file outranks it.",
-    "Nothing else comes down. The clips, sections and runs recorded here are "
-    "only ever sent. A sync writes nothing on this laptop but the survey "
-    "itself, and never deletes or changes footage or run outputs.",
+    "The clips, passes and runs recorded here come back down as the console "
+    "leaves them: curated, validated or deleted. A change made here to a row "
+    "the console has validated or made is kept in the registry as a proposal "
+    "for a curator, and the app says what became of it. A sync writes nothing "
+    "on this laptop but the survey itself, and never deletes or changes "
+    "footage or run outputs.",
 )
 
 # Said when the registry held sections back because this build never asked for

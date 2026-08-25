@@ -91,6 +91,7 @@ class VideoDetailPanel(DetailCard):
     pass_activated = Signal(str)
     add_to_cart_requested = Signal(str)
     archive_requested = Signal(str)
+    details_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
@@ -127,6 +128,18 @@ class VideoDetailPanel(DetailCard):
         )
         self.archive_btn.clicked.connect(self._emit_archive)
         self.add_title_button(self.archive_btn)
+
+        # What a person knows about the clip: camera, rig position, review.
+        self.details_btn = QToolButton()
+        self.details_btn.setText("Details")
+        self.details_btn.setAccessibleName("Clip details")
+        self.details_btn.setProperty("quiet", "true")
+        self.details_btn.setToolTip(
+            "Which camera shot this clip, where it sat on the rig, whether it was "
+            "mounted upside down, and whether the footage is usable."
+        )
+        self.details_btn.clicked.connect(self._emit_details)
+        self.add_title_button(self.details_btn)
 
         # What the registry holds of this clip, painted only from a live probe.
         self.archive_state = QLabel("")
@@ -182,6 +195,10 @@ class VideoDetailPanel(DetailCard):
     def _emit_archive(self) -> None:
         if self._entry is not None:
             self.archive_requested.emit(str(self._entry.video.id))
+
+    def _emit_details(self) -> None:
+        if self._entry is not None:
+            self.details_requested.emit(str(self._entry.video.id))
 
     def set_archive_state(self, state: str | None) -> None:
         """Paint what the registry holds of this clip, or nothing when unknown.

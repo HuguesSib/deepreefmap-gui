@@ -70,7 +70,7 @@ from deepreefmap_gui.survey.catalogue import (
     FacetGroup,
     RunEntry,
 )
-from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
+from deepreefmap_gui.survey.models.transect_pass import DIRECTION_UNRECORDED, PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -1651,7 +1651,7 @@ class BrowseMixin(MixinBase):
             return []
         return [e for e in group.all_entries() if not e.incomplete]
 
-    def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str] | None:
+    def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str | None] | None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Assign to transect")
         form = QFormLayout(dialog)
@@ -1663,6 +1663,7 @@ class BrowseMixin(MixinBase):
             # The lowercase vocabulary as the item's data: the store's CHECK
             # constraint is what the capitalised label would fail.
             direction_combo.addItem(direction_arrow_icon(name), name.capitalize(), name)
+        direction_combo.addItem(DIRECTION_UNRECORDED, None)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )

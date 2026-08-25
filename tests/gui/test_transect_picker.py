@@ -211,11 +211,14 @@ def test_filing_a_section_says_it_can_be_undone(store):
     assert UNASSIGNED_NOTE not in dialog.note.text()
 
 
-def test_the_campaign_combo_only_exists_once_campaigns_have_been_pulled(store):
+def test_the_campaign_combo_lists_what_is_known_and_can_add_to_it(store):
     from deepreefmap_gui.survey.models import Campaign
 
     without = TransectPickerDialog(None, store)
-    assert without.campaign.count() == 0
+    assert [without.campaign.itemText(i) for i in range(without.campaign.count())] == [
+        "No campaign",
+    ]
+    assert without.new_campaign_btn.isEnabled()
 
     store.add_campaign(Campaign(name="2026_08_fiji"))
     with_campaigns = TransectPickerDialog(None, store)
@@ -224,6 +227,16 @@ def test_the_campaign_combo_only_exists_once_campaigns_have_been_pulled(store):
         "No campaign",
         "2026_08_fiji",
     ]
+
+
+def test_a_direction_nobody_noted_can_be_filed_as_such(store):
+    store.add_transect(make_transect("T1"))
+    dialog = TransectPickerDialog(None, store)
+
+    dialog.direction.setCurrentIndex(dialog.direction.count() - 1)
+
+    assert dialog.choice() == (None, None)
+    assert dialog.quality_choice() is None
 
 
 def test_the_campaign_picked_is_remembered_as_the_default(store):

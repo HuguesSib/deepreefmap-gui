@@ -133,7 +133,7 @@ arrow_left_icon = _glyph("arrow-left")
 
 
 def direction_arrow_icon(
-    direction: str, size: int = ICON_SM, color: QColor | None = None
+    direction: str | None, size: int = ICON_SM, color: QColor | None = None
 ) -> QIcon:
     """The arrow for a pass direction, already in that direction's colour.
 

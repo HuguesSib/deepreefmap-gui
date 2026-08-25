@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -67,6 +68,7 @@ from deepreefmap_gui.survey.models import (
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 from deepreefmap_gui.survey.models.importers import (
     build_transect,
+    csv_site_names,
     import_transects_csv,
     import_transects_gpx,
     parse_latlon,
@@ -112,7 +114,7 @@ _PLAN_SCOPE_TOOLTIP = (
 )
 
 
-def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
+def transect_length_text(length_m: float | None, geodesic_m: float | None) -> str:
     """The one length worth showing for a transect.
 
     A typed tape length is the cable actually laid on the reef and is what the
@@ -121,6 +123,8 @@ def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
     """
     if length_m:
         return f"{length_m:g} m tape"
+    if geodesic_m is None:
+        return "no length"
     return f"{geodesic_m:.0f} m GPS"
 
 
@@ -130,11 +134,17 @@ def bearing_text(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     return f"{bearing:03.0f}° {compass_point(bearing)}"
 
 
+NO_ENDS_TEXT = "No GPS ends recorded"
+
+
 def transect_geometry_text(transect: Transect) -> str:
     """The derived line under the coordinate fields: how far, and which way."""
+    ends = transect.end_points()
+    if ends is None:
+        return NO_ENDS_TEXT
     return (
         f"{transect.geodesic_length_m():.0f} m between the GPS ends  ·  heading "
-        f"{bearing_text(transect.start_lat, transect.start_lon, transect.end_lat, transect.end_lon)}"
+        f"{bearing_text(*ends[0], *ends[1])}"
     )
 
 
@@ -161,10 +171,10 @@ def transect_row_values(transect: Transect, passes: int, runs: int) -> dict[int,
     numbers. An absent value is left out entirely, which sinks the cell under
     SortableTreeItem's contract.
     """
-    values: dict[int, object] = {
-        0: transect.name.lower(),
-        1: transect.length_m or transect.geodesic_length_m(),
-    }
+    values: dict[int, object] = {0: transect.name.lower()}
+    length = transect.length_m or transect.geodesic_length_m()
+    if length is not None:
+        values[1] = length
     if transect.depth_m:
         values[2] = transect.depth_m
     if passes:
@@ -176,12 +186,12 @@ def transect_row_values(transect: Transect, passes: int, runs: int) -> dict[int,
 
 def transect_tooltip(transect: Transect, passes: int = 0, runs: int = 0) -> str:
     """Coordinates, heading and notes, which the row itself has no room for."""
-    lines = [
-        f"<b>{transect.name}</b>",
-        f"Start {transect.start_lat:.5f}, {transect.start_lon:.5f}",
-        f"End {transect.end_lat:.5f}, {transect.end_lon:.5f}",
-        transect_geometry_text(transect),
-    ]
+    lines = [f"<b>{transect.name}</b>"]
+    ends = transect.end_points()
+    if ends is not None:
+        lines.append(f"Start {ends[0][0]:.5f}, {ends[0][1]:.5f}")
+        lines.append(f"End {ends[1][0]:.5f}, {ends[1][1]:.5f}")
+    lines.append(transect_geometry_text(transect))
     if transect.length_m:
         lines.append(f"{transect.length_m:g} m tape laid")
     if transect.depth_m:
@@ -416,11 +426,21 @@ class SimplePlanMixin(MixinBase):
         # none pulled the combo holds only "No site" and changes nothing; names
         # are unique per site, so two reefs can each have a T1.
         grid.addWidget(_field_label("Site"), 0, 2)
+        site_row = QHBoxLayout()
+        site_row.setContentsMargins(0, 0, 0, 0)
+        site_row.setSpacing(4)
         self._tr_site_combo = QComboBox()
         self._tr_site_combo.setToolTip(
-            "The site this transect belongs to, from the registry's site list."
+            "The site this transect belongs to. A site made here reaches the "
+            "registry unvalidated, for a curator to check."
         )
-        grid.addWidget(self._tr_site_combo, 0, 3)
+        site_row.addWidget(self._tr_site_combo, 1)
+        self._tr_new_site_btn = QPushButton("New…")
+        self._tr_new_site_btn.setProperty("quiet", "true")
+        self._tr_new_site_btn.setToolTip("Name a site the registry does not list yet.")
+        self._tr_new_site_btn.clicked.connect(self._on_new_site)
+        site_row.addWidget(self._tr_new_site_btn)
+        grid.addLayout(site_row, 0, 3)
         self._refresh_site_choices()
 
         # One box per end takes a coordinate straight off a GPS, pasted or
@@ -479,9 +499,24 @@ class SimplePlanMixin(MixinBase):
         grid.addWidget(_field_label("Depth"), 4, 2)
         grid.addWidget(self._tr_depth, 4, 3)
 
-        grid.addWidget(_field_label("Notes", top=True), 5, 0, Qt.AlignmentFlag.AlignTop)
+        # The GPS fix's own accuracy, per end, as a field unit exports it.
+        self._tr_start_accuracy = OptionalMetresSpinBox(1000.0)
+        self._tr_start_accuracy.setToolTip("GPS accuracy at the start fix.")
+        self._tr_end_accuracy = OptionalMetresSpinBox(1000.0)
+        self._tr_end_accuracy.setToolTip("GPS accuracy at the end fix.")
+        grid.addWidget(_field_label("Start ±"), 5, 0)
+        grid.addWidget(self._tr_start_accuracy, 5, 1)
+        grid.addWidget(_field_label("End ±"), 5, 2)
+        grid.addWidget(self._tr_end_accuracy, 5, 3)
+
+        # Why the form is read-only, when it is.
+        self._tr_lock_note = secondary_label("")
+        self._tr_lock_note.setWordWrap(True)
+        grid.addWidget(self._tr_lock_note, 6, 1, 1, 3)
+
+        grid.addWidget(_field_label("Notes", top=True), 7, 0, Qt.AlignmentFlag.AlignTop)
         self._tr_description = NotesEdit()
-        grid.addWidget(self._tr_description, 5, 1, 1, 3)
+        grid.addWidget(self._tr_description, 7, 1, 1, 3)
 
         # No Save button: a new transect shows as a live draft row in the list
         # and commits itself the moment name and both endpoints are complete;
@@ -495,6 +530,8 @@ class SimplePlanMixin(MixinBase):
             edit.textChanged.connect(self._on_coords_typed)
         self._tr_length.editingFinished.connect(self._maybe_autosave)
         self._tr_depth.editingFinished.connect(self._maybe_autosave)
+        self._tr_start_accuracy.editingFinished.connect(self._maybe_autosave)
+        self._tr_end_accuracy.editingFinished.connect(self._maybe_autosave)
         self._tr_description.editing_finished.connect(self._maybe_autosave)
         # activated, not currentIndexChanged: only a person's pick commits, so
         # refilling the combo after a pull cannot save the form by side effect.
@@ -595,6 +632,38 @@ class SimplePlanMixin(MixinBase):
                 combo.setCurrentIndex(max(0, combo.findData(kept)))
         finally:
             combo.blockSignals(False)
+
+    def _on_new_site(self) -> None:
+        from deepreefmap_gui.simple.catalogue_dialogs import NewSiteDialog
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        dialog = NewSiteDialog(self, store)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.site is None:
+            return
+        self._refresh_site_choices()
+        self._set_form_site(dialog.site.id)
+        self._status_label.setText(f"Added site {dialog.site.name}.")
+        self._maybe_autosave()
+        self._survey_data_changed()
+
+    def _locked_transect_note(self, transect_id: uuid.UUID | None) -> str:
+        """Why the transect in the form cannot be changed here, or an empty string."""
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id
+
+        if transect_id is None:
+            return ""
+        transect = self._survey_store().get_transect(transect_id)
+        return "" if transect is None else lock_note(transect, own_device_id())
+
+    def _transect_is_read_only(self, transect_id: uuid.UUID | None) -> bool:
+        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_state, own_device_id
+
+        if transect_id is None:
+            return False
+        transect = self._survey_store().get_transect(transect_id)
+        return transect is not None and lock_state(transect, own_device_id()) == OTHER_DEVICE
 
     def _form_site_id(self) -> uuid.UUID | None:
         data = self._tr_site_combo.currentData()
@@ -835,7 +904,9 @@ class SimplePlanMixin(MixinBase):
         try:
             self._form_coordinates()
         except ValueError:
-            return
+            # A line with no GPS ends at all still saves; a half-typed one waits.
+            if self._tr_start_coord.text().strip() or self._tr_end_coord.text().strip():
+                return
         self._on_transect_save()
 
     def _selected_transect_id(self) -> uuid.UUID | None:
@@ -859,22 +930,28 @@ class SimplePlanMixin(MixinBase):
         # A transect opened from the list is being looked at, not moved.
         self._set_transect_editing(False)
         self._tr_name_input.setText(transect.name)
-        self._tr_start_coord.setText(f"{transect.start_lat:.6f}, {transect.start_lon:.6f}")
-        self._tr_end_coord.setText(f"{transect.end_lat:.6f}, {transect.end_lon:.6f}")
+        ends = transect.end_points()
+        if ends is None:
+            self._tr_start_coord.clear()
+            self._tr_end_coord.clear()
+        else:
+            self._tr_start_coord.setText(f"{ends[0][0]:.6f}, {ends[0][1]:.6f}")
+            self._tr_end_coord.setText(f"{ends[1][0]:.6f}, {ends[1][1]:.6f}")
         self._tr_length.setValue(transect.length_m or 0.0)
         self._tr_depth.setValue(transect.depth_m or 0.0)
+        self._tr_start_accuracy.setValue(transect.start_accuracy_m or 0.0)
+        self._tr_end_accuracy.setValue(transect.end_accuracy_m or 0.0)
         self._set_form_site(transect.site_id)
         self._tr_description.setPlainText(transect.description)
+        self._tr_lock_note.setText(self._locked_transect_note(transect.id))
+        self._transect_edit_btn.setEnabled(not self._transect_is_read_only(transect.id))
         self._refresh_plan_map()
         # Picking a transect by name is a request to look at it, so the map goes
         # there rather than leaving the selected line off screen. A transect
         # picked by clicking its line is already on screen and the map holds
         # still, or the click would yank the view out from under the pointer.
-        if focus_map:
-            self._plan_map.focus_on(
-                [(transect.start_lat, transect.start_lon), (transect.end_lat, transect.end_lon)],
-                fill=FOCUS_FILL,
-            )
+        if focus_map and ends is not None:
+            self._plan_map.focus_on(list(ends), fill=FOCUS_FILL)
         self._set_scope_transect(transect.id)
 
     # --- Form handling ---
@@ -896,6 +973,9 @@ class SimplePlanMixin(MixinBase):
             edit.clear()
         self._tr_length.setValue(0.0)
         self._tr_depth.setValue(0.0)
+        self._tr_start_accuracy.setValue(0.0)
+        self._tr_end_accuracy.setValue(0.0)
+        self._tr_lock_note.setText("")
         existing = [t.name for t in self._survey_store().list_transects()]
         self._tr_name_input.setText(next_transect_name(existing))
         self._tr_name_input.setFocus()
@@ -950,6 +1030,9 @@ class SimplePlanMixin(MixinBase):
 
     def _on_transect_save(self) -> None:
         store = self._survey_store()
+        if self._transect_is_read_only(self._transect_form_id):
+            self._status_label.setText(self._locked_transect_note(self._transect_form_id))
+            return
         try:
             transect = build_transect(
                 self._tr_name_input.text(),
@@ -959,6 +1042,8 @@ class SimplePlanMixin(MixinBase):
                 depth_m=self._tr_depth.value(),
                 description=self._tr_description.toPlainText().strip(),
                 site_id=self._form_site_id(),
+                start_accuracy_m=self._tr_start_accuracy.value(),
+                end_accuracy_m=self._tr_end_accuracy.value(),
             )
         except ValueError as exc:
             self._status_label.setText(str(exc))
@@ -982,6 +1067,9 @@ class SimplePlanMixin(MixinBase):
     def _on_transect_delete(self) -> None:
         transect_id = self._selected_transect_id()
         if transect_id is None:
+            return
+        if self._transect_is_read_only(transect_id):
+            self._status_label.setText(self._locked_transect_note(transect_id))
             return
         try:
             self._survey_store().delete_transect(transect_id)
@@ -1013,8 +1101,13 @@ class SimplePlanMixin(MixinBase):
             self._status_label.setText(f"Import failed: {exc}")
             return
         store = self._survey_store()
+        sites = {site.name.casefold(): site.id for site in store.list_sites()}
+        named = csv_site_names(path) if path.suffix.lower() == ".csv" else {}
         added, skipped = 0, 0
         for transect in transects:
+            site_name = named.get(transect.name, "")
+            if site_name and transect.site_id is None:
+                transect.site_id = sites.get(site_name.casefold())
             try:
                 store.add_transect(transect)
                 added += 1
@@ -1037,7 +1130,10 @@ class SimplePlanMixin(MixinBase):
         if not path_str:
             return
         transects = self._survey_store().list_transects()
-        save_transects_csv(Path(path_str), transects)
+        store = self._survey_store()
+        save_transects_csv(
+            Path(path_str), transects, {site.id: site.name for site in store.list_sites()}
+        )
         self._status_label.setText(f"Exported {len(transects)} transect(s).")
 
     # --- Map ---
@@ -1055,10 +1151,12 @@ class SimplePlanMixin(MixinBase):
             passes, runs = counts.get(transect.id, (0, 0))
             # The selected transect follows the fields as they are typed, so a
             # pasted coordinate lands on the map before it is committed.
-            start = (transect.start_lat, transect.start_lon)
-            end = (transect.end_lat, transect.end_lon)
+            ends = transect.end_points()
             if transect.id == selected and typed is not None:
-                start, end = (typed[0], typed[1]), (typed[2], typed[3])
+                ends = ((typed[0], typed[1]), (typed[2], typed[3]))
+            if ends is None:
+                continue
+            start, end = ends
             overlays.append(OverlayTransect(
                 id=str(transect.id),
                 start=start,

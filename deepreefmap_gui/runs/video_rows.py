@@ -1101,7 +1101,7 @@ class TransectChip(QToolButton):
         """What the chip says before the width of the row gets at it."""
         return self._full
 
-    def set_assignment(self, name: str | None, direction: str) -> None:
+    def set_assignment(self, name: str | None, direction: str | None) -> None:
         if name:
             self._full = name
             self._colour = TEXT_MUTED
