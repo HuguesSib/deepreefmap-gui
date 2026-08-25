@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY
+from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY, tabular
 from deepreefmap_gui.core.icons import ICON_MD, ICON_SM, check_icon, copy_icon, crosshair_icon
 from deepreefmap_gui.core.theme import (
     BORDER,
@@ -86,10 +86,13 @@ PLAN_SPACER_COLUMN = len(PLAN_COLUMNS) - 1
 # name takes what is left. Length is the one that drops on a narrow pane; its
 # value, like every other, is in `transect_tooltip`.
 _PLAN_COLUMN_SPEC = ColumnSpec(
-    fixed={2: 64, 3: 62, 4: 56},
+    fixed={2: 68, 3: 62, 4: 56},
     weights={0: 3, PLAN_SPACER_COLUMN: 1},
     minimums={0: 140, PLAN_SPACER_COLUMN: 0},
-    optional=((1, 78),),
+    # Measured against the longest thing it holds: "21875 m GPS" is 103px with
+    # the row padding, and a column short of that elides the figure it exists
+    # to show.
+    optional=((1, 104),),
 )
 # The transect a click on the map is about to draw, and the one being typed into
 # the form, share this row id: neither exists in the store yet.
@@ -351,6 +354,8 @@ class SimplePlanMixin(MixinBase):
         header_item.setToolTip(4, "Reconstructions produced from them")
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
+        # Tabular figures, so lengths and depths line up down their columns.
+        self._transect_list.setFont(tabular(self._transect_list.font()))
         enable_sorting(self._transect_list)
         install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())

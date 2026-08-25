@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,7 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
+from deepreefmap_gui.core.fonts import tabular
+from deepreefmap_gui.core.theme import GUTTER, SPACE_SM, SPACE_XS, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     EmptyState,
@@ -30,6 +32,7 @@ from deepreefmap_gui.core.widgets import (
     enable_sorting,
     install_column_sizer,
     muted_label,
+    narrow_combo,
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
@@ -58,12 +61,16 @@ _CHART_MIN_FRACTION = 0.005
 _MODE_POOLED, _MODE_PASSES = "pooled", "passes"
 _CHART_MODES = ((_MODE_POOLED, "Pooled"), (_MODE_PASSES, "Per pass"))
 
-# The class name takes the slack; the five figures beside it are percentages and
-# ratios, which are the same width whatever the pane is.
+# The class name takes the slack; the figures beside it are percentages and
+# ratios, the same width whatever the pane is. Only the class and the cover
+# estimate are mandatory: the spread figures earn their width in the order they
+# are read, and Pass mean goes first because it is a reference for the spread
+# rather than a figure anybody quotes. All of them stay in the CSV either way.
 _STATS_COLUMNS = ColumnSpec(
-    fixed={1: 68, 2: 76, 3: 62, 4: 56, 5: 68},
+    fixed={1: 68},
     weights={0: 1},
-    minimums={0: 120},
+    minimums={0: 110},
+    optional=((3, 68), (4, 56), (5, 68), (2, 84)),
 )
 
 
@@ -85,12 +92,20 @@ class SimpleAnalysisMixin(MixinBase):
         layout.setSpacing(GUTTER)
 
         chart_card, chart_layout = section_card()
-        selector = QHBoxLayout()
-        selector.setSpacing(6)
-        selector.addWidget(QLabel("Transect"))
+        # A grid over two rows rather than one long row: a combo reports its
+        # widest entry as its minimum, and these three controls side by side set a
+        # floor wider than the column this card is given, which carried the chart
+        # and the table below it off the right-hand edge of the page.
+        selector = QGridLayout()
+        selector.setContentsMargins(0, 0, 0, 0)
+        selector.setHorizontalSpacing(SPACE_SM)
+        selector.setVerticalSpacing(SPACE_XS)
+        selector.setColumnStretch(1, 1)
+        selector.addWidget(QLabel("Transect"), 0, 0)
         self._analysis_transect_combo = QComboBox()
+        narrow_combo(self._analysis_transect_combo, 12)
         self._analysis_transect_combo.currentIndexChanged.connect(lambda *_: self._on_analysis_transect_changed())
-        selector.addWidget(self._analysis_transect_combo, 1)
+        selector.addWidget(self._analysis_transect_combo, 0, 1, 1, 2)
         # "Detail" rather than "Level": the combo picks how finely the classes
         # are grouped, which the old label said nothing about.
         detail_label = QLabel("Detail")
@@ -99,13 +114,14 @@ class SimpleAnalysisMixin(MixinBase):
             "fine is every class on its own, coarse is broad groups."
         )
         detail_label.setToolTip(detail_tip)
-        selector.addWidget(detail_label)
+        selector.addWidget(detail_label, 1, 0)
         self._analysis_level_combo = QComboBox()
         self._analysis_level_combo.addItems(list(COVER_LEVELS))
         self._analysis_level_combo.setCurrentText("intermediate")
+        narrow_combo(self._analysis_level_combo, 10)
         self._analysis_level_combo.setToolTip(detail_tip)
         self._analysis_level_combo.currentTextChanged.connect(lambda *_: self._refresh_survey_analysis())
-        selector.addWidget(self._analysis_level_combo)
+        selector.addWidget(self._analysis_level_combo, 1, 1)
         # Pooled by default: the estimate is what the page is for, and one bar per
         # pass was four bars saying nothing about which to trust.
         self._analysis_chart_mode = str(self._settings.value("analysis_chart_mode", _MODE_POOLED))
@@ -118,7 +134,7 @@ class SimpleAnalysisMixin(MixinBase):
         )
         self._analysis_mode_chips.set_current(self._analysis_chart_mode)
         self._analysis_mode_chips.changed.connect(self._on_analysis_mode_changed)
-        selector.addWidget(self._analysis_mode_chips)
+        selector.addWidget(self._analysis_mode_chips, 1, 2, Qt.AlignmentFlag.AlignRight)
         chart_layout.addLayout(selector)
         # The defensible headline: the count-weighted pool and how many passes
         # it rests on. The per-pass bars below are the spread, not the estimate.
@@ -147,6 +163,9 @@ class SimpleAnalysisMixin(MixinBase):
             ["Class", "Cover", "Pass mean", "Std", "CV", "Range"],
         )
         # Largest cover first, matching how the chart ranks its bars.
+        # Tabular figures: a column of percentages read down the page only lines
+        # up when every digit is one width.
+        self._analysis_stats_table.setFont(tabular(self._analysis_stats_table.font()))
         enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
         install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS, settings_key="analysis_stats")
         self._analysis_stats_stack = QStackedWidget()

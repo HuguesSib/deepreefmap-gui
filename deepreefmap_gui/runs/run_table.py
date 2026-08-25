@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     SortableItem,
@@ -58,22 +59,29 @@ _HEADERS = (
 # Columns whose width is a property of what they hold rather than of the window:
 # a status pill, a fixed-width timestamp, a formatted number. Sizing these to
 # content instead let them take the viewport and squeeze Name to an ellipsis,
-# and sizing them to the window would only pad digits with air.
+# and sizing them to the window would only pad digits with air. Measured against
+# the widest value each holds ("2026-08-04 14:32" is 141px at the base font, plus
+# the row padding), not guessed: a timestamp column short of its timestamp elides
+# every row it has.
 _FIXED_WIDTHS = {
-    COL_STATUS: 88,
-    COL_CREATED: 112,
-    COL_FRAMES: 64,
-    COL_POINTS: 64,
-    COL_RUNTIME: 72,
-    COL_SIZE: 72,
+    COL_STATUS: 96,
+    COL_CREATED: 144,
+    COL_SIZE: 76,
 }
 
-# Secondary identifiers, shown in the order they earn their width and hidden
-# when it is not there. Browse leaves the table around 830px with the rail open,
-# which is what the columns above plus the flexing ones already spend; adding
-# these unconditionally would put a scrollbar under the page's one table. The
-# row's tooltip carries both whether or not a column does.
-_OPTIONAL_WIDTHS = ((COL_DIRECTION, 76), (COL_RECORDED, 112))
+# Secondary identifiers and figures, shown in the order they earn their width and
+# hidden when it is not there. With the rail open Browse leaves this table around
+# 700px, which the columns above and the flexing ones below already spend, so
+# everything else has to earn its place. Figures come before identifiers: a
+# number is read off the row, a repeat of the group heading is not. The row's
+# tooltip carries all of them whether or not a column does.
+_OPTIONAL_WIDTHS = (
+    (COL_POINTS, 64),
+    (COL_RUNTIME, 72),
+    (COL_FRAMES, 64),
+    (COL_DIRECTION, 84),
+    (COL_RECORDED, 144),
+)
 
 # What is left over, shared out by weight. Qt's Stretch mode splits slack
 # equally, which would hand Transect as much room as Name; the name is what
@@ -84,7 +92,7 @@ _FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
 # Below these a column has stopped saying which run, which clip or which line,
 # so it holds its floor and the table scrolls instead. That only happens on a
 # window too narrow to hold the columns by any arrangement.
-_FLEX_MINIMUMS = {COL_NAME: 140, COL_VIDEO: 100, COL_TRANSECT: 80}
+_FLEX_MINIMUMS = {COL_NAME: 180, COL_VIDEO: 100, COL_TRANSECT: 80}
 
 # Numbers read right-aligned, which also lines up their digits down the column.
 # Their headers follow them, so label and value share an edge.
@@ -188,6 +196,10 @@ class RunTable(QTableWidget):
         # apart by their two ends, so dropping the tail of GX_VIDEO_1_OF_2.MP4
         # loses exactly the character that identifies it.
         self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        # Tabular figures, so a column of counts, sizes and timestamps lines its
+        # digits up. Inter's proportional "1" is 3px narrower than its "0", which
+        # is enough to make a right-aligned column read as ragged.
+        self.setFont(tabular(self.font()))
 
         for column in _NUMERIC_COLUMNS:
             item = self.horizontalHeaderItem(column)

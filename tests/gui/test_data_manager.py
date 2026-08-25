@@ -1332,28 +1332,38 @@ def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
 
 
 def test_the_secondary_columns_appear_only_where_there_is_room_for_them():
-    """Expected behaviour: Direction and Recorded are dropped, widest last in,
-    rather than squeezing the columns that say which run this is.
+    """Expected behaviour: the figures and then the secondary identifiers are
+    dropped, widest last in, rather than squeezing the columns that say which run
+    this is.
 
-    A pane wide enough shows both. The 830px Browse leaves with the rail open
-    shows neither, and the tooltip is where they are read there.
+    A pane wide enough shows every column. The ~700px Browse leaves with the rail
+    open shows only what identifies a run, and the tooltip is where the rest are
+    read there.
     """
-    from deepreefmap_gui.runs.run_table import COL_DIRECTION, COL_RECORDED, column_widths
+    from deepreefmap_gui.runs.run_table import (
+        COL_DIRECTION,
+        COL_POINTS,
+        COL_RECORDED,
+        column_widths,
+    )
 
     assert {COL_DIRECTION, COL_RECORDED} <= set(column_widths(1440))
-    assert COL_DIRECTION in column_widths(900)
-    assert COL_RECORDED not in column_widths(900)
-    assert not {COL_DIRECTION, COL_RECORDED} & set(column_widths(830))
+    assert COL_DIRECTION in column_widths(1000)
+    assert COL_RECORDED not in column_widths(1000)
+    # Figures earn their width before the identifiers do: a number is read off
+    # the row, where the transect and the session repeat the group heading.
+    assert COL_POINTS in column_widths(800)
+    assert not {COL_DIRECTION, COL_RECORDED} & set(column_widths(800))
 
 
 def test_a_window_too_narrow_for_the_columns_keeps_them_readable():
     """A column shrunk past reading is not a column, so below the floors' total
     the floors win and the table scrolls rather than eliding everything away."""
-    from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths
+    from deepreefmap_gui.runs.run_table import _FLEX_MINIMUMS, COL_NAME, COL_VIDEO, column_widths
 
     widths = column_widths(400)
-    assert widths[COL_NAME] == 140
-    assert widths[COL_VIDEO] == 100
+    assert widths[COL_NAME] == _FLEX_MINIMUMS[COL_NAME]
+    assert widths[COL_VIDEO] == _FLEX_MINIMUMS[COL_VIDEO]
     assert sum(widths.values()) > 400
 
 
