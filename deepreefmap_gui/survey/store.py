@@ -257,6 +257,16 @@ _assert_chain_is_contiguous()
 # The sections this device authors, and the table behind each. Only these can
 # owe the registry anything, so only these are marked when a person edits one.
 _PENDING_TABLES: dict[str, str] = {
+    "sites": "site",
+    "campaigns": "campaign",
+    "transects": "transect",
+    "videos": "video_asset",
+    "passes": "transect_pass",
+    "runs": "run_record",
+}
+
+# What migration 15 marked, before sites and campaigns could be made here.
+_PENDING_TABLES_15: dict[str, str] = {
     "transects": "transect",
     "videos": "video_asset",
     "passes": "transect_pass",
@@ -264,7 +274,7 @@ _PENDING_TABLES: dict[str, str] = {
 }
 
 
-def _pending_push_triggers() -> str:
+def _pending_push_triggers(tables: Mapping[str, str]) -> str:
     """Mark every locally written row of an authored table, whatever wrote it.
 
     Triggers rather than calls in the write helpers: a merge, a session delete
@@ -288,11 +298,11 @@ def _pending_push_triggers() -> str:
             VALUES ('{section}', new.id);
         END;
         """
-        for section, table in _PENDING_TABLES.items()
+        for section, table in tables.items()
     )
 
 
-def _pending_push_backfill() -> str:
+def _pending_push_backfill(tables: Mapping[str, str]) -> str:
     """Everything the previous build would have called unpushed, marked once.
 
     That build read a stamp at or past the section's watermark as a local edit,
@@ -313,7 +323,7 @@ def _pending_push_backfill() -> str:
         WHERE updated_at >= COALESCE(
             (SELECT value FROM sync_state WHERE key = '{WATERMARK_PREFIX}{section}'), '');
         """
-        for section, table in _PENDING_TABLES.items()
+        for section, table in tables.items()
     )
 
 
@@ -673,8 +683,24 @@ _MIGRATIONS: list[Migration] = [
             PRIMARY KEY (section, row_id)
         );
         """
-        + _pending_push_triggers()
-        + _pending_push_backfill(),
+        + _pending_push_triggers(_PENDING_TABLES_15)
+        + _pending_push_backfill(_PENDING_TABLES_15),
+    ),
+    # The registry position a row was last seen at, which a push sends back as
+    # base_seq so the registry can tell what this laptop changed. Sites and
+    # campaigns can be made here now, so they are marked like the rest.
+    Migration(
+        16,
+        "rows carry the registry position they were last seen at",
+        """
+        ALTER TABLE site ADD COLUMN head_seq INTEGER;
+        ALTER TABLE campaign ADD COLUMN head_seq INTEGER;
+        ALTER TABLE transect ADD COLUMN head_seq INTEGER;
+        ALTER TABLE video_asset ADD COLUMN head_seq INTEGER;
+        ALTER TABLE transect_pass ADD COLUMN head_seq INTEGER;
+        ALTER TABLE run_record ADD COLUMN head_seq INTEGER;
+        """
+        + _pending_push_triggers({"sites": "site", "campaigns": "campaign"}),
     ),
 ]
 
@@ -813,9 +839,8 @@ def _live(table: str) -> str:
 def _from_wire(section: str, incoming: Any) -> tuple[dict[str, Any], set[str]]:
     """A pulled row as a plain dict, with the names of the fields it carried.
 
-    A mapping is what a pull returns, and ``server_seq`` is dropped because this
-    side does not store it. A model is what a re-push or a test hands over, and
-    every one of its fields counts as carried.
+    A mapping is what a pull returns. A model is what a re-push or a test hands
+    over, and every one of its fields counts as carried.
     """
     if not isinstance(incoming, Mapping):
         return to_row(incoming), {f.name for f in fields(incoming)}
@@ -2130,11 +2155,12 @@ class SurveyStore:
     def apply_from_server(
         self, section: str, rows: Iterable[Mapping[str, Any] | Any]
     ) -> ApplyResult:
-        """Land pulled rows under last-write-wins on ``updated_at``.
+        """Land pulled rows: the registry's copy stands unless this laptop owes it one.
 
-        A row that is not here is inserted; a row that is gets overwritten only
-        when the incoming stamp is strictly newer, so an equal stamp leaves the
-        stored copy alone. A tombstone lands like any other row, because
+        A row that is not here is inserted. A row with a pending mark keeps its
+        local edit and takes only the registry position, so the next push is
+        judged against it and the registry merges the two. A row already seen at
+        this position is skipped. A tombstone lands like any other row, because
         deleted_at is a column. Only the fields the pulled row actually carries
         are written, so the device-local ones -- a clip's path, a run's session --
         survive an update from a server that has never held them.
@@ -2183,9 +2209,7 @@ class SurveyStore:
                 except _UNREADABLE_ROW as exc:
                     result.unreadable.append((row_id, str(exc)))
                     continue
-                if stored is not None and str(row["updated_at"]) <= str(
-                    stored["updated_at"] or ""
-                ):
+                if stored is not None and self._keeps_local(conn, section, table, stored, row):
                     result.skipped.append(uuid.UUID(row["id"]))
                     continue
                 statement, values = (
@@ -2222,6 +2246,46 @@ class SurveyStore:
                     )
                 )
         return result
+
+    @staticmethod
+    def _keeps_local(
+        conn: sqlite3.Connection,
+        section: str,
+        table: str,
+        stored: sqlite3.Row,
+        row: Mapping[str, Any],
+    ) -> bool:
+        """Whether a stored row stands against the pulled one.
+
+        A local edit still owed to the registry stands, and adopts the pulled
+        position so the push it is waiting for is judged against it. Otherwise
+        the later registry position wins, and where the two positions are the
+        same or unknown, the later stamp.
+        """
+        incoming = row.get("head_seq")
+        pending = conn.execute(
+            "SELECT 1 FROM pending_push WHERE section = ? AND row_id = ?",
+            (section, str(row["id"])),
+        ).fetchone()
+        if pending is not None:
+            if incoming is not None:
+                conn.execute(
+                    f"UPDATE {table} SET head_seq = ? WHERE id = ?", (incoming, row["id"])
+                )
+            return True
+        seen = stored["head_seq"]
+        if incoming is not None and seen is not None and int(incoming) != int(seen):
+            return int(incoming) < int(seen)
+        return str(row["updated_at"]) <= str(stored["updated_at"] or "")
+
+    def set_head_seq(self, section: str, positions: Mapping[uuid.UUID, int]) -> None:
+        """Record the registry position rows were acknowledged at. Not an edit."""
+        table = SYNC_SECTIONS[_section_of(section)]
+        with self.transaction() as conn:
+            conn.executemany(
+                f"UPDATE {table} SET head_seq = ? WHERE id = ?",
+                [(seq, str(row_id)) for row_id, seq in positions.items()],
+            )
 
     @staticmethod
     def _land(

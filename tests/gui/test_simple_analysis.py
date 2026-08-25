@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from _factories import seed_pass
+from _factories import as_pushed, seed_pass
 
 from deepreefmap_gui.map.overlays import transect_overlays
 from deepreefmap_gui.survey.models import RunRecord
@@ -176,6 +176,7 @@ def test_a_retired_line_keeps_its_place_in_analysis(analysis_window):
     store = window._survey_store()
     transect = store.list_transects()[0]
     retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": retired_at,

@@ -657,3 +657,11 @@ def write_run_tree(root: Path, name: str = "20260520-155637", *, frames: int = 3
     (run_dir / "benthic_cover.json").write_text("{}")
     (run_dir / f"{name}.scene.zarr.zip").write_bytes(b"z" * 5 * KB)
     return run_dir
+
+
+def as_pushed(store) -> None:
+    """Every mark cleared, as if the last push had been accepted whole."""
+    from deepreefmap_gui.survey.store import SYNC_SECTIONS
+
+    for section in SYNC_SECTIONS:
+        store.clear_pending_push(section, store.pending_push_ids(section))

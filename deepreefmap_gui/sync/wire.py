@@ -192,10 +192,14 @@ def rows_to_wire(section: str, models: Iterable[Any]) -> list[dict[str, Any]]:
     if section not in SYNC_SECTIONS:
         raise KeyError(f"{section!r} is not a section with a table behind it")
     dropped = _DEVICE_LOCAL.get(section, ())
-    return [
-        _restamp({k: v for k, v in to_row(model).items() if k not in dropped}, to_wire_time)
-        for model in models
-    ]
+    return [_outbound(to_row(model), dropped) for model in models]
+
+
+def _outbound(row: dict[str, Any], dropped: tuple[str, ...]) -> dict[str, Any]:
+    """One row as the registry reads it: ``head_seq`` travels as ``base_seq``."""
+    out = {k: v for k, v in row.items() if k not in dropped and k != "head_seq"}
+    out["base_seq"] = row.get("head_seq")
+    return _restamp(out, to_wire_time)
 
 
 def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str, Any]]:
@@ -441,12 +445,53 @@ def rows_from_wire(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     Partial matters: the store writes only the fields a row carried, so a clip's
     path and a run's session survive an update from a registry that holds neither.
-    ``server_seq`` is the registry's own cursor and is not a column here.
+    ``server_seq`` lands as ``head_seq``, the position the row was seen at.
     """
-    return [
-        _restamp({k: v for k, v in row.items() if k != "server_seq"}, from_wire_time)
-        for row in rows
-    ]
+    return [_inbound(row) for row in rows]
+
+
+def _inbound(row: Mapping[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in row.items() if k != "server_seq"}
+    if row.get("server_seq") is not None:
+        out["head_seq"] = int(row["server_seq"])
+    return _restamp(out, from_wire_time)
+
+
+def push_outcomes(response: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each section's answer in one shape, whichever contract the registry spoke.
+
+    Contract 1 answered with an ``applied`` count and bare id lists under
+    ``skipped``, ``refused`` and ``conflicted``. Contract 2 answers with the
+    ledger's buckets: ``applied`` as acknowledgements carrying the row's new
+    position, and ``superseded``, ``proposed`` and ``rejected`` each naming a
+    reason. The keys here are the ledger's; a stale supersession is a skip.
+    """
+    outcomes = {}
+    for name, answer in (response.get("sections") or {}).items():
+        if isinstance(answer.get("applied"), list):
+            acks = {
+                str(ack.get("id")): int(ack.get("seq", 0)) for ack in answer["applied"]
+            }
+            superseded = answer.get("superseded") or ()
+            outcomes[name] = {
+                "received": int(answer.get("received", 0)),
+                "acks": acks,
+                "skipped": [str(r.get("id")) for r in superseded if r.get("reason") == "stale"],
+                "refused": [str(r.get("id")) for r in superseded if r.get("reason") != "stale"],
+                "proposed": [str(r.get("id")) for r in answer.get("proposed") or ()],
+                "rejected": [str(r.get("id")) for r in answer.get("rejected") or ()],
+            }
+            continue
+        outcomes[name] = {
+            "received": int(answer.get("received", 0)),
+            "acks": {},
+            "applied": int(answer.get("applied", 0)),
+            "skipped": [str(v) for v in answer.get("skipped") or ()],
+            "refused": [str(v) for v in answer.get("refused") or ()],
+            "proposed": [],
+            "rejected": [str(v) for v in answer.get("conflicted") or ()],
+        }
+    return outcomes
 
 
 def unknown_sections(sections: Mapping[str, Any]) -> tuple[str, ...]:

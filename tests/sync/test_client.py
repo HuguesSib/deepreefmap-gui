@@ -19,7 +19,7 @@ from deepreefmap_gui.sync.client import (
     CONTRACT_HEADER,
     CONTRACT_RANGE,
     CONTRACT_VERSION,
-    PULL_SECTIONS,
+    READ_SECTIONS,
     SECTIONS_HEADER,
     AccessDeniedError,
     ConflictError,
@@ -240,7 +240,7 @@ def test_every_call_declares_the_contract_and_the_sections(registry) -> None:
 
     for _method, _path, _body, headers in registry.requests:
         assert headers[CONTRACT_HEADER] == CONTRACT_RANGE
-        assert headers[SECTIONS_HEADER] == ",".join(PULL_SECTIONS)
+        assert headers[SECTIONS_HEADER] == ",".join(READ_SECTIONS)
 
 
 def test_enrolment_declares_the_contract_and_no_sections(registry, make_code) -> None:

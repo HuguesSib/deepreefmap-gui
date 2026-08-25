@@ -111,12 +111,10 @@ def test_the_row_that_earned_the_watermark_is_not_still_waiting(store):
     assert pending_rows(store) == {"transects": 1}
 
 
-def test_a_pulled_ancestor_section_is_never_waiting(store):
-    """Sites arrive on a pull and are the registry's own data, so counting them
-    as outbound work would show a debt no sync can ever clear."""
+def test_a_site_made_here_is_waiting_like_any_authored_row(store):
     store.add_site(Site(name="Reef"))
 
-    assert pending_rows(store) == {}
+    assert pending_rows(store) == {"sites": 1}
 
 
 def test_a_sync_that_moved_nothing_says_so():

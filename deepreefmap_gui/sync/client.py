@@ -22,7 +22,7 @@ from deepreefmap_gui.sync.contract import (
     CONTRACT_RANGE,
     CONTRACT_VERSION,
     MIN_CONTRACT_VERSION,
-    PULL_SECTIONS,
+    READ_SECTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,7 +309,7 @@ class SyncClient:
         # Declared here rather than per call, so no route can be added without it.
         headers = {"Accept": "application/json", CONTRACT_HEADER: CONTRACT_RANGE}
         if declare_sections:
-            headers[SECTIONS_HEADER] = ",".join(PULL_SECTIONS)
+            headers[SECTIONS_HEADER] = ",".join(READ_SECTIONS)
         data = None
         if body is not None:
             data = json.dumps(body).encode()

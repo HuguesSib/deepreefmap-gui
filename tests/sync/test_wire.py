@@ -627,7 +627,7 @@ def test_a_section_named_with_nothing_in_it_is_not_data():
 # --- Inbound ---
 
 
-def test_an_inbound_row_drops_the_registrys_cursor_and_keeps_what_it_carried():
+def test_an_inbound_row_keeps_the_registrys_position_and_what_it_carried():
     pulled = {
         "id": str(uuid.uuid4()),
         "file_name": "GX010001.MP4",
@@ -639,9 +639,10 @@ def test_an_inbound_row_drops_the_registrys_cursor_and_keeps_what_it_carried():
     row = wire.rows_from_wire([pulled])[0]
 
     assert "server_seq" not in row
+    assert row["head_seq"] == 4102
     assert row["captured_at"] == "2026-07-01T10:00:00+00:00"
     assert row["updated_at"] == "2026-08-01T00:00:00+00:00"
-    assert set(row) == set(pulled) - {"server_seq"}
+    assert set(row) == (set(pulled) - {"server_seq"}) | {"head_seq"}
 
 
 def test_a_pass_row_survives_the_trip_out_and_back():

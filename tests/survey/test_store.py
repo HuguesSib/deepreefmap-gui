@@ -9,6 +9,7 @@ import pytest
 from _factories import (
     VIDEO_HASH,
     VIDEO_PATH,
+    as_pushed,
     make_batch,
     make_transect,
     make_video,
@@ -1349,6 +1350,7 @@ def test_apply_from_server_keeps_the_newer_of_the_two_copies(store):
 
     stale = {"id": str(site.id), "name": "Stale", "updated_at": "2026-08-01T00:00:00+00:00"}
     same = {"id": str(site.id), "name": "Tied", "updated_at": site.updated_at}
+    as_pushed(store)
     assert store.apply_from_server("sites", [stale, same]).skipped == [site.id, site.id]
     assert store.get_site(site.id).name == "Reef"
 
@@ -1363,6 +1365,7 @@ def test_apply_from_server_lands_a_tombstone(store):
     site = Site(name="Reef", updated_at="2026-08-01T00:00:00+00:00")
     store.add_site(site)
 
+    as_pushed(store)
     store.apply_from_server("sites", [{
         "id": str(site.id),
         "deleted_at": "2026-08-20T00:00:00+00:00",
@@ -1379,6 +1382,7 @@ def test_apply_from_server_leaves_what_only_this_device_knows(store):
     whole row would blank the one thing that finds the file again."""
     video = store.upsert_video(make_video(updated_at="2026-08-10T00:00:00+00:00"))
 
+    as_pushed(store)
     store.apply_from_server("videos", [{
         "id": str(video.id),
         "file_name": "renamed.MP4",
@@ -1654,6 +1658,7 @@ def test_a_pulled_rename_onto_a_taken_name_is_set_aside(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(second.id, "T1", site.id),
     ])
@@ -1704,6 +1709,7 @@ def test_a_name_a_later_row_frees_is_not_set_aside(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(second.id, "T1", site.id),
         _pulled_transect(first.id, "T3", site.id),
@@ -1730,6 +1736,7 @@ def test_two_lines_that_swap_names_both_land(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(first.id, "T2", site.id),
         _pulled_transect(second.id, "T1", site.id),
@@ -1750,6 +1757,7 @@ def test_three_lines_that_rotate_names_all_land(store):
     for line in lines:
         store.add_transect(line)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(lines[0].id, "T2", site.id),
         _pulled_transect(lines[1].id, "T3", site.id),
@@ -1775,6 +1783,7 @@ def test_a_swap_blocked_from_outside_leaves_both_names_as_they_were(store):
     for line in (first, second, make_transect("T9", site_id=site.id)):
         store.add_transect(line)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(first.id, "T2", site.id),
         _pulled_transect(second.id, "T9", site.id),
@@ -1921,6 +1930,7 @@ def test_a_retired_transect_still_answers_for_the_passes_swum_on_it(store):
     """
     transect, _video, pass_ = seed_pass(store)
 
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1939,6 +1949,7 @@ def test_a_manifest_records_that_the_line_was_retired(store, tmp_path):
     """A bare run directory is the whole record later, so whether the line was
     live at the time is only ever written here."""
     transect, _video, pass_ = seed_pass(store)
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1959,6 +1970,7 @@ def test_a_rebuild_brings_a_retired_line_back_retired(store, tmp_path):
     """Scanning footage still on disk must not put a withdrawn line back in
     front of whoever withdrew it."""
     transect, _video, pass_ = seed_pass(store)
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1995,6 +2007,7 @@ def test_a_retired_line_with_passes_is_still_listed_for_reference(store):
     unused = make_transect("Never used")
     store.add_transect(unused)
     for line in (swum, unused):
+        as_pushed(store)
         store.apply_from_server("transects", [{
             "id": str(line.id),
             "deleted_at": PULLED_AT,

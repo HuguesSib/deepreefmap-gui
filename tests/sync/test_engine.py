@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from _factories import make_batch, make_transect, make_video, seed_pass, seed_survey_run
+from _factories import as_pushed, make_batch, make_transect, make_video, seed_pass, seed_survey_run
 from deepreefmap.config.classes import load_classes
 
 from deepreefmap_gui.notify.center import NotificationCenter
@@ -20,6 +20,9 @@ from deepreefmap_gui.sync.client import ConflictError, ServerUnreachableError
 from deepreefmap_gui.sync.contract import PULL_SECTIONS, PUSH_SECTIONS
 from deepreefmap_gui.sync.engine import (
     AUTHORED_SECTIONS,
+    CHANGE_ACCEPTED,
+    CHANGE_DISMISSED,
+    CHANGE_PROPOSED,
     CONFLICT_DISCARDED,
     CONFLICT_OVERWRITTEN,
     CONFLICT_REFUSED,
@@ -247,8 +250,7 @@ def test_a_push_carries_the_whole_dependency_closure(store, tmp_path):
     assert [(row["video_id"], row["ordinal"]) for row in sent["pass_videos"]] == [
         (str(video.id), 0), (str(chapter.id), 1),
     ]
-    # The site is read as reference and refused, which is accounted, not applied.
-    assert report.applied == report.sent - len(sent["sites"])
+    assert report.applied == report.sent
     assert report.refused == []
 
 
@@ -512,6 +514,7 @@ def test_a_pull_stops_when_the_cursor_stops_moving(store, tmp_path):
 def test_a_tombstone_from_the_registry_removes_the_row_here(store, tmp_path):
     site = Site(name="Reef", updated_at=EARLIER)
     store.add_site(site)
+    as_pushed(store)
     registry = FakeRegistry(pages=[page(10, {
         "sites": [site_row(site.id, "Reef", deleted_at=LATER)],
     })])
@@ -525,6 +528,7 @@ def test_a_tombstone_from_the_registry_removes_the_row_here(store, tmp_path):
 def test_last_write_wins_in_both_directions(store, tmp_path):
     site = Site(name="Reef", updated_at="2026-08-10T00:00:00+00:00")
     store.add_site(site)
+    as_pushed(store)
     stale = FakeRegistry(pages=[page(10, {
         "sites": [site_row(site.id, "Stale", updated_at="2026-08-01T00:00:00Z")],
     })])
@@ -541,11 +545,12 @@ def test_last_write_wins_in_both_directions(store, tmp_path):
     assert landed.kept == ()
 
 
-def test_an_overwritten_local_edit_raises_a_notification(store, tmp_path):
+def test_a_local_edit_still_owed_survives_a_pull_and_adopts_the_position(store, tmp_path):
     """Scenario: a row edited here since the last push is edited again elsewhere.
 
-    Expected behaviour: the registry's copy wins on the stamp, and the operator is
-    told rather than left to notice their typing has gone.
+    Expected behaviour: the edit here stands until the push offers it, judged
+    against the position the pull just brought, so the registry merges the two
+    rather than either copy silently replacing the other.
     """
     transect = make_transect()
     store.add_transect(transect)
@@ -554,16 +559,19 @@ def test_an_overwritten_local_edit_raises_a_notification(store, tmp_path):
     transect.name = "Renamed here"
     store.update_transect(transect)
     registry = FakeRegistry(pages=[page(10, {
-        "transects": [transect_row(transect.id, "Somebody else's name")],
+        "transects": [transect_row(transect.id, "Somebody else's name", server_seq=77)],
     })])
 
     report = SyncEngine(
         store, registry, out_root=tmp_path, notifications=notifications
     ).pull()
 
-    assert report.overwritten == (transect.id,)
-    assert store.get_transect(transect.id).name == "Somebody else's name"
-    assert CONFLICT_OVERWRITTEN in {note.fingerprint for note in notifications.active()}
+    assert report.overwritten == ()
+    assert report.kept == (transect.id,)
+    kept = store.get_transect(transect.id)
+    assert kept.name == "Renamed here"
+    assert kept.head_seq == 77
+    assert CONFLICT_OVERWRITTEN not in {note.fingerprint for note in notifications.active()}
 
 
 def test_an_untouched_row_the_registry_updates_is_not_a_conflict(store, tmp_path):
@@ -1131,7 +1139,7 @@ def test_sync_pulls_before_it_pushes(store, tmp_path):
 
     report = SyncEngine(store, registry, out_root=tmp_path).sync()
 
-    assert registry.calls == ["pull", "push"]
+    assert registry.calls == ["push", "pull"]
     assert report.push.sent > 0
     assert report.pull.pages == 1
 
@@ -1165,19 +1173,20 @@ def test_a_round_trip_leaves_both_sides_holding_the_same_survey(store, tmp_path)
 # --- Sections this device does not author ---
 
 
-def test_a_lone_ancestor_edit_pushes_nothing_and_owes_nothing(store, tmp_path):
-    """A site with no changed descendants is not a document: ancestors only travel
-    with the rows that need them, and never earn a watermark of their own."""
-    store.add_site(Site(name="Reef"))
+def test_a_site_made_here_is_pushed_on_its_own(store, tmp_path):
+    """A site is authored in the field like any other catalogue row, so one with
+    no descendants is still a document and earns its own watermark."""
+    site = Site(name="Reef")
+    store.add_site(site)
     registry = FakeRegistry()
     engine = SyncEngine(store, registry, out_root=tmp_path)
 
     report = engine.push()
 
-    assert registry.pushes == []
-    assert report.sections == {}
-    assert engine.watermark("sites") is None
-    assert "sites" not in AUTHORED_SECTIONS
+    assert [row["id"] for row in registry.pushes[0]["sites"]] == [str(site.id)]
+    assert report.applied == 1
+    assert engine.watermark("sites") is not None
+    assert "sites" in AUTHORED_SECTIONS
 
 
 def test_a_refused_local_edit_advances_the_watermark_and_is_reported(store, tmp_path):
@@ -1200,11 +1209,12 @@ def test_a_refused_local_edit_advances_the_watermark_and_is_reported(store, tmp_
     assert fingerprints.count(CONFLICT_REFUSED) == 1
 
 
-def test_a_pulled_section_this_device_authors_is_refused_whole(store, tmp_path):
-    """Scenario: a registry answering a pull with a section devices author.
+def test_a_pulled_row_of_a_section_this_device_authors_lands(store, tmp_path):
+    """Scenario: the registry sends back a clip this laptop uploaded, as the
+    console left it.
 
-    Expected behaviour: nothing of it is written, whatever it carries. The rows
-    made on this laptop have exactly one writer, and it is this laptop.
+    Expected behaviour: it lands like any catalogue row, so what the console
+    curated, validated or deleted reaches the laptop that made it.
     """
     video_id = uuid.uuid4()
     notifications = NotificationCenter()
@@ -1213,10 +1223,21 @@ def test_a_pulled_section_this_device_authors_is_refused_whole(store, tmp_path):
 
     report = engine.pull()
 
+    assert report.refused_sections == ()
+    assert store.get_video(video_id) is not None
+    assert engine.cursor() == 10
+    assert SECTION_REFUSED not in {note.fingerprint for note in notifications.active()}
+
+
+def test_a_section_outside_the_agreed_set_is_still_refused(store, tmp_path):
+    video_id = uuid.uuid4()
+    registry = FakeRegistry(pages=[page(10, {"videos": [video_row(video_id)]})])
+    engine = SyncEngine(store, registry, out_root=tmp_path, pull_sections=PULL_SECTIONS)
+
+    report = engine.pull()
+
     assert report.refused_sections == ("videos",)
     assert store.get_video(video_id) is None
-    assert engine.cursor() == 10
-    assert SECTION_REFUSED in {note.fingerprint for note in notifications.active()}
 
 
 # --- Pull: stamps that would break last-write-wins ---
@@ -1390,6 +1411,7 @@ def test_a_page_that_frees_the_name_it_collided_on_sets_nothing_aside(store, tmp
     second = make_transect("T2", site_id=site.id)
     store.add_transect(first)
     store.add_transect(second)
+    as_pushed(store)
     notifications = NotificationCenter()
     registry = FakeRegistry(pages=[page(10, {
         "transects": [
@@ -1417,6 +1439,7 @@ def test_two_lines_whose_names_the_registry_swapped_both_land(store, tmp_path):
     second = make_transect("T2", site_id=site.id)
     store.add_transect(first)
     store.add_transect(second)
+    as_pushed(store)
     registry = FakeRegistry(pages=[page(10, {
         "transects": [
             transect_row(first.id, "T2", site_id=str(site.id)),
@@ -1440,6 +1463,7 @@ def test_a_row_set_aside_lands_on_the_sync_after_the_name_is_freed(store, tmp_pa
     store.add_site(site)
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
+    as_pushed(store)
     theirs = uuid.uuid4()
     SyncEngine(
         store,
@@ -1494,6 +1518,7 @@ def test_renaming_the_line_here_also_lets_a_set_aside_row_land(store, tmp_path):
     store.add_site(site)
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
+    as_pushed(store)
     theirs = uuid.uuid4()
     SyncEngine(
         store,
@@ -1530,6 +1555,7 @@ def test_a_set_aside_row_this_laptop_has_outlived_is_discarded_not_landed(store,
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
     store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    as_pushed(store)
     SyncEngine(
         store,
         FakeRegistry(pages=[page(10, {
@@ -1572,6 +1598,7 @@ def test_a_row_the_store_could_not_read_is_no_proof_the_registry_s_copy_landed(
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
     store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    as_pushed(store)
     SyncEngine(
         store,
         FakeRegistry(pages=[page(10, {
@@ -1611,6 +1638,7 @@ def test_a_set_aside_row_the_registry_itself_replaced_is_cleared_not_discarded(s
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
     store.add_transect(make_transect("Sand Chute", site_id=site.id))
+    as_pushed(store)
     SyncEngine(
         store,
         FakeRegistry(pages=[page(10, {
@@ -1646,6 +1674,7 @@ def test_a_set_aside_site_this_laptop_has_outlived_is_discarded_too(store, tmp_p
     ours = Site(name="Reef")
     store.add_site(ours)
     store.add_site(Site(name="Lagoon"))
+    as_pushed(store)
     SyncEngine(
         store,
         FakeRegistry(pages=[page(10, {"sites": [site_row(ours.id, "Lagoon")]})]),
@@ -1666,7 +1695,6 @@ def test_a_set_aside_site_this_laptop_has_outlived_is_discarded_too(store, tmp_p
     assert store.get_site(ours.id).name == "Reef North", "the edit here stands"
     assert engine.quarantined() == []
     assert SET_ASIDE_DISCARDED in {note.fingerprint for note in notifications.active()}
-    assert store.pending_push_ids("sites") == set(), "and no mark was what proved it"
 
 
 def test_a_set_aside_site_the_registry_itself_replaced_is_cleared_not_discarded(
@@ -1679,6 +1707,7 @@ def test_a_set_aside_site_the_registry_itself_replaced_is_cleared_not_discarded(
     ours = Site(name="Reef")
     store.add_site(ours)
     store.add_site(Site(name="Lagoon"))
+    as_pushed(store)
     SyncEngine(
         store,
         FakeRegistry(pages=[page(10, {"sites": [site_row(ours.id, "Lagoon")]})]),
@@ -1783,6 +1812,7 @@ def test_a_pass_lands_once_the_name_blocking_its_transect_is_freed(store, tmp_pa
     store.add_site(site)
     ours = make_transect("Reef Wall", site_id=site.id)
     store.add_transect(ours)
+    as_pushed(store)
     theirs, pass_id, video_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     SyncEngine(
         store,
@@ -2085,3 +2115,133 @@ def test_the_marks_are_only_read_for_sections_that_carry_them():
     from deepreefmap_gui.survey.store import _PENDING_TABLES
 
     assert set(AUTHORED_SECTIONS) == set(_PENDING_TABLES)
+
+
+# --- Contract 2: the ledger's answers ---
+
+
+class LedgerRegistry(FakeRegistry):
+    """Answers in the ledger's shape: acknowledgements with positions, and the
+    rows it kept as proposals, superseded or rejected, each with a reason."""
+
+    def __init__(self, pages=(), proposed=None, superseded=None, rejected=None, seq=900):
+        super().__init__(pages=pages)
+        self._proposed = proposed or {}
+        self._superseded = superseded or {}
+        self._rejected = rejected or {}
+        self._seq = seq
+
+    def _outcome(self, name, rows):
+        proposed = {str(r) for r in self._proposed.get(name, ())}
+        superseded = self._superseded.get(name, {})
+        rejected = {str(r) for r in self._rejected.get(name, ())}
+        acks = []
+        for row in rows:
+            row_id = str(row["id"])
+            if row_id in proposed or row_id in superseded or row_id in rejected:
+                continue
+            self._seq += 1
+            acks.append({"id": row_id, "seq": self._seq})
+        return {
+            "received": len(rows),
+            "applied": acks,
+            "superseded": [
+                {"id": str(r), "reason": reason} for r, reason in superseded.items()
+            ],
+            "proposed": [{"id": r, "reason": "validated"} for r in proposed],
+            "rejected": [{"id": r, "reason": "unique_collision"} for r in rejected],
+        }
+
+
+def test_an_acknowledged_row_takes_the_position_the_registry_gave_it(store, tmp_path):
+    transect = make_transect()
+    store.add_transect(transect)
+    registry = LedgerRegistry(seq=500)
+
+    report = SyncEngine(store, registry, out_root=tmp_path).push()
+
+    assert report.applied == 1
+    assert store.get_transect(transect.id).head_seq == 501
+    sent = registry.pushes[0]["transects"][0]
+    assert sent["base_seq"] is None, "a row never seen by the registry has no base"
+    assert "head_seq" not in sent
+
+
+def test_a_pushed_row_names_the_position_it_was_last_seen_at(store, tmp_path):
+    transect_id = uuid.uuid4()
+    SyncEngine(
+        store,
+        FakeRegistry(pages=[page(10, {"transects": [transect_row(transect_id, server_seq=42)]})]),
+        out_root=tmp_path,
+    ).pull()
+    transect = store.get_transect(transect_id)
+    transect.name = "Renamed here"
+    store.update_transect(transect)
+    registry = LedgerRegistry()
+
+    SyncEngine(store, registry, out_root=tmp_path).push()
+
+    assert registry.pushes[0]["transects"][0]["base_seq"] == 42
+
+
+def test_a_proposed_row_is_settled_and_reported(store, tmp_path):
+    transect = make_transect()
+    store.add_transect(transect)
+    notifications = NotificationCenter()
+    registry = LedgerRegistry(proposed={"transects": [transect.id]})
+    engine = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications)
+
+    report = engine.push()
+
+    assert report.proposed == [transect.id]
+    assert report.applied == 0
+    assert store.pending_push_ids("transects") == set(), "a proposal is answered for"
+    assert engine.watermark("transects") is not None
+    assert CHANGE_PROPOSED in {note.fingerprint for note in notifications.active()}
+
+
+def test_a_stale_supersession_is_a_skip_and_another_devices_is_a_refusal(store, tmp_path):
+    first = make_transect("T1")
+    second = make_transect("T2")
+    store.add_transect(first)
+    store.add_transect(second)
+    registry = LedgerRegistry(
+        superseded={"transects": {first.id: "stale", second.id: "another_device"}}
+    )
+
+    report = SyncEngine(store, registry, out_root=tmp_path).push()
+
+    assert report.skipped == [first.id]
+    assert report.refused == [second.id]
+
+
+def test_a_rejected_row_is_a_conflict(store, tmp_path):
+    transect = make_transect()
+    store.add_transect(transect)
+    registry = LedgerRegistry(rejected={"transects": [transect.id]})
+
+    report = SyncEngine(store, registry, out_root=tmp_path).push()
+
+    assert report.conflicted == [transect.id]
+
+
+def test_the_consoles_decisions_come_down_with_the_pull(store, tmp_path):
+    accepted, dismissed = uuid.uuid4(), uuid.uuid4()
+    answer = page(10, {})
+    answer["outbox"] = [
+        {"table_key": "transects", "row_id": str(accepted), "seq": 5, "status": "applied",
+         "reason": None, "projected_seq": 9},
+        {"table_key": "passes", "row_id": str(dismissed), "seq": 6, "status": "dismissed",
+         "reason": "validated", "projected_seq": None},
+        {"table_key": "passes", "row_id": "not-an-id", "seq": 7, "status": "dismissed"},
+    ]
+    notifications = NotificationCenter()
+    registry = FakeRegistry(pages=[answer])
+
+    report = SyncEngine(store, registry, out_root=tmp_path, notifications=notifications).pull()
+
+    assert [(d.row_id, d.status) for d in report.decided] == [
+        (accepted, "applied"), (dismissed, "dismissed"),
+    ]
+    fingerprints = {note.fingerprint for note in notifications.active()}
+    assert {CHANGE_ACCEPTED, CHANGE_DISMISSED} <= fingerprints

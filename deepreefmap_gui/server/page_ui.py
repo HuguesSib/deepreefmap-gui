@@ -81,7 +81,7 @@ from deepreefmap_gui.survey.preset import (
 )
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport, TransferProgress
-from deepreefmap_gui.sync.contract import PULL_SECTIONS
+from deepreefmap_gui.sync.contract import READ_SECTIONS
 from deepreefmap_gui.sync.engine import PullReport, PushReport, SyncEngine
 
 logger = logging.getLogger(__name__)
@@ -586,7 +586,7 @@ class ServerPageMixin(MixinBase):
             notifications=ConflictNotifier(self._sig_notify.emit),
             # The artefact this build vendored is what the client declared, so
             # the two cannot disagree about which sections were asked for.
-            pull_sections=PULL_SECTIONS,
+            pull_sections=READ_SECTIONS,
         )
 
     def _remember_agreed_contract(self) -> None:

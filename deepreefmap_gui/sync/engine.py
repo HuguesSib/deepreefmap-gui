@@ -1,10 +1,11 @@
 """Pull, push, and the conflict reports both produce.
 
-Pull runs before push. It narrows the window in which this laptop is working from
-a stale copy, and it means a row two people edited is discovered before the local
-edit is offered rather than after it was refused. The two are separate calls, and
-a surface running them is expected to run the push whether or not the pull
-finished: the records made on the laptop exist nowhere else.
+Push runs before pull. What was edited here reaches the registry's ledger first,
+judged against the position each row was last seen at, and the pull that follows
+brings down what stood: the merge, or the registry's own copy where the console
+had the last word. The two are separate calls, and a surface running them is
+expected to run the push whether or not the pull finished: the records made on
+the laptop exist nowhere else.
 
 Both halves are resumable. The pull cursor is written after each page that landed,
 and a section's push watermark moves only once the registry has accounted for
@@ -129,6 +130,11 @@ CONFLICT_STRANDED = "sync.local_edit_stranded"
 CONFLICT_OVERWRITTEN = "sync.local_edit_overwritten"
 # A local edit to a row another device owns, which the registry will never take.
 CONFLICT_REFUSED = "sync.local_edit_refused"
+# A local edit the registry kept as a proposal for the console to decide on.
+CHANGE_PROPOSED = "sync.change_proposed"
+# A proposal the console accepted, or dismissed.
+CHANGE_ACCEPTED = "sync.change_accepted"
+CHANGE_DISMISSED = "sync.change_dismissed"
 # A pass the registry holds with no videos, which this side cannot represent.
 PASS_WITHOUT_VIDEOS = "sync.pass_without_videos"
 # A run whose pass the registry never sent, so it has no parent to hang off.
@@ -209,6 +215,11 @@ class SectionPush:
     # already carries, or a value outside its allowed set. Terminal, so
     # re-sending cannot help. Narrowed like skipped.
     conflicted: tuple[uuid.UUID, ...] = ()
+    # Rows the console holds the last word on, kept in the registry's ledger as
+    # proposals for a curator. Narrowed like skipped.
+    proposed: tuple[uuid.UUID, ...] = ()
+    # The registry position each applied row took, for its next base_seq.
+    acks: tuple[tuple[uuid.UUID, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,7 +257,7 @@ class PushReport:
         downloadable: list[uuid.UUID] = []
         stranded: list[uuid.UUID] = []
         for name, section in self.sections.items():
-            bucket = downloadable if name in contract.PULL_SECTIONS else stranded
+            bucket = downloadable if name in contract.READ_SECTIONS else stranded
             bucket.extend(section.skipped)
         return downloadable, stranded
 
@@ -259,6 +270,21 @@ class PushReport:
     def conflicted(self) -> list[uuid.UUID]:
         """Locally edited rows the registry's database refused outright."""
         return [row_id for section in self.sections.values() for row_id in section.conflicted]
+
+    @property
+    def proposed(self) -> list[uuid.UUID]:
+        """Locally edited rows kept as proposals for the console."""
+        return [row_id for section in self.sections.values() for row_id in section.proposed]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The console's word on one row this device pushed."""
+
+    section: str
+    row_id: uuid.UUID
+    status: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -306,6 +332,8 @@ class PullReport:
     # The registry said more rows were waiting but would not advance the
     # cursor, so the pull broke off rather than asking for the same page forever.
     stalled: bool = False
+    # What the console decided about rows this device pushed, since the cursor.
+    decided: tuple[Decision, ...] = ()
 
     @property
     def applied(self) -> int:
@@ -426,15 +454,13 @@ class SyncEngine:
     # --- Sync ---
 
     def sync(self) -> SyncReport:
-        """Pull, then push, and stop at the first half that fails.
+        """Push, then pull, and stop at the first half that fails.
 
         The all-or-nothing form, for a caller that wants one answer. The Server
-        page runs the two separately, because there the push is the half that
-        matters: the records made on that laptop exist nowhere else, and a pull
-        that fails the same way every sync must not keep them from leaving.
+        page runs the two separately.
         """
-        pulled = self.pull()
-        return SyncReport(pull=pulled, push=self.push())
+        pushed = self.push()
+        return SyncReport(pull=self.pull(), push=pushed)
 
     # --- Pull ---
 
@@ -463,6 +489,7 @@ class SyncEngine:
         cleared: list[uuid.UUID] = []
         discarded: list[uuid.UUID] = []
         stalled = False
+        decided: list[Decision] = []
         held = self._held()
         # Per section, the ids the registry's own copy has gone in under during
         # this pull. It spans the pages rather than living on one: a set-aside
@@ -498,6 +525,7 @@ class SyncEngine:
             cleared.extend(outcome.cleared)
             discarded.extend(outcome.discarded)
             refused.update(outcome.refused)
+            decided.extend(_decisions(page))
             pages += 1
             if outcome.unknown:
                 unknown = outcome.unknown
@@ -536,6 +564,7 @@ class SyncEngine:
             runs_pass_deleted=tuple(deleted_passes),
             given_up=tuple(given_up),
             stalled=stalled,
+            decided=tuple(decided),
         )
         self._report_pull_conflicts(report)
         return report
@@ -645,11 +674,10 @@ class SyncEngine:
     def _asked_for(self, sections: Mapping[str, Any]) -> dict[str, Any]:
         """The page narrowed to the sections this pull declared it reads.
 
-        An engine with no agreed set falls back to the vendored contract's pull
-        sections. Either way there is always a gate: a section this device
-        authors is only ever written here, whatever a registry chooses to send.
+        An engine with no agreed set falls back to every section the vendored
+        contract says a device reads.
         """
-        agreed = self.agreed_sections() or contract.PULL_SECTIONS
+        agreed = self.agreed_sections() or contract.READ_SECTIONS
         return {name: rows for name, rows in sections.items() if name in agreed}
 
     def _apply_page(
@@ -989,6 +1017,8 @@ class SyncEngine:
             # watermark. A row the registry conflicted on is marked again the
             # moment somebody changes what made it conflict.
             self._store.clear_pending_push(name, _row_ids(sections[name]))
+            if outcome.acks and name in SYNC_SECTIONS:
+                self._store.set_head_seq(name, dict(outcome.acks))
             advanced[name] = stamp
         report = PushReport(
             sections=_our_edits(outcomes, edited),
@@ -1091,10 +1121,24 @@ class SyncEngine:
             named = ", ".join(report.refused_sections)
             self._post(
                 SECTION_REFUSED,
-                "The registry sent data this device never asked for",
-                f"It sent {named}, which records made on this laptop are the only "
-                "authority for. Those rows were ignored whole and nothing here "
-                "changed. A registry doing this repeatedly is misconfigured.",
+                "The registry sent data this sync was not reading",
+                f"It sent {named}, which this sync had not asked for. Those rows "
+                "were ignored whole and nothing here changed.",
+            )
+        accepted = [d for d in report.decided if d.status == "applied"]
+        if accepted:
+            self._post(
+                CHANGE_ACCEPTED,
+                f"The console accepted {len(accepted)} change(s) proposed from here",
+                "They are in the survey now, and the rows have come down with them.",
+            )
+        dismissed = [d for d in report.decided if d.status == "dismissed"]
+        if dismissed:
+            self._post(
+                CHANGE_DISMISSED,
+                f"The console dismissed {len(dismissed)} change(s) proposed from here",
+                "The registry's version stands. The values sent from here are kept "
+                "in the registry's ledger; ask in the web console if they mattered.",
             )
         if report.overwritten:
             self._post(
@@ -1249,6 +1293,15 @@ class SyncEngine:
                 "These rows were first uploaded from somewhere else, so edits to "
                 "them made here never land. Make the change in the web console, "
                 "or on the device that recorded them.",
+            )
+        proposed = report.proposed
+        if proposed:
+            self._post(
+                CHANGE_PROPOSED,
+                f"{len(proposed)} change(s) made here await the console",
+                "The console has the last word on these rows: it validated, edited "
+                "or deleted them. The changes were kept there as proposals, and "
+                "the next sync brings the console's version down. Nothing is lost.",
             )
 
     def _post(self, fingerprint: str, title: str, body: str) -> None:
@@ -1516,15 +1569,45 @@ def _page_cursor(payload: Mapping[str, Any]) -> int | None:
 
 def _push_outcomes(response: Mapping[str, Any]) -> dict[str, SectionPush]:
     outcomes = {}
-    for name, outcome in (response.get("sections") or {}).items():
+    for name, outcome in wire.push_outcomes(response).items():
+        acks = tuple(
+            (row_id, seq)
+            for row_id, seq in zip(_ids(outcome["acks"]), outcome["acks"].values(), strict=True)
+        )
         outcomes[name] = SectionPush(
-            received=int(outcome.get("received", 0)),
-            applied=int(outcome.get("applied", 0)),
-            skipped=tuple(_ids(outcome.get("skipped") or ())),
-            refused=tuple(_ids(outcome.get("refused") or ())),
-            conflicted=tuple(_ids(outcome.get("conflicted") or ())),
+            received=outcome["received"],
+            applied=len(acks) if acks or "applied" not in outcome else outcome["applied"],
+            skipped=tuple(_ids(outcome["skipped"])),
+            refused=tuple(_ids(outcome["refused"])),
+            conflicted=tuple(_ids(outcome["rejected"])),
+            proposed=tuple(_ids(outcome["proposed"])),
+            acks=acks,
         )
     return outcomes
+
+
+def _decisions(page: Mapping[str, Any]) -> list[Decision]:
+    """The console's decisions a pull carried, ignoring anything malformed."""
+    listed = page.get("outbox")
+    if not isinstance(listed, (list, tuple)):
+        return []
+    decisions = []
+    for entry in listed:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            row_id = uuid.UUID(str(entry.get("row_id")))
+        except ValueError:
+            continue
+        decisions.append(
+            Decision(
+                section=str(entry.get("table_key") or ""),
+                row_id=row_id,
+                status=str(entry.get("status") or ""),
+                reason=str(entry.get("reason") or ""),
+            )
+        )
+    return decisions
 
 
 def _our_edits(
@@ -1552,6 +1635,10 @@ def _our_edits(
             conflicted=tuple(
                 row_id for row_id in outcome.conflicted if row_id in edited.get(name, ())
             ),
+            proposed=tuple(
+                row_id for row_id in outcome.proposed if row_id in edited.get(name, ())
+            ),
+            acks=outcome.acks,
         )
         for name, outcome in outcomes.items()
     }
@@ -1573,6 +1660,7 @@ def _accounted(outcome: SectionPush, sent: int) -> bool:
         + len(outcome.skipped)
         + len(outcome.refused)
         + len(outcome.conflicted)
+        + len(outcome.proposed)
     )
     return outcome.received == sent and settled == sent
 

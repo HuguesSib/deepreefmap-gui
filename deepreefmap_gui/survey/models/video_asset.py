@@ -56,6 +56,8 @@ class VideoAsset:
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
     device_id: uuid.UUID | None = None
+    # The registry position this row was last seen at, sent back as base_seq.
+    head_seq: int | None = None
 
     # Every field belongs to exactly one group, and the two carry-over policies
     # below are written in terms of the groups rather than a list per call site.
@@ -85,6 +87,7 @@ class VideoAsset:
         "updated_at",
         "deleted_at",
         "device_id",
+        "head_seq",
     )
 
     @classmethod

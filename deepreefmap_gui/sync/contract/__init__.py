@@ -31,11 +31,12 @@ def _document() -> dict[str, Any]:
 
 DOCUMENT: dict[str, Any] = _document()
 
-# The newest contract this build reads, and the oldest. Both travel in the
-# request header as a range, and the registry runs the exchange at the lower of
-# the two maxima.
+# The newest contract this build reads, from the artefact, and the oldest, which
+# is this build's own: the registry's floor rising must not stop a laptop from
+# talking to a registry that has not.
 CONTRACT_VERSION: int = int(DOCUMENT["contract_version"])
-MIN_CONTRACT_VERSION: int = int(DOCUMENT["min_contract_version"])
+MIN_CONTRACT_VERSION: int = 1
+SERVER_MIN_CONTRACT_VERSION: int = int(DOCUMENT["min_contract_version"])
 
 # Every section the contract names, in the order a document presents them.
 SECTIONS: tuple[str, ...] = tuple(DOCUMENT["sections"])
@@ -43,6 +44,14 @@ SECTIONS: tuple[str, ...] = tuple(DOCUMENT["sections"])
 # The sections a device is served on a pull. The rest are upload only, so asking
 # for them would widen the cursor's meaning for rows that never come down.
 PULL_SECTIONS: tuple[str, ...] = tuple(DOCUMENT["pull_sections"])
+
+# The sections a device is served its own rows of, from OWN_ROWS_SINCE: what the
+# console curated, validated or deleted of what this laptop uploaded.
+OWN_ROWS_SECTIONS: tuple[str, ...] = tuple(DOCUMENT["own_rows_sections"])
+OWN_ROWS_SINCE: int = int(DOCUMENT["own_rows_since"])
+
+# Every section a pull may carry to this build.
+READ_SECTIONS: tuple[str, ...] = PULL_SECTIONS + OWN_ROWS_SECTIONS
 
 # The sections a device may author. It sends the others as ancestors of rows it
 # does author, and the registry reads those rather than writing them.

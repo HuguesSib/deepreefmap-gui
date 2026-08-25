@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from _factories import clip_pass, make_batch, make_transect, seed_pass
+from _factories import as_pushed, clip_pass, make_batch, make_transect, seed_pass
 from _qt_wait import wait_until
 from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
 from PySide6.QtWidgets import QMessageBox
@@ -2477,6 +2477,7 @@ def retire_transect(window, transect_id):
     from datetime import datetime, timedelta, timezone
 
     retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    as_pushed(window._survey_store())
     window._survey_store().apply_from_server("transects", [
         {"id": str(transect_id), "deleted_at": retired_at, "updated_at": retired_at}
     ])
