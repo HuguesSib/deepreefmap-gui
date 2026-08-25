@@ -22,7 +22,7 @@ from deepreefmap_gui.io.atomic import atomic_write_json
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
-from deepreefmap_gui.survey.models.transect_pass import TransectPass, direction_text
+from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.statuses import (
     CLIP_FAILED,
@@ -753,9 +753,15 @@ def _window_title(entry: RunEntry) -> str:
 
 
 def _pass_title(entry: RunEntry) -> str:
-    parts = [entry.video_name or "unknown video", _window_title(entry).split(" · ")[0]]
-    if entry.direction:
-        parts.append(direction_text(entry.direction))
+    """The clip a pass was cut from, and the window only where there is one.
+
+    An untrimmed pass used to spell out "whole video", which is the same phrase
+    on most rows, and the direction, which the rail draws as an arrow. Both took
+    width from the clip name, which is the part that says which pass this is.
+    """
+    parts = [entry.video_name or "unknown video"]
+    if entry.begin_s is not None or entry.end_s is not None:
+        parts.append(_window_title(entry).split(" · ")[0])
     return " · ".join(parts)
 
 

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -136,7 +137,9 @@ _RAIL_WIDTH = 240
 
 # Below this the rail is not showing names any more, so a remembered width this
 # small is a layout artefact rather than a choice the user made.
-_RAIL_MIN_WIDTH = 200
+# Wide enough for a group name beside its count, which is what the 8px
+# indentation below is chosen against.
+_RAIL_MIN_WIDTH = 240
 
 # Tall enough to hold a transect and the water around it; the list below it is
 # what grows when the rail is dragged wider.
@@ -283,7 +286,16 @@ class BrowseMixin(MixinBase):
         # leaves the disclosure arrow a readable offset.
         self._data_tree.setIndentation(SPACE_SM)
         self._data_tree.setUniformRowHeights(True)
-        self._data_tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        # Two columns, the count sized to itself and the name taking the rest.
+        self._data_tree.setColumnCount(2)
+        self._data_tree.header().setStretchLastSection(False)
+        self._data_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._data_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        # Right, not middle: a transect or a session is identified by the start
+        # of its name, and eliding from the middle took out the part that said
+        # which one it was. File names, whose two ends discriminate, keep the
+        # middle elide on the tables that hold them.
+        self._data_tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
         # Clicks as well as selection changes: clicking the row that is already
         # selected changes no selection and emits nothing, so a run picked in
@@ -777,7 +789,12 @@ class BrowseMixin(MixinBase):
 
     def _add_tree_group(self, group: FacetGroup, parent: QTreeWidgetItem | None) -> None:
         count = len(group.all_entries())
-        item = QTreeWidgetItem([f"{group.title}  ({count})"])
+        # The count in a column of its own: joined onto the title it was part of
+        # the string that elided, so a narrow rail ate the name and left the
+        # number, which is the half that says least.
+        item = QTreeWidgetItem([group.title, str(count)])
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setToolTip(0, f"{group.title}  ({count} run{'s' if count != 1 else ''})")
         item.setData(0, _GROUP_KEY_ROLE, group.key)
         self._data_groups[group.key] = group
         if parent is None:
