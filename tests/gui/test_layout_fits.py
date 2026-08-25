@@ -8,6 +8,8 @@ was never budgeted for.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from deepreefmap_gui.core.theme import MIN_WINDOW_WIDTH
@@ -86,6 +88,61 @@ def test_the_mandatory_columns_fit_the_narrowest_pane_they_are_given() -> None:
     from deepreefmap_gui.runs.run_table import _COLUMN_SPEC
 
     assert sum(fitted_column_widths(700, _COLUMN_SPEC).values()) <= 700
+
+
+# The VTK canvas draws its own scrollbars into a GL surface and the legend
+# overlay is a floating panel, neither of which is a page that has to fit.
+_NOT_A_PAGE = ("legendScroll", "viewerCanvas")
+
+
+def _settle(qapp, seconds: float = 0.3) -> None:
+    """Let the page lay itself out before its scrollbars are read.
+
+    The column sizer refits on a zero-interval singleShot and the pages are
+    built as they are first shown, so a couple of `processEvents` calls read the
+    widths a section is about to stop having.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+
+def _overflowing(window) -> list[str]:
+    """Every visible scroll area showing a horizontal bar it can actually scroll."""
+    from PySide6.QtWidgets import QAbstractScrollArea
+
+    offenders = []
+    for area in window.findChildren(QAbstractScrollArea):
+        if not area.isVisible() or area.objectName() in _NOT_A_PAGE:
+            continue
+        bar = area.horizontalScrollBar()
+        if bar.isVisible() and bar.maximum() > 0:
+            offenders.append(f"{type(area).__name__}({area.objectName()}) +{bar.maximum()}px")
+    return offenders
+
+
+@pytest.mark.parametrize("size", [(MIN_WINDOW_WIDTH, 800), (1366, 768)])
+def test_no_page_scrolls_sideways_at_a_laptop_size(window, qapp, size) -> None:
+    """Expected behaviour: every page fits the window it is designed against.
+
+    A horizontal scrollbar on a table or a page is always a layout that did not
+    fit. The table specs above catch the arithmetic; this catches a widget whose
+    own minimum sets a floor the page was never budgeted for.
+    """
+    from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
+
+    window.resize(*size)
+    window.show()
+    try:
+        offenders = []
+        for section in SIMPLE_SECTIONS:
+            window._set_simple_section(section)
+            _settle(qapp)
+            offenders += [f"{section}: {name}" for name in _overflowing(window)]
+        assert offenders == []
+    finally:
+        window.hide()
 
 
 def test_torch_is_available_for_the_window_tests() -> None:
