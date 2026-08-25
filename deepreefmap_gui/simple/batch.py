@@ -2324,9 +2324,17 @@ class SimpleBatchMixin(MixinBase):
 
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
-        time_str = _rough_batch_time(self._survey_batch_prediction().total_s)
+        prediction = self._survey_batch_prediction()
+        time_str = _rough_batch_time(prediction.total_s)
         opening = f"{pass_count} pass{'' if pass_count == 1 else 'es'} queued"
-        opening += f", {time_str}." if time_str else "."
+        if time_str:
+            # The count is the whole queue but the time covers only the passes
+            # there is a basis for; pairing them bare in one sentence reads as a
+            # figure for all of them.
+            clause = prediction.coverage_clause()
+            opening += f", {time_str}{f' ({clause})' if clause else ''}."
+        else:
+            opening += "."
         return confirm(
             self,
             "Insufficient disk space",
