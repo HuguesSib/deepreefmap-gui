@@ -88,16 +88,15 @@ _LOGER_PIXELS = 504 * 280
 _LOGER_LOAD_RAM = 12 * GB
 _LOGER_WEIGHTS_RAM = 5 * GB
 
-# Device-side: the weights plus one window's activations under autocast. Unlike
-# every other figure in this file this one is neither traced nor measured -- it
-# is a round number, and it is the one that decides on its own whether an 8 GB
-# card is refused, because it is compared against the budget at zero frames.
-#
-# It is the figure most worth replacing with a reading: one
-# torch.cuda.max_memory_allocated() straight after the backend is constructed,
-# before any frames, settles it. Until then a VRAM peak recorded on the card in
-# front of the user supersedes it in either direction (memory_estimate.py).
-_LOGER_VRAM_FIXED = 9 * GB
+# Device-side: the weights plus the working set of the sliding window. Measured
+# on an RX 7900 XT (ROCm 6.4, fp16 autocast, loger_star with se3) at 504x280:
+# 4.67 GB of weights resident after construction, a 9.5 GB peak through the
+# first window of 32 frames, 11.5 GB from the second window on, and ~1.7 MB per
+# frame after that (the per-frame figure below). Compared against the budget at
+# zero frames, so on its own it decides whether an 8 GB card is refused. A VRAM
+# peak recorded on the card in front of the user supersedes it in either
+# direction (memory_estimate.py). Apple unified memory is unmeasured.
+_LOGER_VRAM_FIXED = int(11.5 * GB)
 
 _MAPPING_COSTS: tuple[MappingCost, ...] = (
     MappingCost(

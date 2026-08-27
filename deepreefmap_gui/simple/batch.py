@@ -2023,6 +2023,23 @@ class SimpleBatchMixin(MixinBase):
 
     # --- Run gating and execution ---
 
+    def _survey_unread_gravity(self) -> int:
+        """Queued passes whose clip recorded gravity that this platform cannot read."""
+        from deepreefmap.telemetry.gopro import gravity_telemetry_available
+
+        from deepreefmap_gui.survey.video_probe import YES
+
+        if gravity_telemetry_available():
+            return 0
+        store = self._survey_store()
+        count = 0
+        for row in self._survey_rows:
+            pass_ = store.get_pass(row.pass_id)
+            video = store.get_video(pass_.video_id) if pass_ is not None else None
+            if video is not None and video.gravity == YES:
+                count += 1
+        return count
+
     def _survey_missing_models(self) -> list[str]:
         """Required-but-uncached models, judged against what the run will load.
 
@@ -2178,6 +2195,7 @@ class SimpleBatchMixin(MixinBase):
         remaining = self._survey_remaining_rows() if self._survey_rows else []
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
+            unread_gravity=self._survey_unread_gravity(),
             pass_count=len(self._survey_rows),
             missing_files=self._rows_without_footage(),
             unassigned=unassigned,

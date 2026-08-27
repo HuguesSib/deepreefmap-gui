@@ -8,6 +8,7 @@ from deepreefmap_gui.simple.section_state import (
     ATTENTION,
     BLOCKED,
     CAUSE_RETIRED_TRANSECT,
+    CAUSE_UNREAD_GRAVITY,
     FIX_HERE,
     FIX_MACHINE,
     FIX_SETTINGS,
@@ -444,3 +445,16 @@ def test_a_headline_drops_the_advice_and_keeps_the_fault():
 
 def test_a_one_sentence_reason_survives_whole():
     assert headline("Add a transect, or import a CSV or GPX file.") == ("Add a transect, or import a CSV or GPX file")
+
+
+def test_gravity_this_platform_cannot_read_is_said_without_blocking():
+    state = gate(pass_count=3, unread_gravity=2)
+    assert state.state == OK
+    assert "2 without gravity" in state.count
+    assert "not gravity-aligned" in state.reason
+    assert state.cause == CAUSE_UNREAD_GRAVITY
+
+
+def test_unread_gravity_yields_to_every_other_reason():
+    state = gate(pass_count=3, unread_gravity=2, unscaled=1)
+    assert state.cause != CAUSE_UNREAD_GRAVITY

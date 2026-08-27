@@ -564,6 +564,10 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     os.environ.setdefault("QT_OPENGL", "desktop")
+    # Read by torch at import: an op the Apple GPU backend lacks then runs on the
+    # CPU instead of failing the run. Same default as deepreefmap.device sets, but
+    # this process imports torch on a worker long after it resolved nothing.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     prefer_portal_file_dialogs()
     fmt = QSurfaceFormat()
     fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)

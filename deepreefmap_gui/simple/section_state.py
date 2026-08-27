@@ -43,6 +43,7 @@ CAUSE_FAILED_PASSES = "process.failed_passes"
 CAUSE_UNASSIGNED_PASSES = "process.unassigned_passes"
 CAUSE_UNSCALED_PASSES = "process.unscaled_passes"
 CAUSE_RETIRED_TRANSECT = "process.retired_transect"
+CAUSE_UNREAD_GRAVITY = "process.unread_gravity"
 CAUSE_UNMET_REQUIREMENTS = "machine.unmet_requirements"
 CAUSE_MACHINE_ADVISORY = "machine.advisory"
 
@@ -59,6 +60,7 @@ CAUSES = (
     CAUSE_UNASSIGNED_PASSES,
     CAUSE_UNSCALED_PASSES,
     CAUSE_RETIRED_TRANSECT,
+    CAUSE_UNREAD_GRAVITY,
     CAUSE_UNMET_REQUIREMENTS,
     CAUSE_MACHINE_ADVISORY,
 )
@@ -289,6 +291,7 @@ def run_gate(
     retired_unscaled: int = 0,
     retired_lines: int = 0,
     missing_files: int = 0,
+    unread_gravity: int = 0,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
 
@@ -406,6 +409,19 @@ def run_gate(
             f"{_unscaled_clause(unscaled, unscaled_lines)}. Set the length under Transects.",
             cause=CAUSE_UNSCALED_PASSES,
             n=unscaled,
+        )
+    # The camera recorded a gravity vector this platform cannot read: the
+    # reconstruction still runs, without the alignment the footage would have
+    # given it. Said once here, because the log line it otherwise leaves is the
+    # only other place it shows.
+    if unread_gravity:
+        return SectionState(
+            OK,
+            f"{counts} · {unread_gravity} without gravity",
+            f"{passes_phrase(unread_gravity)} recorded a gravity vector that cannot be read on this "
+            "platform, so the reconstruction is not gravity-aligned.",
+            cause=CAUSE_UNREAD_GRAVITY,
+            n=unread_gravity,
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")
