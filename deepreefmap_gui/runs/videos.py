@@ -272,6 +272,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.add_to_cart_requested.connect(self._on_video_pass_to_cart)
         self._video_detail.retrim_requested.connect(self._on_section_retrim)
         self._video_detail.reassign_requested.connect(self._on_section_reassign)
+        self._video_detail.rename_requested.connect(self._on_section_rename)
         self._video_detail.delete_requested.connect(self._on_section_delete)
         self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
@@ -287,6 +288,7 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail = SectionDetailPanel()
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
+        self._section_detail.rename_requested.connect(self._on_section_rename)
         self._section_detail.delete_requested.connect(self._on_section_delete)
         self._section_detail.run_activated.connect(self._on_section_run_activated)
         # Same handler as the run card in Browse, so the press lands on the
@@ -899,7 +901,7 @@ class VideoLibraryMixin(MixinBase):
         except Exception:
             logger.exception("Could not read the session for a run")
             return None
-        return batch.name if batch is not None else None
+        return batch.label if batch is not None else None
 
     def _on_video_add_clicked(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1153,6 +1155,33 @@ class VideoLibraryMixin(MixinBase):
         dialog = TransectPickerDialog(self, store, **kwargs)
         dialog.open_transect_requested.connect(self._open_transect_page)
         return dialog
+
+    def _on_section_rename(self, pass_id: str) -> None:
+        """Rename a pass from wherever it is shown on this page.
+
+        Locked the same way the other edits are: a row another laptop authored
+        is not this device's to rename.
+        """
+        from deepreefmap_gui.runs.pass_rename import rename_pass, renamed_note
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            return
+        before = pass_.label
+        said = rename_pass(self, store, pass_.id)
+        renamed = store.get_pass(pass_.id)
+        if renamed is None or renamed.label == before:
+            if said:
+                self._status_label.setText(said)
+            return
+        # These rows carry the transect and the window, not the pass's name, so
+        # the rename would otherwise leave the page looking untouched.
+        self._status_label.setText(said or renamed_note(renamed.label))
+        self._refresh_video_library()
+        self._select_section(pass_id)
 
     def _on_section_reassign(self, pass_id: str) -> None:
         """Change which transect a pass belongs to, or its direction."""

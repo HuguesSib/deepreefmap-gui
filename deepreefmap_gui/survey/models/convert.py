@@ -203,7 +203,10 @@ def survey_manifest_block(
     return {
         "run_id": str(run.id),
         "batch_id": str(batch.id) if batch else None,
-        "batch_name": batch.name if batch else None,
+        # The session's start, not a name: a session is identified by when it
+        # began, and a rebuilt database has to land on the same label the live one
+        # shows. Older manifests carry "batch_name" instead and are read for it.
+        "batch_created_at": batch.created_at if batch else None,
         "preset_name": batch.preset_name if batch else None,
         "provenance": provenance if provenance is not None else run_provenance(config, model_versions),
         "pass": {

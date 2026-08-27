@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QPushButton,
     QStackedWidget,
@@ -63,6 +62,7 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 from deepreefmap_gui.simple.section_state import (
     ATTENTION,
@@ -177,21 +177,7 @@ def _diagnose_failure(text: str) -> str:
     return _one_sentence(text) or "The run failed. No cause was recorded."
 
 
-_SESSION_NAME_TOOLTIP = "The session name, usually a dive or a day. Recorded on every run."
-
-
-def _unused_batch_name(wanted: str, taken: set[str]) -> str:
-    """`wanted`, or the first "(2)", "(3)"… nobody else has.
-
-    Sessions are told apart by name on the page and in the run archive, so two
-    of them called the same thing cannot be told apart at all.
-    """
-    if wanted not in taken:
-        return wanted
-    n = 2
-    while f"{wanted} ({n})" in taken:
-        n += 1
-    return f"{wanted} ({n})"
+_SESSION_NAME_TOOLTIP = "When this session started. Recorded on every run it makes."
 
 
 def _rough_batch_time(total_seconds: float | None) -> str | None:
@@ -526,11 +512,11 @@ class SimpleBatchMixin(MixinBase):
         name_row = QHBoxLayout()
         name_row.setSpacing(SPACE_SM)
         name_row.addWidget(QLabel("Session"))
-        self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        # Defaulting to today's date makes this look like decoration, so the
-        # tooltip says what the name is actually for. It is written into every
-        # run's manifest, which is what lets a copied output folder rebuild the
-        # session it came from, and it is what groups those runs in Browse.
+        # A session is this workstation's queue: it never reaches the registry
+        # and nothing outside the cart reads it, so it is identified by when it
+        # began rather than by a name somebody has to invent before any work can
+        # start. Shown, not typed.
+        self._survey_batch_name = QLabel("")
         self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
         name_row.addWidget(self._survey_batch_name, 1)
         self._survey_clear_cart_btn = QPushButton("Clear cart")
@@ -934,14 +920,7 @@ class SimpleBatchMixin(MixinBase):
             started = store.batch_run_count(batch.id) > 0 or (running is not None and batch.id == running.id)
             if not started:
                 return batch
-        name = self._survey_batch_name.text().strip()
-        # A cart minted under a started order must not inherit its name.
-        if not name or (batch is not None and name == batch.name):
-            name = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        # The date fallback is what the running order was probably named after,
-        # so uniqueness is enforced against every session rather than one.
-        name = _unused_batch_name(name, {b.name for b in store.list_batches()})
-        cart = SurveyBatch(name=name)
+        cart = SurveyBatch()
         # Name the configuration on the batch too, so a folder rebuilt from
         # manifests alone still knows which settings the day was run under.
         if self._active_preset is not None:
@@ -949,7 +928,7 @@ class SimpleBatchMixin(MixinBase):
         store.add_batch(cart)
         self._survey_batch = cart
         if not self._survey_worker_running:
-            self._survey_batch_name.setText(cart.name)
+            self._survey_batch_name.setText(cart.label)
         return cart
 
     def _update_cart_button(self) -> None:
@@ -1025,7 +1004,7 @@ class SimpleBatchMixin(MixinBase):
         if not confirm(
             self,
             "Clear the cart?",
-            f"Take {passes_phrase(len(items))} out of '{batch.name}'?",
+            f"Take {passes_phrase(len(items))} out of '{batch.label}'?",
         ):
             return
         for item in items:
@@ -1060,7 +1039,7 @@ class SimpleBatchMixin(MixinBase):
                 batches = store.list_batches() if cart is None else []
                 self._survey_batch = cart if cart is not None else (batches[0] if batches else None)
                 if self._survey_batch is not None:
-                    self._survey_batch_name.setText(self._survey_batch.name)
+                    self._survey_batch_name.setText(self._survey_batch.label)
             shown = self._survey_batch
             cart = None  # no divider when nothing is running
         self._survey_rows = []
@@ -1111,19 +1090,15 @@ class SimpleBatchMixin(MixinBase):
         """
         if cart is None:
             self._survey_next_cart_label.setVisible(False)
-            self._survey_batch_name.setReadOnly(False)
             self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
             return
         count = len(self._survey_store().list_batch_items(cart.id))
         self._survey_next_cart_label.setText(
-            f"Adding to <b>{cart.name}</b>, which starts once this session "
+            f"Adding to <b>{cart.label}</b>, which starts once this session "
             f"finishes. {passes_phrase(count)} queued so far."
         )
         self._survey_next_cart_label.setVisible(True)
-        # The field names the session being processed, and editing it while
-        # additions go to a different one renames the wrong thing.
-        self._survey_batch_name.setReadOnly(True)
-        self._survey_batch_name.setToolTip("The session being processed. The next one is named when this finishes.")
+        self._survey_batch_name.setToolTip("The session being processed. Additions go to the next one.")
 
     def _refresh_survey_transect_names(self) -> None:
         """Re-read the transects and repaint the names the rows show.
@@ -1656,41 +1631,19 @@ class SimpleBatchMixin(MixinBase):
         )
 
     def _on_survey_rename(self, index: int) -> None:
-        """Rename a pass from the row's menu.
-
-        Empty means the derived name back, and a name another pass already has
-        is refused with the one it got instead.
-        """
-        from PySide6.QtWidgets import QInputDialog
-
-        from deepreefmap_gui.survey.labels import taken_labels, unique_label
+        """Rename a pass from the row's menu."""
+        from deepreefmap_gui.runs.pass_rename import rename_pass
 
         row = self._survey_rows[index]
         store = self._try_survey_store()
         if store is None or row.pass_id is None:
             return
-        pass_ = store.get_pass(row.pass_id)
-        if pass_ is None:
-            return
-        typed, accepted = QInputDialog.getText(
-            self,
-            "Rename pass",
-            "What this pass is called. Clear it for the derived name.",
-            text=self._row_label(row),
-        )
-        if not accepted:
-            return
-        wanted = typed.strip()
-        if not wanted:
-            # An emptied field is a request for the default back, not a request
-            # for a nameless section.
-            pass_.label = ""
-        else:
-            pass_.label = unique_label(wanted, taken_labels(store.list_passes(), exclude=row.pass_id))
-            if pass_.label != wanted:
-                self._status_label.setText(f"Another pass is already called {wanted!r}; this one is {pass_.label!r}.")
-        store.update_pass(pass_)
-        row.label = pass_.label
+        said = rename_pass(self, store, row.pass_id, shown=self._row_label(row))
+        if said:
+            self._status_label.setText(said)
+        renamed = store.get_pass(row.pass_id)
+        if renamed is not None:
+            row.label = renamed.label
         self._rebuild_survey_table()
 
     def _pass_spec(self, row: _PassRow):
@@ -2901,7 +2854,7 @@ class SimpleBatchMixin(MixinBase):
                 partial(self._process_rows_again, done),
             )
         # One row at a time: a name identifies one section.
-        menu.addAction("Rename pass…", partial(self._on_survey_rename, index))
+        menu.addAction(RENAME_ACTION, partial(self._on_survey_rename, index))
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))

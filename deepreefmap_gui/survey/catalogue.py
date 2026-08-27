@@ -20,7 +20,7 @@ from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
 from deepreefmap_gui.survey.models.run_record import RunRecord
-from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
+from deepreefmap_gui.survey.models.survey_batch import SurveyBatch, session_label
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -100,11 +100,13 @@ class RunEntry:
     manifest_transect_name: str | None
     manifest_direction: str | None
     manifest_batch_id: uuid.UUID | None = None
+    # Older manifests carry the session's typed name; newer ones its start.
     manifest_batch_name: str | None = None
+    manifest_batch_created_at: str | None = None
     db_run: RunRecord | None = None
     db_pass: TransectPass | None = None
     db_transect_name: str | None = None
-    db_session_name: str | None = None
+    db_session_created_at: str | None = None
     # When the footage was shot, as opposed to when the run was made. Only the
     # database knows it: the manifest records which clips went in, not when they
     # were recorded.
@@ -150,7 +152,12 @@ class RunEntry:
 
     @property
     def session_name(self) -> str | None:
-        return self.db_session_name or self.manifest_batch_name
+        started = self.db_session_created_at or self.manifest_batch_created_at
+        if started:
+            return session_label(started)
+        # A run written before sessions were identified by their start still
+        # carries whatever it was called.
+        return self.manifest_batch_name
 
     @property
     def transect_name(self) -> str | None:
@@ -274,6 +281,7 @@ def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntr
         manifest_direction=pass_block.get("direction"),
         manifest_batch_id=_as_uuid(survey.get("batch_id")),
         manifest_batch_name=survey.get("batch_name"),
+        manifest_batch_created_at=survey.get("batch_created_at"),
     )
 
 
@@ -407,7 +415,7 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
         pass_ = passes.get(run.pass_id)
         session_id = run.batch_id or (pass_.batch_id if pass_ is not None else None)
         batch = batches.get(session_id) if session_id is not None else None
-        entry.db_session_name = batch.name if batch is not None else None
+        entry.db_session_created_at = batch.created_at if batch is not None else None
         if pass_ is None:
             continue
         entry.db_pass = pass_
@@ -516,7 +524,7 @@ def sessions_facet(
     unfiled = FacetGroup(key=session_group_key(None), title=UNFILED_SESSION_TITLE)
     for batch in known.values():
         by_session[session_group_key(batch.id)] = FacetGroup(
-            key=session_group_key(batch.id), title=batch.name
+            key=session_group_key(batch.id), title=batch.label
         )
     for entry in entries:
         batch_id = entry.session_id
@@ -527,7 +535,7 @@ def sessions_facet(
         group = by_session.get(key)
         if group is None:
             named = known.get(batch_id)
-            title = named.name if named is not None else entry.manifest_batch_name
+            title = named.label if named is not None else entry.session_name
             group = by_session[key] = FacetGroup(key=key, title=title or str(batch_id))
         _child_for(group, group_key(entry), _pass_title(entry)).entries.append(entry)
     # Newest first: a session is a day's work, and the one you want is almost

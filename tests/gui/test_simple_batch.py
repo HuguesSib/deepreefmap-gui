@@ -1921,13 +1921,11 @@ def test_passes_queued_mid_run_land_in_the_next_session(batch_window, tmp_path, 
     # The label names the session an addition joins and says when it will run.
     # It is the only statement that the table holds rows from two sessions.
     said = batch_window._survey_next_cart_label.text()
-    assert batch_window._survey_batch.name in said
+    assert batch_window._survey_batch.label in said
     assert "starts once this session finishes" in said
-    # Two sessions with one name cannot be told apart by a label that names one.
-    assert batch_window._survey_batch.name != order.name
-    # The field still names the order being processed, so it cannot be edited
-    # into renaming the wrong session.
-    assert batch_window._survey_batch_name.isReadOnly()
+    # Two sessions that began in the same second would be one label between
+    # them, which is why the label carries seconds at all.
+    assert batch_window._survey_batch.label != order.label
     # The pending cart never leaks into what the running order will process.
     assert len(batch_window._survey_remaining_rows()) == 1
 

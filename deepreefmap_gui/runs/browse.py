@@ -297,6 +297,10 @@ class BrowseMixin(MixinBase):
         # middle elide on the tables that hold them.
         self._data_tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
+        # A pass is the one group in this rail that is a row somebody can
+        # edit, and its name is what the console shows.
+        self._data_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._data_tree.customContextMenuRequested.connect(self._on_data_group_menu)
         # Clicks as well as selection changes: clicking the row that is already
         # selected changes no selection and emits nothing, so a run picked in
         # the table since could not be got out of the detail pane by pointing at
@@ -901,6 +905,31 @@ class BrowseMixin(MixinBase):
         self._gate_data_row_actions(self._data_more_actions)
         self._refresh_data_detail()
 
+    def _on_data_group_menu(self, pos) -> None:
+        """The rail's own menu, which only a pass group has anything to put in."""
+        from deepreefmap_gui.runs.pass_rename import RENAME_ACTION, rename_pass, renamed_note
+
+        item = self._data_tree.itemAt(pos)
+        key = item.data(0, _GROUP_KEY_ROLE) if item is not None else None
+        if not key or key[0] != "pass":
+            return
+        store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
+        if store is None:
+            return
+        pass_id = uuid.UUID(str(key[1]))
+        if store.get_pass(pass_id) is None:
+            return
+        menu = QMenu(self._data_tree)
+        menu.addAction(RENAME_ACTION)
+        if menu.exec(self._data_tree.viewport().mapToGlobal(pos)) is None:
+            return
+        said = rename_pass(self, store, pass_id)
+        renamed = store.get_pass(pass_id)
+        self._status_label.setText(
+            said or (renamed_note(renamed.label) if renamed is not None else "")
+        )
+        self._refresh_data_manager()
+
     def _refresh_data_detail(self) -> None:
         """Show the selected run, else the selected transect, else nothing.
 
@@ -1481,7 +1510,7 @@ class BrowseMixin(MixinBase):
         choice = DeleteDataDialog.ask(
             DeleteScope(
                 title="Delete session",
-                subject=f"Delete from session '{batch.name}' ({counts})?",
+                subject=f"Delete from session '{batch.label}' ({counts})?",
                 data_detail=(
                     f"The output folders of its {len(with_data)} "
                     f"run{'s' if len(with_data) != 1 else ''} on disk, {size_txt}. "
@@ -1520,10 +1549,10 @@ class BrowseMixin(MixinBase):
                 data_gone += 1
         if choice is not DeleteChoice.DATA:
             store.delete_batch(batch_id)
-            self._status_label.setText(f"Deleted session '{batch.name}'.")
+            self._status_label.setText(f"Deleted session '{batch.label}'.")
         elif data_gone:
             self._status_label.setText(
-                f"Deleted the data of {data_gone} run{'s' if data_gone != 1 else ''} from '{batch.name}'."
+                f"Deleted the data of {data_gone} run{'s' if data_gone != 1 else ''} from '{batch.label}'."
             )
         self._refresh_data_manager()
 

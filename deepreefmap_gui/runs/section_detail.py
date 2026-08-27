@@ -9,6 +9,7 @@ of one piece of it.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QMouseEvent
@@ -47,6 +48,7 @@ from deepreefmap_gui.core.widgets import (
     muted_label,
 )
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.runs.video_rows import icon_button, set_button_dead
 from deepreefmap_gui.survey import statuses
@@ -91,7 +93,18 @@ def _length(pass_: TransectPass) -> str:
 
 
 def _short_date(stamp: str | None) -> str:
-    return (stamp or "").split("T")[0] or "unknown"
+    """The day a run was made, in local time.
+
+    Local rather than the stored UTC, so it agrees with the session label it is
+    compared against; the two disagreed either side of midnight UTC and the row
+    then printed the same day twice.
+    """
+    if not stamp:
+        return "unknown"
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        return stamp.split("T")[0] or "unknown"
 
 
 # Every outcome a run can end in, so the column is measured against the widest
@@ -153,9 +166,10 @@ class RunRow(QWidget):
         self.outcome.setStyleSheet(f"color: {STATUS_COLORS.get(run.status, TEXT_MUTED)};")
         row.addWidget(self.outcome)
 
-        # A session named after the day it ran already carries the date, so
-        # printing it again beside the name said the same thing twice.
-        self.date = QLabel("" if self._date == session else self._date)
+        # A session is identified by when it began, so its label already opens
+        # with the day it ran; printing that again beside it said the same thing
+        # twice. startswith, not equality: the label carries a time as well.
+        self.date = QLabel("" if session.startswith(self._date) else self._date)
         self.date.setFont(tabular(self.date.font()))
         self.date.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         # Nothing reserved when there is nothing to show: within one list every
@@ -220,6 +234,7 @@ class SectionDetailPanel(DetailCard):
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
+    rename_requested = Signal(str)
     run_activated = Signal(str)
     # The database run id whose outputs to archive, from whichever row was pressed.
     archive_run_requested = Signal(object)
@@ -266,6 +281,7 @@ class SectionDetailPanel(DetailCard):
         A None key is a separator.
         """
         return (
+            ("rename", RENAME_ACTION, self._emit_rename),
             ("retrim", "Adjust trim…", self._emit_retrim),
             ("reassign", "Change transect…", self._emit_reassign),
             (None, "", None),
@@ -287,6 +303,9 @@ class SectionDetailPanel(DetailCard):
 
     def _pass_id(self) -> str:
         return "" if self._pass is None else str(self._pass.id)
+
+    def _emit_rename(self) -> None:
+        self.rename_requested.emit(self._pass_id())
 
     def _emit_retrim(self) -> None:
         self.retrim_requested.emit(self._pass_id())

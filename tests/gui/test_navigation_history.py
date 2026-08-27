@@ -156,8 +156,11 @@ def test_alt_left_goes_back_but_not_out_of_a_text_field(window):
             QEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.AltModifier
         )
 
-    # Headed for a field: left alone.
-    assert not window._navigation_event_filter(window._survey_batch_name, alt_left())
+    # Headed for a field: left alone. Any QLineEdit will do -- the filter stands
+    # down on the widget class, not on which field it happens to be.
+    from PySide6.QtWidgets import QLineEdit
+
+    assert not window._navigation_event_filter(QLineEdit(window), alt_left())
     assert window._current_section() == "videos"
 
     # Headed anywhere else: it navigates.

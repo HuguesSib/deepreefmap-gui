@@ -140,8 +140,14 @@ def seed_pass(
     return transect, video, pass_
 
 
-def make_batch(store: SurveyStore, name: str = "2026-07-01") -> SurveyBatch:
-    batch = SurveyBatch(name=name)
+def make_batch(store: SurveyStore, started: str = "2026-07-01 09:00") -> SurveyBatch:
+    """A session, identified by when it began.
+
+    The stamp is naive on purpose: a session's label is rendered in local time,
+    so a UTC one would move the day either side of midnight and the label a test
+    asserts would depend on the machine's timezone.
+    """
+    batch = SurveyBatch(created_at=started.replace(" ", "T"))
     store.add_batch(batch)
     return batch
 

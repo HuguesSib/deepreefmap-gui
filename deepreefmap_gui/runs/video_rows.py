@@ -109,6 +109,7 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.io.frame_grab import shared_frame_grabber
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.catalogue import (
     LINK_LINKED,
@@ -1164,6 +1165,7 @@ class SectionRow(QWidget):
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
+    rename_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
@@ -1486,6 +1488,11 @@ class SectionRow(QWidget):
         """
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
+        # First, because it is about what this row is rather than what to do with
+        # it, and because the name is what reaches the console.
+        menu.addAction(RENAME_ACTION).triggered.connect(
+            lambda *_: self.rename_requested.emit(self.pass_id)
+        )
         # One entry that names the move it will make, rather than an "Add to
         # cart" greyed out on everything already in it.
         cart = menu.addAction(MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART)
@@ -1533,6 +1540,7 @@ class SectionList(QScrollArea):
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
+    rename_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1620,6 +1628,7 @@ class SectionList(QScrollArea):
             row.reassign_requested.connect(self.reassign_requested)
             row.delete_requested.connect(self.delete_requested)
             row.open_transect_requested.connect(self.open_transect_requested)
+            row.rename_requested.connect(self.rename_requested)
             self._body_layout.addWidget(row)
             self._rows[pass_id] = row
         self._body_layout.addStretch(1)
@@ -1779,6 +1788,7 @@ class VideoLibraryList(QScrollArea):
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
     section_reassign = Signal(str)
+    section_rename = Signal(str)
     section_delete = Signal(str)
     section_open_transect = Signal(str)
     # Which clips are picked has changed. What acts on a set of clips listens
@@ -2048,6 +2058,7 @@ class VideoLibraryList(QScrollArea):
             section.reassign_requested.connect(self.section_reassign)
             section.delete_requested.connect(self.section_delete)
             section.open_transect_requested.connect(self.section_open_transect)
+            section.rename_requested.connect(self.section_rename)
             section.set_server_connected(self._archiving)
             self._body_layout.addWidget(section)
             self._sections.setdefault(str(pass_.id), []).append(section)

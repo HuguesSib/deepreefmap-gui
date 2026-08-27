@@ -95,6 +95,7 @@ class VideoDetailPanel(DetailCard):
     details_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    rename_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
 
@@ -165,6 +166,7 @@ class VideoDetailPanel(DetailCard):
         self.pass_list.activated.connect(self.pass_activated)
         self.pass_list.add_to_cart_requested.connect(self.add_to_cart_requested)
         self.pass_list.retrim_requested.connect(self.retrim_requested)
+        self.pass_list.rename_requested.connect(self.rename_requested)
         self.pass_list.reassign_requested.connect(self.reassign_requested)
         self.pass_list.delete_requested.connect(self.delete_requested)
         self.pass_list.open_transect_requested.connect(self.open_transect_requested)

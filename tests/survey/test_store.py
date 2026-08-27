@@ -247,7 +247,7 @@ def test_upsert_video_without_hash_falls_back_to_the_path(store):
 
 def test_pass_filters(store):
     transect, video, pass_ = seed_pass(store)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     second = TransectPass(
         transect_id=transect.id,
@@ -380,7 +380,7 @@ def test_json_export_import_round_trip(store, tmp_path):
     pass_.campaign_id = campaign.id
     pass_.quality = "good"
     store.update_pass(pass_)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=batch.id))
@@ -419,7 +419,7 @@ def write_manifest(out_root, run_dir_name, block, video_path="/data/GX010001.MP4
 
 def test_rebuild_from_scan_restores_everything(store, tmp_path):
     transect, video, pass_ = seed_pass(store, direction="reverse")
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
     store.add_run(run)
@@ -545,7 +545,7 @@ def test_delete_pass_removes_it(store):
 def test_deleting_a_pass_takes_its_cart_rows_with_it(store):
     """A cart row is a plan to process the pass, so it goes when the pass does."""
     _transect, _video, pass_ = seed_pass(store)
-    first, second = SurveyBatch(name="Day 1"), SurveyBatch(name="Day 2")
+    first, second = SurveyBatch(created_at="2026-07-01T09:00"), SurveyBatch(created_at="2026-07-02T09:00")
     for batch in (first, second):
         store.add_batch(batch)
         store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
@@ -560,7 +560,7 @@ def test_deleting_a_pass_takes_its_cart_rows_with_it(store):
 def test_deleting_a_pass_with_a_run_says_why_it_cannot(store):
     """A run is history: it holds the pass, and the refusal reads as a sentence."""
     _transect, _video, pass_ = seed_pass(store)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
@@ -703,7 +703,7 @@ def test_a_carried_forward_survey_reaches_the_cart_cascade(tmp_path):
 
 def test_list_passes_combines_both_filters(store):
     """Filtering by transect and batch at once is an AND, not the last one set."""
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     transect_a, video, pass_a = seed_pass(store)
     transect_b = make_transect("T2")
@@ -722,11 +722,29 @@ def test_list_passes_combines_both_filters(store):
 
 
 def test_batches_are_readable_after_being_added(store):
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     assert store.get_batch(batch.id) == batch
-    assert [b.name for b in store.list_batches()] == ["Day 1"]
+    assert [b.label for b in store.list_batches()] == ["2026-07-01 09:00:00"]
     assert store.get_batch(uuid.uuid4()) is None
+
+
+def test_two_sessions_beginning_in_one_second_still_label_themselves_apart(store):
+    """Scenario: passes are queued against a running order, minting a cart in the
+    same second the order started.
+
+    Expected behaviour: the second session is advanced, so the two are not one
+    label between them. The start is the whole of a session's identity, and the
+    Cart page names both at once while an order runs.
+    """
+    first, second = SurveyBatch(created_at="2026-07-01T09:00:00"), SurveyBatch(
+        created_at="2026-07-01T09:00:00"
+    )
+    store.add_batch(first)
+    store.add_batch(second)
+
+    assert first.label != second.label
+    assert store.get_batch(second.id).created_at == "2026-07-01T09:00:01"
 
 
 def test_pass_chapters_round_trip(store):
@@ -901,7 +919,7 @@ def test_current_cart_is_the_newest_batch_only_while_it_has_run_nothing(store):
     assert store.current_cart() is None
 
     _, _, pass_ = seed_pass(store)
-    first = SurveyBatch(name="Day 1")
+    first = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(first)
     assert store.current_cart() == first
 
@@ -909,16 +927,16 @@ def test_current_cart_is_the_newest_batch_only_while_it_has_run_nothing(store):
     assert store.batch_run_count(first.id) == 1
     assert store.current_cart() is None
 
-    second = SurveyBatch(name="Day 2")
+    second = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(second)
     assert store.current_cart() == second
 
 
 def test_an_older_empty_batch_behind_a_started_one_is_not_the_cart(store):
     _, _, pass_ = seed_pass(store)
-    abandoned = SurveyBatch(name="Day 1")
+    abandoned = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(abandoned)
-    started = SurveyBatch(name="Day 2")
+    started = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(started)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=started.id))
     assert store.current_cart() is None
@@ -926,8 +944,8 @@ def test_an_older_empty_batch_behind_a_started_one_is_not_the_cart(store):
 
 def test_a_pass_can_be_a_member_of_two_batches_but_of_one_only_once(store):
     _, _, pass_ = seed_pass(store)
-    first = SurveyBatch(name="Day 1")
-    second = SurveyBatch(name="Day 2")
+    first = SurveyBatch(created_at="2026-07-01T09:00")
+    second = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(first)
     store.add_batch(second)
 
@@ -952,7 +970,7 @@ def test_passes_in_batch_keeps_the_order_the_cart_was_filled_in(store):
     )
     store.add_pass(later)
     store.add_pass(earlier)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     for pass_ in (earlier, first, later):
         store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
@@ -1126,7 +1144,7 @@ def test_deleting_a_session_takes_its_records_and_leaves_the_shared(store):
 
 
 def test_deleting_a_session_leaves_other_sessions_runs(store):
-    first, second = make_batch(store, "Day 1"), make_batch(store, "Day 2")
+    first, second = make_batch(store, "2026-07-01 09:00:00"), make_batch(store, "2026-07-02 09:00:00")
     _t, _v, pass_ = seed_pass(store, batch=first)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="one", batch_id=first.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="two", batch_id=second.id))

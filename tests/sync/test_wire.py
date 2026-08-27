@@ -120,13 +120,30 @@ def test_a_transect_carries_its_site_and_both_accuracies():
     assert (row["start_accuracy_m"], row["end_accuracy_m"]) == (3.5, 4.0)
 
 
-def test_a_run_leaves_the_session_it_ran_in_behind(tmp_path):
-    run = RunRecord(pass_id=uuid.uuid4(), run_dir_name="t1__p01", batch_id=uuid.uuid4())
+def test_a_run_carries_the_session_it_ran_in(tmp_path):
+    """Which runs went through the pipeline together is provenance, so it travels.
+
+    The session itself does not: it is this workstation's queue and the registry
+    has no table for it. The id goes as a correlation key the console groups by.
+    """
+    batch_id = uuid.uuid4()
+    run = RunRecord(pass_id=uuid.uuid4(), run_dir_name="t1__p01", batch_id=batch_id)
 
     row = wire.run_rows_to_wire([run], tmp_path)[0]
 
-    assert "batch_id" not in row
+    assert row["batch_id"] == str(batch_id)
     assert row["run_dir_name"] == "t1__p01"
+
+
+def test_a_pass_leaves_the_session_it_was_queued_in_behind(tmp_path):
+    """A pass belongs to many sessions over its life, so its batch_id names only
+    the latest -- a fact about this device's cart, not about the survey."""
+    pass_ = make_pass()
+    pass_.batch_id = uuid.uuid4()
+
+    row = wire.rows_to_wire("passes", [pass_])[0]
+
+    assert "batch_id" not in row
 
 
 # --- pass_video ---
@@ -258,7 +275,7 @@ def seed_manifest(tmp_path, **overrides):
     transect = make_transect()
     pass_ = make_pass(transect_id=transect.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", status="succeeded")
-    batch = SurveyBatch(name="Day 1", preset_name="reef_default")
+    batch = SurveyBatch(created_at="2026-07-01T09:00", preset_name="reef_default")
     write_run(
         tmp_path,
         run.run_dir_name,

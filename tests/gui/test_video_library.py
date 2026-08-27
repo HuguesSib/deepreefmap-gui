@@ -611,7 +611,7 @@ def test_the_section_card_files_its_actions_under_one_menu(window):
     panel = window._section_detail
     assert not hasattr(panel, "cart_btn")
     labels = [a.text() for a in panel.more_btn.menu().actions() if not a.isSeparator()]
-    assert labels == ["Adjust trim…", "Change transect…", "Delete pass"]
+    assert labels == ["Rename pass…", "Adjust trim…", "Change transect…", "Delete pass"]
 
 
 def test_the_filing_fact_opens_the_dialog_that_sets_it(window):
@@ -841,33 +841,6 @@ def test_an_unfinished_run_row_shows_a_dead_archive_icon(window):
     panel.archive_run_requested.connect(asked.append)
     rows[0].archive_btn.click()
     assert asked == []
-
-
-def test_a_long_session_name_cannot_widen_the_run_row(window):
-    """Scenario: the run line is as long as whoever named the session made it.
-
-    Expected behaviour: the line elides instead of stretching the row, which in
-    a list with no horizontal scrollbar carried the archive icon off the edge.
-    """
-    from _factories import make_batch
-
-    store = window._survey_store()
-    video = _seed(store, "GX010074.MP4")
-    long_pass = _cut(store, video)
-    short_pass = _cut(store, video, 40.0, 50.0)
-    long_name = "Bommie flats north-east repeat survey, morning session, boat two"
-    _seed_run(store, long_pass, "succeeded", make_batch(store, long_name))
-    _seed_run(store, short_pass, "succeeded", make_batch(store, "Tuesday"))
-
-    show_videos(window)
-    window._select_section(str(long_pass.id))
-    long_row = window._section_detail.run_rows()[0]
-    assert long_name in long_row.text()
-    wide = long_row.sizeHint().width()
-
-    window._select_section(str(short_pass.id))
-
-    assert wide == window._section_detail.run_rows()[0].sizeHint().width()
 
 
 def test_the_probe_dresses_the_run_rows_archive_icon(window):

@@ -99,7 +99,10 @@ def seed_survey(out_root: Path) -> None:
     store = SurveyStore(out_root / SURVEY_DB_NAME)
     # Two sessions, so By session has something to be a grouping of rather than
     # one node holding everything.
-    sessions = [SurveyBatch(name="2026-08-04"), SurveyBatch(name="2026-08-02")]
+    sessions = [
+        SurveyBatch(created_at="2026-08-04T09:12:00"),
+        SurveyBatch(created_at="2026-08-02T14:35:00"),
+    ]
     for session in sessions:
         store.add_batch(session)
     transects = []

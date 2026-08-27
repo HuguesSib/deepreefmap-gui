@@ -822,7 +822,29 @@ _MIGRATIONS: list[Migration] = [
         "presets carry the registry position they were last seen at",
         "ALTER TABLE server_preset ADD COLUMN head_seq INTEGER;",
     ),
+    Migration(
+        19,
+        "a session is identified by when it began, not by a name",
+        # A session is this workstation's queue and never reaches the registry,
+        # so nothing outside the cart ever read the name. Dropping the column
+        # discards a hand-typed one; the default was always the day's date, so
+        # for almost every session the label is unchanged.
+        "ALTER TABLE survey_batch DROP COLUMN name;",
+    ),
 ]
+
+
+def _one_second_later(stamp: str) -> str:
+    """The next second, in whatever shape the stamp arrived in.
+
+    An unparseable stamp is suffixed instead, so a session rebuilt from a
+    manifest that held something unexpected still ends up with its own label.
+    """
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return f"{stamp} "
+    return (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
 
 
 # The registry's sections and the table behind each, in the order a push
@@ -1727,6 +1749,19 @@ class SurveyStore:
     # --- Batches ---
 
     def add_batch(self, batch: SurveyBatch) -> None:
+        """Store a session, keeping its start distinct from every other one's.
+
+        The start is the whole of a session's identity now, and a cart minted
+        the instant an order begins can land on the same second as it. The later
+        one is advanced until it is free, which is what suffixing a repeated
+        name used to do: a label two sessions share identifies neither.
+        """
+        with self._conn() as conn:
+            taken = {
+                row[0] for row in conn.execute("SELECT created_at FROM survey_batch")
+            }
+        while batch.created_at in taken:
+            batch.created_at = _one_second_later(batch.created_at)
         self._add("survey_batch", batch)
 
     def get_batch(self, batch_id: uuid.UUID) -> SurveyBatch | None:
@@ -2784,10 +2819,14 @@ class SurveyStore:
             return None
         batch_id = uuid.UUID(raw)
         if self.get_batch(batch_id) is None:
+            # created_at is restored, not defaulted: it is the session's whole
+            # identity now, so letting it fall to "now" would give every session
+            # rebuilt in one scan the same label.
+            created = survey.get("batch_created_at")
             self.add_batch(SurveyBatch(
                 id=batch_id,
-                name=survey.get("batch_name") or "Recovered batch",
                 preset_name=survey.get("preset_name") or "survey_preset",
+                **({"created_at": str(created)} if created else {}),
             ))
             report.batches += 1
         return batch_id

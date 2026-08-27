@@ -134,7 +134,7 @@ def test_sessions_facet_groups_a_day_and_describes_it(out_root, make_window):
 
     window._data_tree.setCurrentItem(window._data_tree.topLevelItem(0))
     assert window._data_detail_stack.currentWidget() is window._session_detail
-    assert window._session_detail.title.text() == "2026-07-01"
+    assert window._session_detail.title.text().startswith("2026-07-01")
     assert len(window._session_detail.entries) == 2
     assert window._session_detail.pass_list.count() == 2
 
@@ -779,15 +779,15 @@ def test_run_record_names_the_session_in_tooltip_and_detail(out_root, make_windo
     from deepreefmap_gui.runs.run_detail import run_fact_rows
 
     store = SurveyStore(out_root / "survey.db")
-    batch = make_batch(store, "Day 1")
+    batch = make_batch(store, "2026-07-01 09:00:00")
     seed_survey_run(store, out_root, "filed", batch=batch)
     store.close()
     window = make_window()
     entry = next(e for e in window._data_entries if e.dir_name == "filed")
 
-    assert "Session: Day 1" in format_run_metadata(entry)
+    assert "Session: 2026-07-01 09:00:00" in format_run_metadata(entry)
     rows = dict(run_fact_rows(entry))
-    assert rows["Session"] == "Day 1"
+    assert rows["Session"] == "2026-07-01 09:00:00"
 
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window._refresh_data_manager()

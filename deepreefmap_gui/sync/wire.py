@@ -77,13 +77,17 @@ def _assert_sections_match_the_contract() -> None:
 _assert_sections_match_the_contract()
 
 # Fields that stay on the device. A path and an mtime describe this laptop's disk,
-# so sending them would put absolute paths in a shared registry; probed_at and
-# batch_id are local workflow. video_id and extra_video_ids leave as pass_video
-# rows instead.
+# so sending them would put absolute paths in a shared registry; probed_at is
+# local workflow. video_id and extra_video_ids leave as pass_video rows instead.
+#
+# A pass keeps its batch_id here because a pass belongs to many sessions over its
+# life -- the column names only the latest, which would be a fact about this
+# device's queue. A run's batch_id does travel, from contract 3: a run happened
+# once, in one session, and which runs went through together is provenance the
+# console groups by.
 _DEVICE_LOCAL: dict[str, tuple[str, ...]] = {
     "videos": ("path", "mtime", "probed_at"),
     "passes": ("batch_id", "video_id", "extra_video_ids"),
-    "runs": ("batch_id",),
 }
 
 # Every column the registry types as a timestamp. campaign.begin_date and

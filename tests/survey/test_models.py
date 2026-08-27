@@ -102,11 +102,14 @@ def test_pass_duration_is_the_trimmed_window():
     assert make_pass(transect, video, begin_s=12.5, end_s=42.5).duration_s() == 30.0
 
 
-def test_batch_rejects_a_name_that_is_only_whitespace():
-    """Batches are addressed by name in the queue and in batch_out/<name>/."""
-    SurveyBatch(name=" Day 1 ")  # padding is fine, emptiness is not
-    with pytest.raises(ValueError):
-        SurveyBatch(name="   ")
+def test_a_session_is_labelled_by_when_it_began():
+    """A session is a local queue, so nobody names it; its start identifies it."""
+    assert SurveyBatch(created_at="2026-07-01T09:00").label == "2026-07-01 09:00:00"
+
+
+def test_a_session_with_an_unreadable_start_still_labels_itself():
+    """Rebuilt from a manifest, the stamp is whatever that file held."""
+    assert SurveyBatch(created_at="not a time").label == "not a time"
 
 
 def test_run_record_rejects_unknown_status():
@@ -119,7 +122,7 @@ def test_run_record_rejects_unknown_status():
 def test_row_round_trip_preserves_every_model():
     site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
     transect, video = make_transect(site_id=site.id), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(
         transect, video, batch_id=batch.id, campaign_id=campaign.id, direction="reverse",
         quality="meh", surveyed_on="2026-07-01",
@@ -135,7 +138,7 @@ def test_row_round_trip_preserves_every_model():
 def test_document_round_trip():
     site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
     transect, video = make_transect(site_id=site.id), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(transect, video, batch_id=batch.id, campaign_id=campaign.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
@@ -171,12 +174,12 @@ def test_document_rejects_unknown_schema_version():
 
 def test_manifest_block_snapshots_pass_and_transect():
     transect, video = make_transect(), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(transect, video, batch_id=batch.id, direction="reverse")
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
     block = survey_manifest_block(run, pass_, transect, batch)
     assert block["run_id"] == str(run.id)
-    assert block["batch_name"] == "Day 1"
+    assert block["batch_created_at"] == "2026-07-01T09:00"
     assert block["pass"] == {
         "id": str(pass_.id),
         "direction": "reverse",
