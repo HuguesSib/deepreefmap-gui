@@ -97,6 +97,12 @@ def machine_preset_path(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_camera_profiles(tmp_path, monkeypatch):
+    """Profiles a test calibrates stay out of the user's data dir."""
+    monkeypatch.setenv("DEEPREEFMAP_CAMERA_PROFILES", str(tmp_path / "camera_profiles"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_sync_credentials(tmp_path, monkeypatch):
     """Keep the Server page off this machine's real device token.
 

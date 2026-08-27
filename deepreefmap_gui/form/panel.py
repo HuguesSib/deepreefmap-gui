@@ -18,6 +18,7 @@ from typing import cast
 from PySide6.QtCore import (
     QFileSystemWatcher,
     QSettings,
+    QSignalBlocker,
     QSize,
     QStandardPaths,
     Qt,
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -385,8 +387,38 @@ class FormPanelMixin(MixinBase):
         ig.addWidget(QLabel("Camera profile"))
         self._profile_combo = QComboBox()
         self._profile_combo.addItems(profiles)
-        ig.addWidget(self._profile_combo)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self._profile_combo, 1)
+        # A camera the bundled profiles do not cover is calibrated from one of
+        # its own clips, here, and lands in this list.
+        self._calibrate_btn = QPushButton("Calibrate…")
+        self._calibrate_btn.setProperty("quiet", "true")
+        self._calibrate_btn.setToolTip("Calibrate a new camera profile from a clip shot on that camera.")
+        self._calibrate_btn.clicked.connect(self._on_calibrate_camera)
+        profile_row.addWidget(self._calibrate_btn)
+        ig.addLayout(profile_row)
         setup_layout.addWidget(input_group)
+
+    def _on_calibrate_camera(self) -> None:
+        from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog
+
+        dialog = CalibrationDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_name:
+            self._reload_camera_profiles(select=dialog.saved_name)
+
+    def _reload_camera_profiles(self, select: str | None = None) -> None:
+        """Re-read the profiles on disk into the combo, keeping the selection."""
+        from deepreefmap.camera.intrinsics import available_profile_names
+
+        wanted = select or self._profile_combo.currentText()
+        profiles = available_profile_names() or ["gopro_hero_10"]
+        with QSignalBlocker(self._profile_combo):
+            self._profile_combo.clear()
+            self._profile_combo.addItems(profiles)
+            index = self._profile_combo.findText(wanted)
+            self._profile_combo.setCurrentIndex(max(index, 0))
+        if index < 0:
+            self._status_label.setText(f"Camera profile {wanted} is no longer available.")
 
     def _build_capacity_readout(self, ig: QVBoxLayout) -> None:
         """How much of the machine the longest queued pass would use.
@@ -1607,8 +1639,13 @@ class FormPanelMixin(MixinBase):
         verdict = fit.verdict
         # Says what was modelled and from what. "Longest pass" alone read as a
         # statistic about the batch rather than as the input to these figures.
+        from deepreefmap_gui.profiling.system_probe import gpu_hint
+
+        # Names the device too: a Mac reads its unified memory here, and the
+        # verdict is against that pool rather than against a card it lacks.
         self._capacity_caption.setText(
-            f"Modelled on a pass of <b>{format_duration(fit.seconds)}</b> at <b>{fit.fps} FPS</b>, the longest queued."
+            f"Modelled on a pass of <b>{format_duration(fit.seconds)}</b> at <b>{fit.fps} FPS</b>, "
+            f"the longest queued, on <b>{gpu_hint().name}</b>."
         )
         for resource in verdict.resources:
             self._capacity_rows[resource.key].set_resource(resource, held_colour=SURFACE_HI)

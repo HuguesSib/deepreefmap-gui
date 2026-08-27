@@ -274,6 +274,7 @@ if TYPE_CHECKING:
         # --- combos / line edits -----------------------------------------
         _map_combo: QComboBox
         _profile_combo: QComboBox
+        _calibrate_btn: QPushButton
         _resolution_preset_combo: QComboBox
         _seg_combo: QComboBox
         _update_version_combo: QComboBox
@@ -361,6 +362,10 @@ if TYPE_CHECKING:
         def _refresh_recorded_runs(self) -> None: ...  # SystemPanelMixin
         def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
         def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
+        def _on_calibrate_camera(self) -> None: ...  # FormPanelMixin
+        def _reload_camera_profiles(  # FormPanelMixin
+            self, select: str | None = None
+        ) -> None: ...
         def _paint_gpu_indicator(self, gpu: object) -> None: ...  # FormPanelMixin
         def _check_for_update(self) -> None: ...  # VersionCheckMixin
         def _measure_envs(self) -> None: ...  # VersionCheckMixin
