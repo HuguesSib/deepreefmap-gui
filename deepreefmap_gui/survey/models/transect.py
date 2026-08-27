@@ -31,6 +31,13 @@ def compass_point(bearing_deg: float) -> str:
     return _COMPASS_POINTS[int((bearing_deg % 360.0) / 22.5 + 0.5) % 16]
 
 
+def mean_depth_m(start_depth_m: float | None, end_depth_m: float | None) -> float | None:
+    """The depth a transect is filed under when only its ends were recorded."""
+    if start_depth_m is None or end_depth_m is None:
+        return None
+    return (start_depth_m + end_depth_m) / 2.0
+
+
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres between two WGS84 points."""
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -59,7 +66,12 @@ class Transect:
     start_accuracy_m: float | None = None
     end_accuracy_m: float | None = None
     length_m: float | None = None
+    # The depth at each end, and the single figure the run and the exports carry:
+    # the mean of the ends where both are recorded, or the one reading the
+    # historical sheets have.
     depth_m: float | None = None
+    start_depth_m: float | None = None
+    end_depth_m: float | None = None
     description: str = ""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
@@ -88,6 +100,8 @@ class Transect:
         for value, label in (
             (self.length_m, "length_m"),
             (self.depth_m, "depth_m"),
+            (self.start_depth_m, "start_depth_m"),
+            (self.end_depth_m, "end_depth_m"),
             (self.start_accuracy_m, "start_accuracy_m"),
             (self.end_accuracy_m, "end_accuracy_m"),
         ):

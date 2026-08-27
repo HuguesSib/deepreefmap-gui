@@ -130,3 +130,9 @@ def test_a_run_row_fills_the_configuration_columns_the_registry_holds(tmp_path, 
 def test_an_unnamed_section_is_an_error_and_not_an_empty_list() -> None:
     with pytest.raises(KeyError):
         contract.required_columns("moorings")
+
+
+def test_a_transect_row_carries_the_depth_at_each_end() -> None:
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
+    names = {column["name"] for column in table["columns"]}
+    assert {"depth_m", "start_depth_m", "end_depth_m"} <= names

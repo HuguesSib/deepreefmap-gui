@@ -246,6 +246,8 @@ def survey_manifest_block(
             "end_lon": transect.end_lon,
             "length_m": transect.length_m,
             "depth_m": transect.depth_m,
+            "start_depth_m": transect.start_depth_m,
+            "end_depth_m": transect.end_depth_m,
             "deleted_at": transect.deleted_at,
         },
     }

@@ -21,6 +21,7 @@ from deepreefmap_gui.survey.models.convert import (
     survey_manifest_block,
     to_row,
 )
+from deepreefmap_gui.survey.models.transect import mean_depth_m
 from deepreefmap_gui.survey.video_probe import NO, UNKNOWN, YES
 
 
@@ -311,3 +312,16 @@ def test_direction_reads_the_same_wherever_it_is_shown() -> None:
         assert direction_arrow(d) and direction_text(d)
     for absent in ("", None, "sideways", "  "):
         assert direction_arrow(absent) == "" and direction_text(absent) == ""
+
+
+def test_transect_rejects_a_negative_end_depth():
+    with pytest.raises(ValueError):
+        make_transect(start_depth_m=-1.0)
+    with pytest.raises(ValueError):
+        make_transect(end_depth_m=-1.0)
+
+
+def test_mean_depth_needs_both_ends():
+    assert mean_depth_m(5.0, 11.0) == 8.0  # (5 + 11) / 2
+    assert mean_depth_m(5.0, None) is None
+    assert mean_depth_m(None, 11.0) is None

@@ -90,6 +90,7 @@ from deepreefmap_gui.survey.models.importers import (
     import_transects_gpx,
     parse_latlon,
 )
+from deepreefmap_gui.survey.models.transect import mean_depth_m
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,8 @@ def transect_tooltip(transect: Transect, passes: int = 0, runs: int = 0) -> str:
         lines.append(f"{transect.length_m:g} m tape laid")
     if transect.depth_m:
         lines.append(f"{transect.depth_m:g} m deep")
+    if transect.start_depth_m is not None and transect.end_depth_m is not None:
+        lines.append(f"{transect.start_depth_m:g} m at the start, {transect.end_depth_m:g} m at the end")
     lines.append(f"{passes} pass(es) assigned, {runs} processed")
     if transect.description:
         lines.append(f"<i>{transect.description}</i>")
@@ -554,30 +557,42 @@ class SimplePlanMixin(MixinBase):
         self._tr_length = OptionalMetresSpinBox(500.0)
         self._tr_length.setToolTip("Tape length measured underwater. Scales the run when set.")
         self._tr_depth = OptionalMetresSpinBox(100.0)
-        self._tr_depth.setToolTip("Depth of the transect. Leave unset if not recorded.")
+        self._tr_depth.setToolTip(
+            "Depth of the transect. Fills in as the mean of the two end depths when left unset."
+        )
         grid.addWidget(_field_label("Length"), 5, 0)
         grid.addWidget(self._tr_length, 5, 1)
         grid.addWidget(_field_label("Depth"), 5, 2)
         grid.addWidget(self._tr_depth, 5, 3)
+
+        # Depth at each end, as the dive computer reads it where the tape was tied off.
+        self._tr_start_depth = OptionalMetresSpinBox(100.0)
+        self._tr_start_depth.setToolTip("Depth at the start of the tape.")
+        self._tr_end_depth = OptionalMetresSpinBox(100.0)
+        self._tr_end_depth.setToolTip("Depth at the end of the tape.")
+        grid.addWidget(_field_label("Start depth"), 6, 0)
+        grid.addWidget(self._tr_start_depth, 6, 1)
+        grid.addWidget(_field_label("End depth"), 6, 2)
+        grid.addWidget(self._tr_end_depth, 6, 3)
 
         # The GPS fix's own accuracy, per end, as a field unit exports it.
         self._tr_start_accuracy = OptionalMetresSpinBox(1000.0)
         self._tr_start_accuracy.setToolTip("GPS accuracy at the start fix.")
         self._tr_end_accuracy = OptionalMetresSpinBox(1000.0)
         self._tr_end_accuracy.setToolTip("GPS accuracy at the end fix.")
-        grid.addWidget(_field_label("Start ±"), 6, 0)
-        grid.addWidget(self._tr_start_accuracy, 6, 1)
-        grid.addWidget(_field_label("End ±"), 6, 2)
-        grid.addWidget(self._tr_end_accuracy, 6, 3)
+        grid.addWidget(_field_label("Start ±"), 7, 0)
+        grid.addWidget(self._tr_start_accuracy, 7, 1)
+        grid.addWidget(_field_label("End ±"), 7, 2)
+        grid.addWidget(self._tr_end_accuracy, 7, 3)
 
         # Why the form is read-only, when it is.
         self._tr_lock_note = secondary_label("")
         self._tr_lock_note.setWordWrap(True)
-        grid.addWidget(self._tr_lock_note, 7, 1, 1, 3)
+        grid.addWidget(self._tr_lock_note, 8, 1, 1, 3)
 
-        grid.addWidget(_field_label("Notes", top=True), 8, 0, Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(_field_label("Notes", top=True), 9, 0, Qt.AlignmentFlag.AlignTop)
         self._tr_description = NotesEdit()
-        grid.addWidget(self._tr_description, 8, 1, 1, 3)
+        grid.addWidget(self._tr_description, 9, 1, 1, 3)
 
         # No Save button: a new transect shows as a live draft row in the list
         # and commits itself the moment name and both endpoints are complete;
@@ -591,6 +606,8 @@ class SimplePlanMixin(MixinBase):
             edit.textChanged.connect(self._on_coords_typed)
         self._tr_length.editingFinished.connect(self._maybe_autosave)
         self._tr_depth.editingFinished.connect(self._maybe_autosave)
+        self._tr_start_depth.editingFinished.connect(self._on_depth_ends_edited)
+        self._tr_end_depth.editingFinished.connect(self._on_depth_ends_edited)
         self._tr_start_accuracy.editingFinished.connect(self._maybe_autosave)
         self._tr_end_accuracy.editingFinished.connect(self._maybe_autosave)
         self._tr_description.editing_finished.connect(self._maybe_autosave)
@@ -1052,6 +1069,8 @@ class SimplePlanMixin(MixinBase):
             _show_coord(self._tr_end_coord, *ends[1])
         self._tr_length.setValue(transect.length_m or 0.0)
         self._tr_depth.setValue(transect.depth_m or 0.0)
+        self._tr_start_depth.setValue(transect.start_depth_m or 0.0)
+        self._tr_end_depth.setValue(transect.end_depth_m or 0.0)
         self._tr_start_accuracy.setValue(transect.start_accuracy_m or 0.0)
         self._tr_end_accuracy.setValue(transect.end_accuracy_m or 0.0)
         self._set_form_site(transect.site_id)
@@ -1087,6 +1106,8 @@ class SimplePlanMixin(MixinBase):
             edit.clear()
         self._tr_length.setValue(0.0)
         self._tr_depth.setValue(0.0)
+        self._tr_start_depth.setValue(0.0)
+        self._tr_end_depth.setValue(0.0)
         self._tr_start_accuracy.setValue(0.0)
         self._tr_end_accuracy.setValue(0.0)
         self._tr_lock_note.setText("")
@@ -1142,6 +1163,15 @@ class SimplePlanMixin(MixinBase):
             f"heading {bearing_text(lat1, lon1, lat2, lon2)}"
         )
 
+    def _on_depth_ends_edited(self) -> None:
+        # A blank depth follows the ends; a typed one is the diver's own reading
+        # and stays.
+        if self._tr_depth.value() == 0.0:
+            mean = mean_depth_m(self._tr_start_depth.value() or None, self._tr_end_depth.value() or None)
+            if mean is not None:
+                self._tr_depth.setValue(mean)
+        self._maybe_autosave()
+
     def _on_transect_save(self) -> None:
         store = self._survey_store()
         if self._transect_is_read_only(self._transect_form_id):
@@ -1161,6 +1191,8 @@ class SimplePlanMixin(MixinBase):
                 site_id=self._form_site_id(),
                 start_accuracy_m=self._tr_start_accuracy.value(),
                 end_accuracy_m=self._tr_end_accuracy.value(),
+                start_depth_m=self._tr_start_depth.value(),
+                end_depth_m=self._tr_end_depth.value(),
             )
         except ValueError as exc:
             self._status_label.setText(str(exc))

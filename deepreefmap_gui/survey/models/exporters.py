@@ -25,6 +25,8 @@ TRANSECT_CSV_COLUMNS = [
     "end_accuracy_m",
     "length_m",
     "depth_m",
+    "start_depth_m",
+    "end_depth_m",
     "description",
     "id",
 ]
@@ -56,6 +58,8 @@ def save_transects_csv(
                 _blank(t.end_accuracy_m),
                 _blank(t.length_m),
                 _blank(t.depth_m),
+                _blank(t.start_depth_m),
+                _blank(t.end_depth_m),
                 t.description,
                 str(t.id),
             ])

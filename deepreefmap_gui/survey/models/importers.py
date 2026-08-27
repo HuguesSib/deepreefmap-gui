@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from xml.etree import ElementTree
 
-from deepreefmap_gui.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect import Transect, mean_depth_m
 
 _CSV_REQUIRED = {"name"}
 
@@ -46,12 +46,15 @@ def build_transect(
     site_id: uuid.UUID | None = None,
     start_accuracy_m: float | None = None,
     end_accuracy_m: float | None = None,
+    start_depth_m: float | None = None,
+    end_depth_m: float | None = None,
 ) -> Transect:
     """Validate and build a transect from typed fields, naming the field at fault.
 
     Shared by the Transects form and the new-transect dialog so their validation
     cannot drift. The end points are both or neither: a line with one end is a
-    typo, a line with none was never fixed by GPS.
+    typo, a line with none was never fixed by GPS. A blank depth takes the mean of
+    the two end depths; a typed one stands.
     """
     coords: list[float | None] = []
     for which, raw in (("start", start_text), ("end", end_text)):
@@ -72,7 +75,9 @@ def build_transect(
         end_lat=coords[2],
         end_lon=coords[3],
         length_m=length_m or None,
-        depth_m=depth_m or None,
+        depth_m=depth_m or mean_depth_m(start_depth_m or None, end_depth_m or None),
+        start_depth_m=start_depth_m or None,
+        end_depth_m=end_depth_m or None,
         description=description,
         site_id=site_id,
         start_accuracy_m=start_accuracy_m or None,
@@ -130,8 +135,9 @@ def import_transects_csv(path: Path) -> list[Transect]:
     """Read transects from a CSV with case-insensitive headers.
 
     Required column: name. Optional: start_lat, start_lon, end_lat, end_lon,
-    start_accuracy_m, end_accuracy_m, length_m, depth_m, description, site
-    (a site name, resolved by the caller), id (a UUID kept for round-trips).
+    start_accuracy_m, end_accuracy_m, length_m, depth_m, start_depth_m,
+    end_depth_m, description, site (a site name, resolved by the caller), id (a
+    UUID kept for round-trips).
     """
     with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -176,6 +182,8 @@ def _transect_from_csv_row(row: dict[str, str], norm: dict[str, str], name: str)
         end_accuracy_m=_optional_float(_cell(row, norm, "end_accuracy_m")),
         length_m=_optional_float(_cell(row, norm, "length_m")),
         depth_m=_optional_float(_cell(row, norm, "depth_m")),
+        start_depth_m=_optional_float(_cell(row, norm, "start_depth_m")),
+        end_depth_m=_optional_float(_cell(row, norm, "end_depth_m")),
         description=_cell(row, norm, "description"),
     )
     raw_id = _cell(row, norm, "id")

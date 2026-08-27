@@ -831,6 +831,14 @@ _MIGRATIONS: list[Migration] = [
         # for almost every session the label is unchanged.
         "ALTER TABLE survey_batch DROP COLUMN name;",
     ),
+    Migration(
+        20,
+        "a transect records the depth at each end",
+        """
+        ALTER TABLE transect ADD COLUMN start_depth_m REAL;
+        ALTER TABLE transect ADD COLUMN end_depth_m REAL;
+        """,
+    ),
 ]
 
 
@@ -2794,6 +2802,8 @@ class SurveyStore:
                 site_id=self._restore_site(snapshot.get("site"), report),
                 length_m=snapshot.get("length_m"),
                 depth_m=snapshot.get("depth_m"),
+                start_depth_m=snapshot.get("start_depth_m"),
+                end_depth_m=snapshot.get("end_depth_m"),
                 deleted_at=snapshot.get("deleted_at"),
             ))
             report.transects += 1
