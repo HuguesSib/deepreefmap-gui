@@ -1135,10 +1135,10 @@ class VideoLibraryMixin(MixinBase):
         A row the console validated or authored is not refused: the change goes
         up as a proposal, which the sync report says.
         """
-        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_note, lock_state, own_device_id
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id, read_only
 
         mine = own_device_id()
-        if lock_state(row, mine) == OTHER_DEVICE:
+        if read_only(row, mine):
             self._status_label.setText(lock_note(row, mine))
             return True
         return False

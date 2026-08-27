@@ -1,9 +1,9 @@
 """Making and changing a site or a campaign in the field.
 
 Both arrive at the registry unvalidated, for a curator to check; until then they
-are this laptop's own rows like any other. A row the console authored or
-validated stays editable, and the change is sent as a proposal; a row another
-laptop made is read-only here.
+are this laptop's own rows like any other. A row the console authored stays
+editable, and the change is sent as a proposal; a row another laptop made, or
+one a curator has validated, is read-only here.
 
 The combo helpers live here too, because every box that offers a site or a
 campaign also offers to make one.
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import ERROR
 from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.survey.models import Campaign, Site
-from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_note, lock_state, own_device_id
+from deepreefmap_gui.survey.ownership import lock_note, own_device_id, read_only
 from deepreefmap_gui.survey.store import SurveyStore
 
 SITE_NOTE = "A named place on a reef."
@@ -77,7 +77,7 @@ class _CatalogueDialog(QDialog):
         note = lock_note(row, own_device_id())
         self.lock.setText(note)
         self.lock.setVisible(bool(note))
-        if lock_state(row, own_device_id()) != OTHER_DEVICE:
+        if not read_only(row, own_device_id()):
             return
         for line in inputs:
             line.setReadOnly(True)
@@ -227,15 +227,14 @@ def combo_id(combo: QComboBox) -> uuid.UUID | None:
 def arm_edit(button: QToolButton, row: object | None, tooltip: str) -> None:
     """Offer the edit beside a catalogue box, where there is one to offer.
 
-    A row another laptop authored is not editable here, and the button says so
-    rather than disappearing: a control that comes and goes is harder to read
-    than one that explains itself.
+    A row another laptop authored, or one the console has validated, is not
+    editable here, and the button says which rather than disappearing: a control
+    that comes and goes is harder to read than one that explains itself.
     """
     if row is None:
         button.setEnabled(False)
         button.setToolTip(PICK_FIRST)
         return
     note = lock_note(row, own_device_id())
-    read_only = lock_state(row, own_device_id()) == OTHER_DEVICE
-    button.setEnabled(not read_only)
+    button.setEnabled(not read_only(row, own_device_id()))
     button.setToolTip(note or tooltip)

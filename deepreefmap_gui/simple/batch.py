@@ -1661,7 +1661,7 @@ class SimpleBatchMixin(MixinBase):
     def _on_survey_campaign(self, indices: list[int]) -> None:
         """File every selected pass under one campaign."""
         from deepreefmap_gui.runs.pass_campaign import CampaignChoiceDialog, file_pass
-        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_state, own_device_id
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
 
         store = self._try_survey_store()
         if store is None:
@@ -1678,7 +1678,7 @@ class SimpleBatchMixin(MixinBase):
             return
         chosen = dialog.chosen()
         mine = own_device_id()
-        locked = [p for p in passes if lock_state(p, mine) == OTHER_DEVICE]
+        locked = [p for p in passes if read_only(p, mine)]
         changed = [p for p in passes if p not in locked and file_pass(store, p, chosen) is not None]
         self._status_label.setText(_filed_note(len(changed), len(locked)))
         self._rebuild_survey_table()

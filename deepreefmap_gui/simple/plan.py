@@ -754,12 +754,12 @@ class SimplePlanMixin(MixinBase):
         return "" if transect is None else lock_note(transect, own_device_id())
 
     def _transect_is_read_only(self, transect_id: uuid.UUID | None) -> bool:
-        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_state, own_device_id
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
 
         if transect_id is None:
             return False
         transect = self._survey_store().get_transect(transect_id)
-        return transect is not None and lock_state(transect, own_device_id()) == OTHER_DEVICE
+        return transect is not None and read_only(transect, own_device_id())
 
     def _form_site_id(self) -> uuid.UUID | None:
         data = self._tr_site_combo.currentData()

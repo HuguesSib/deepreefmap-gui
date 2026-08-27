@@ -19,7 +19,7 @@ from deepreefmap_gui.simple.catalogue_dialogs import (
     refill_sites,
 )
 from deepreefmap_gui.survey.models import Campaign, Site
-from deepreefmap_gui.survey.ownership import READ_ONLY_NOTE
+from deepreefmap_gui.survey.ownership import READ_ONLY_NOTE, VALIDATED_NOTE
 from deepreefmap_gui.survey.store import SurveyStore
 
 
@@ -109,6 +109,19 @@ def test_a_row_another_laptop_made_is_read_only(qapp, store) -> None:
     dialog = SiteDialog(None, store, site)
 
     assert dialog.lock.text() == READ_ONLY_NOTE
+    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
+    assert dialog.name_input.isReadOnly()
+
+
+def test_a_validated_row_offers_no_edit(qapp, store) -> None:
+    """Once a curator has settled a row it is changed in the console, so the
+    form shows what it holds and refuses rather than sending a proposal."""
+    site = a_site(store)
+    site.validated_at = "2026-08-20T00:00:00+00:00"
+
+    dialog = SiteDialog(None, store, site)
+
+    assert dialog.lock.text() == VALIDATED_NOTE
     assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
     assert dialog.name_input.isReadOnly()
 
