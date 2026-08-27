@@ -75,7 +75,8 @@ def test_transect_autosaves_once_complete(window):
     assert len(rows) == 1
     # A typed tape length is the cable actually laid, so it stands in the row in
     # place of the straight-line distance between the GPS endpoints.
-    assert rows[0][:2] == ("T1", "50 m tape")
+    assert rows[0][0] == "T1"
+    assert rows[0][2] == "50 m tape"
 
 
 def test_draft_row_tracks_typing_before_save(window):
@@ -366,7 +367,7 @@ def test_columns_count_the_passes_and_runs_on_each_transect(window):
     store.add_pass(pass_)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="run_001", status="succeeded"))
     w._refresh_transect_list()
-    assert row_texts(w)[0][3:] == ("1", "1")
+    assert row_texts(w)[0][4:] == ("1", "1")
 
 
 def two_transects(w):
@@ -694,9 +695,9 @@ def test_transect_list_sorts_lengths_as_numbers(window):
     assert tree.header().property("sortable") == "true"
     assert tree.header().isSortIndicatorShown()
 
-    tree.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    tree.sortByColumn(2, Qt.SortOrder.AscendingOrder)
     assert row_names(w) == ["Short", "Long"]
-    tree.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+    tree.sortByColumn(2, Qt.SortOrder.DescendingOrder)
     assert row_names(w) == ["Long", "Short"]
 
 
@@ -810,3 +811,81 @@ def test_a_coordinate_field_shows_its_latitude_rather_than_its_longitude(window)
 
     assert window._tr_start_coord.cursorPosition() == 0
     assert window._tr_start_coord.toolTip() == "-17.110200, 179.092100"
+
+
+def test_the_site_column_names_the_reef_and_sorts_by_it(window):
+    """Scenario: lines on two reefs, and one nobody has said a site for.
+
+    Expected behaviour: the column names each, and a sort orders by the name
+    while the unsited line sinks, which is SortableTreeItem's contract for a
+    cell with no value behind it.
+    """
+    from PySide6.QtCore import Qt
+
+    w = window
+    store = w._survey_store()
+    aqaba = Site(name="Aqaba")
+    garden = Site(name="Japanese Garden")
+    store.add_site(aqaba)
+    store.add_site(garden)
+    store.add_transect(make_transect("T1", site_id=garden.id))
+    store.add_transect(make_transect("T2", site_id=aqaba.id))
+    store.add_transect(make_transect("T3"))
+    w._refresh_transect_list()
+
+    assert {row[0]: row[1] for row in row_texts(w)} == {
+        "T1": "Japanese Garden",
+        "T2": "Aqaba",
+        "T3": "—",
+    }
+
+    w._transect_list.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    assert row_names(w) == ["T2", "T1", "T3"]
+
+
+def test_editing_a_site_renames_it_everywhere_it_is_shown(window, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from deepreefmap_gui.simple.catalogue_dialogs import SiteDialog
+
+    w = window
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect("T1", site_id=site.id))
+    w._refresh_transect_list()
+
+    def rename(self):
+        self.name_input.setText("Japanese Garden North")
+        self._save()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SiteDialog, "exec", rename)
+    w._on_edit_site()
+
+    assert w._survey_store().get_site(site.id).name == "Japanese Garden North"
+    assert row_texts(w)[0][1] == "Japanese Garden North"
+    assert w._tr_site_combo.currentText() == "Japanese Garden North"
+
+
+def test_the_site_edit_is_offered_only_once_one_is_picked(window):
+    w = window
+    w._refresh_site_choices()
+    assert not w._tr_edit_site_btn.isEnabled()
+
+    pick_site(w)
+
+    assert w._tr_edit_site_btn.isEnabled()
+
+
+def test_a_site_another_laptop_made_is_not_editable_here(window):
+    import uuid
+
+    from deepreefmap_gui.survey.ownership import READ_ONLY_NOTE
+
+    w = window
+    site = Site(name="Japanese Garden", device_id=uuid.uuid4())
+    w._survey_store().add_site(site)
+    w._refresh_site_choices()
+    w._set_form_site(site.id)
+
+    assert not w._tr_edit_site_btn.isEnabled()
+    assert w._tr_edit_site_btn.toolTip() == READ_ONLY_NOTE

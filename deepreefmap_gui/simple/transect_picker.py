@@ -31,11 +31,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon, direction_arrow_icon
+from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon, direction_arrow_icon, pencil_icon
 from deepreefmap_gui.core.theme import ERROR, SPACE_SM, TREE_ROW_PAD_V
-from deepreefmap_gui.core.widgets import muted_label
+from deepreefmap_gui.core.widgets import icon_button, muted_label
 from deepreefmap_gui.map.overlays import OverlayTransect, transect_overlays
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+from deepreefmap_gui.simple.catalogue_dialogs import (
+    EDIT_CAMPAIGN,
+    EDIT_SITE,
+    CampaignDialog,
+    SiteDialog,
+    arm_edit,
+    combo_id,
+    refill_campaigns,
+    refill_sites,
+)
 from deepreefmap_gui.survey.models import (
     DIRECTION_UNRECORDED,
     PASS_DIRECTIONS,
@@ -183,6 +193,10 @@ class TransectPickerDialog(QDialog):
         self.new_campaign_btn.setToolTip("Name a campaign the registry does not list yet.")
         self.new_campaign_btn.clicked.connect(self._on_new_campaign)
         campaign_row.addWidget(self.new_campaign_btn)
+        self.edit_campaign_btn = icon_button(pencil_icon(), EDIT_CAMPAIGN, EDIT_CAMPAIGN)
+        self.edit_campaign_btn.clicked.connect(self._on_edit_campaign)
+        campaign_row.addWidget(self.edit_campaign_btn)
+        self.campaign.activated.connect(lambda _index: self._refresh_campaign_edit())
         direction_row.addRow("Campaign", campaign_row)
         self._fill_campaigns(self._store.default_campaign_id())
         side.addLayout(direction_row)
@@ -226,44 +240,48 @@ class TransectPickerDialog(QDialog):
         self.map.fit_transects()
 
     def _fill_campaigns(self, selected: uuid.UUID | None) -> None:
-        self._campaigns = self._store.list_campaigns()
-        self.campaign.blockSignals(True)
-        try:
-            self.campaign.clear()
-            self.campaign.addItem("No campaign", None)
-            for campaign in self._campaigns:
-                self.campaign.addItem(campaign.name, str(campaign.id))
-            if selected is not None:
-                self.campaign.setCurrentIndex(max(0, self.campaign.findData(str(selected))))
-        finally:
-            self.campaign.blockSignals(False)
+        refill_campaigns(self.campaign, self._store, selected)
+        self._refresh_campaign_edit()
 
     def _on_new_campaign(self) -> None:
-        from deepreefmap_gui.simple.catalogue_dialogs import NewCampaignDialog
-
-        dialog = NewCampaignDialog(self, self._store)
+        dialog = CampaignDialog(self, self._store)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.campaign is not None:
             self._fill_campaigns(dialog.campaign.id)
 
-    def _on_new_site(self) -> None:
-        from deepreefmap_gui.simple.catalogue_dialogs import NewSiteDialog
+    def _on_edit_campaign(self) -> None:
+        chosen = combo_id(self.campaign)
+        campaign = self._store.get_campaign(chosen) if chosen is not None else None
+        if campaign is None:
+            return
+        dialog = CampaignDialog(self, self._store, campaign)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.campaign is not None:
+            self._fill_campaigns(dialog.campaign.id)
 
-        dialog = NewSiteDialog(self, self._store)
+    def _refresh_campaign_edit(self) -> None:
+        chosen = combo_id(self.campaign)
+        arm_edit(self.edit_campaign_btn, self._store.get_campaign(chosen) if chosen else None, EDIT_CAMPAIGN)
+
+    def _on_new_site(self) -> None:
+        dialog = SiteDialog(self, self._store)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.site is not None:
             self._fill_sites(dialog.site.id)
 
+    def _on_edit_site(self) -> None:
+        chosen = combo_id(self.site_combo)
+        site = self._store.get_site(chosen) if chosen is not None else None
+        if site is None:
+            return
+        dialog = SiteDialog(self, self._store, site)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.site is not None:
+            self._fill_sites(dialog.site.id)
+
+    def _refresh_site_edit(self) -> None:
+        chosen = combo_id(self.site_combo)
+        arm_edit(self.edit_site_btn, self._store.get_site(chosen) if chosen else None, EDIT_SITE)
+
     def _fill_sites(self, selected: uuid.UUID | None) -> None:
-        self._sites = self._store.list_sites()
-        self.site_combo.blockSignals(True)
-        try:
-            self.site_combo.clear()
-            self.site_combo.addItem("No site", None)
-            for site in self._sites:
-                self.site_combo.addItem(site.name, str(site.id))
-            if selected is not None:
-                self.site_combo.setCurrentIndex(max(0, self.site_combo.findData(str(selected))))
-        finally:
-            self.site_combo.blockSignals(False)
+        refill_sites(self.site_combo, self._store, selected)
+        self._refresh_site_edit()
 
     # --- the new-transect strip ---------------------------------------------
 
@@ -289,6 +307,10 @@ class TransectPickerDialog(QDialog):
         self.new_site_btn.setProperty("quiet", "true")
         self.new_site_btn.clicked.connect(self._on_new_site)
         site_row.addWidget(self.new_site_btn)
+        self.edit_site_btn = icon_button(pencil_icon(), EDIT_SITE, EDIT_SITE)
+        self.edit_site_btn.clicked.connect(self._on_edit_site)
+        site_row.addWidget(self.edit_site_btn)
+        self.site_combo.activated.connect(lambda _index: self._refresh_site_edit())
         form.addRow("Site", site_row)
         self._fill_sites(None)
         self.start_input = QLineEdit()

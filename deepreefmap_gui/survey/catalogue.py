@@ -13,13 +13,15 @@ import logging
 import shutil
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
+from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.run_record import RunRecord
+from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch, session_label
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
@@ -44,6 +46,11 @@ UNASSIGNED_TITLE = "Not assigned yet"
 # a manifest that names one. Not an error: they process and compare like any
 # other, they just cannot be read as a day's work.
 UNFILED_SESSION_TITLE = "No session recorded"
+
+# Neither a site nor a campaign is required of a pass, so these buckets are the
+# ordinary case for a laptop that has never met a registry, not a backlog.
+NO_SITE_TITLE = "No site recorded"
+NO_CAMPAIGN_TITLE = "No campaign recorded"
 
 # Re-exported from statuses.py under the names the browser uses for them.
 RUN_SUCCEEDED, RUN_FAILED, RUN_UNFINISHED = (
@@ -106,6 +113,8 @@ class RunEntry:
     db_run: RunRecord | None = None
     db_pass: TransectPass | None = None
     db_transect_name: str | None = None
+    db_campaign_name: str | None = None
+    db_site_name: str | None = None
     db_session_created_at: str | None = None
     # When the footage was shot, as opposed to when the run was made. Only the
     # database knows it: the manifest records which clips went in, not when they
@@ -134,6 +143,20 @@ class RunEntry:
         if self.db_pass is not None:
             return self.db_pass.transect_id
         return self.manifest_transect_id
+
+    @property
+    def campaign_id(self) -> uuid.UUID | None:
+        """The trip this run's swim belongs to. No manifest records one."""
+        return self.db_pass.campaign_id if self.db_pass is not None else None
+
+    @property
+    def campaign_name(self) -> str | None:
+        return self.db_campaign_name
+
+    @property
+    def site_name(self) -> str | None:
+        """The reef, which a run reaches through its transect rather than directly."""
+        return self.db_site_name
 
     @property
     def session_id(self) -> uuid.UUID | None:
@@ -407,6 +430,8 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
     transects = {t.id: t for t in store.list_transects()}
     batches = {b.id: b for b in store.list_batches()}
     videos = {v.id: v for v in store.list_videos()}
+    sites = {s.id: s for s in store.list_sites()}
+    campaigns = {c.id: c for c in store.list_campaigns()}
     for entry in entries:
         run = runs.get(entry.dir_name)
         if run is None:
@@ -433,6 +458,22 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
                 transects[transect_id] = retired
         transect = transects.get(transect_id) if transect_id is not None else None
         entry.db_transect_name = transect.name if transect is not None else None
+        # Site and campaign are resolved the same way and for the same reason: a
+        # row the registry has withdrawn still names work that happened.
+        site_id = transect.site_id if transect is not None else None
+        if site_id is not None and site_id not in sites:
+            withdrawn = store.get_site(site_id)
+            if withdrawn is not None:
+                sites[site_id] = withdrawn
+        site = sites.get(site_id) if site_id is not None else None
+        entry.db_site_name = site.name if site is not None else None
+        campaign_id = pass_.campaign_id
+        if campaign_id is not None and campaign_id not in campaigns:
+            retired_trip = store.get_campaign_for_reference(campaign_id)
+            if retired_trip is not None:
+                campaigns[campaign_id] = retired_trip
+        campaign = campaigns.get(campaign_id) if campaign_id is not None else None
+        entry.db_campaign_name = campaign.name if campaign is not None else None
         if (
             entry.manifest_transect_name
             and entry.db_transect_name
@@ -493,6 +534,71 @@ def transects_facet(
     if unassigned.entries:
         groups.insert(0, unassigned)
     return groups
+
+
+def _named_facet(
+    entries: list[RunEntry],
+    kind: str,
+    name_of: Callable[[RunEntry], str | None],
+    id_of: Callable[[RunEntry], uuid.UUID | None],
+    known: Iterable[tuple[uuid.UUID, str]],
+    unassigned_title: str,
+) -> list[FacetGroup]:
+    """Runs grouped under one catalogue record, flat.
+
+    Flat rather than nested under a pass group the way transects_facet is: a
+    site or a campaign gathers work from several lines, and a second level of
+    the same pass headings under each would say nothing the transect facet does
+    not say better.
+    """
+    by_name: dict[str, FacetGroup] = {}
+    unassigned = FacetGroup(key=("unassigned",), title=unassigned_title)
+    for record_id, name in known:
+        by_name[name] = FacetGroup(key=(kind, str(record_id)), title=name)
+    for entry in entries:
+        title = name_of(entry)
+        if title is None:
+            unassigned.entries.append(entry)
+            continue
+        group = by_name.get(title)
+        if group is None:
+            # A record the caller did not list, which a withdrawn one is: its
+            # own id keys the group where there is one, its name where there
+            # is not, the way transects_facet keys a retired line.
+            own_id = id_of(entry)
+            group = by_name[title] = FacetGroup(key=(kind, str(own_id) if own_id else title), title=title)
+        group.entries.append(entry)
+    groups = [g for _name, g in sorted(by_name.items())]
+    if unassigned.entries:
+        groups.insert(0, unassigned)
+    return groups
+
+
+def sites_facet(entries: list[RunEntry], sites: Iterable[Site] = ()) -> list[FacetGroup]:
+    """Site groups, with runs on no site surfaced first.
+
+    ``sites`` may list known sites so ones without runs still appear.
+    """
+    return _named_facet(
+        entries,
+        "site",
+        lambda e: e.site_name,
+        lambda _e: None,
+        ((site.id, site.name) for site in sites),
+        NO_SITE_TITLE,
+    )
+
+
+def campaigns_facet(entries: list[RunEntry], campaigns: Iterable[Campaign] = ()) -> list[FacetGroup]:
+    """Campaign groups, with runs on no campaign surfaced first."""
+    return _named_facet(
+        entries,
+        "campaign",
+        lambda e: e.campaign_name,
+        lambda e: e.campaign_id,
+        ((campaign.id, campaign.name) for campaign in campaigns),
+        NO_CAMPAIGN_TITLE,
+    )
 
 
 def session_group_key(batch_id: uuid.UUID | None) -> tuple:

@@ -48,15 +48,18 @@ from deepreefmap_gui.core.widgets import (
     muted_label,
 )
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
 from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.runs.video_rows import icon_button, set_button_dead
+from deepreefmap_gui.simple.catalogue_dialogs import NO_CAMPAIGN
 from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
 # The href behind the transect-and-direction fact. Both are set in one dialog,
 # so the fact that shows them is the way into it.
 _FILING_LINK = "filing"
+_CAMPAIGN_LINK = "campaign"
 
 _NO_SESSION = "No session recorded"
 
@@ -233,6 +236,7 @@ class SectionDetailPanel(DetailCard):
 
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
     delete_requested = Signal(str)
     rename_requested = Signal(str)
     run_activated = Signal(str)
@@ -284,6 +288,7 @@ class SectionDetailPanel(DetailCard):
             ("rename", RENAME_ACTION, self._emit_rename),
             ("retrim", "Adjust trim…", self._emit_retrim),
             ("reassign", "Change transect…", self._emit_reassign),
+            ("campaign", CAMPAIGN_ACTION, self._emit_campaign),
             (None, "", None),
             ("delete", "Delete pass", self._emit_delete),
         )
@@ -313,6 +318,9 @@ class SectionDetailPanel(DetailCard):
     def _emit_reassign(self) -> None:
         self.reassign_requested.emit(self._pass_id())
 
+    def _emit_campaign(self) -> None:
+        self.campaign_requested.emit(self._pass_id())
+
     def _emit_delete(self) -> None:
         self.delete_requested.emit(self._pass_id())
 
@@ -332,6 +340,8 @@ class SectionDetailPanel(DetailCard):
     def _on_fact_link(self, href: str) -> None:
         if href == _FILING_LINK:
             self._emit_reassign()
+        elif href == _CAMPAIGN_LINK:
+            self._emit_campaign()
 
     def show_section(
         self,
@@ -343,6 +353,7 @@ class SectionDetailPanel(DetailCard):
         runs: list[RunRecord],
         session_name,
         in_cart: bool,
+        campaign_name: str | None = None,
         output_bytes: int = 0,
     ) -> None:
         """Describe one pass. ``session_name`` resolves a run's batch id."""
@@ -356,6 +367,10 @@ class SectionDetailPanel(DetailCard):
         rows = [
             ("Clip", clip_name),
             ("Transect", fact_link(filing, _FILING_LINK)),
+            # Its own row rather than fused into the filing above: the trip is
+            # set on its own, and a swim belongs to one whether or not anyone
+            # has said which line it followed.
+            ("Campaign", fact_link(campaign_name or NO_CAMPAIGN, _CAMPAIGN_LINK)),
             ("Length", _length(pass_)),
         ]
         # What this cut has cost so far, which is the figure worth having when

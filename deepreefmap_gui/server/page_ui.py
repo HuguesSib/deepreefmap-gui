@@ -95,7 +95,10 @@ NOT_CONNECTED_HINT = "Paste a connect code to join a registry."
 DEVICE_CARD = "This device"
 ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web interface."
 
-REFERENCE_NOTE = "Sites and campaigns are edited in the web interface and chosen here."
+REFERENCE_NOTE = (
+    "Sites and campaigns are shared with the registry. One made here is sent up; "
+    "a change to one the console owns is sent as a proposal."
+)
 ONBOARDED_BY = "Onboarded by"
 # Records the registry holds that could not be taken, by name.
 SET_ASIDE = "Not taken"
@@ -268,9 +271,9 @@ class ServerPageMixin(MixinBase):
         waiting_layout.addWidget(self._server_waiting)
         body.addWidget(self._server_waiting_card)
 
-        # What the registry has sent down, read-only: sites and campaigns are
-        # authored in the web interface and only chosen here: on the Transects
-        # page and when a section is filed.
+        # The shared catalogue, whichever end authored it: sites and campaigns
+        # travel both ways, and are chosen on the Transects page and wherever a
+        # pass is filed.
         self._server_reference_card, reference_layout = section_card("From the registry")
         reference_note = muted_label(REFERENCE_NOTE)
         reference_note.setWordWrap(True)
@@ -1073,7 +1076,9 @@ class ServerPageMixin(MixinBase):
         # After the pull has landed, so it sees the preset row and the
         # assignment in whichever order the registry delivered them.
         self._offer_preset_model_downloads(store)
-        # A pull rewrites the survey underneath every list drawn from it.
+        # A pull rewrites the survey underneath every list drawn from it, and
+        # every box that offers a choice out of it.
+        self._refresh_site_choices()
         self._refresh_transect_list()
         self._refresh_data_manager()
         self._refresh_survey_analysis()
@@ -1174,21 +1179,36 @@ class ServerPageMixin(MixinBase):
 
 
 def _reference_rows(store: SurveyStore | None) -> list[tuple[str, str]]:
-    """The pulled sites and campaigns, one row each, or nothing to hide the card.
+    """The shared sites and campaigns, one row each, or nothing to hide the card.
 
-    Names, not counts: a diver checking this page wants to see that the reef
-    they are about to file against actually came down.
+    Named rather than counted: a diver checking this page wants to see that the
+    reef they are about to file against actually came down. The usage on the end
+    of each line answers the next question, which is whether anything is filed
+    against it yet.
     """
     if store is None:
         return []
+    transects = store.list_transects()
+    passes = store.list_passes()
     rows: list[tuple[str, str]] = []
     for site in store.list_sites():
         where = ", ".join(part for part in (site.region, site.country) if part)
-        rows.append((site.name, where or "Site"))
+        lines = sum(1 for transect in transects if transect.site_id == site.id)
+        rows.append((site.name, _detail(where or "Site", _counted(lines, "transect"))))
     for campaign in store.list_campaigns():
         span = " to ".join(part for part in (campaign.begin_date, campaign.end_date) if part)
-        rows.append((campaign.name, span or "Campaign"))
+        filed = sum(1 for pass_ in passes if pass_.campaign_id == campaign.id)
+        rows.append((campaign.name, _detail(span or "Campaign", _counted(filed, "pass"))))
     return rows
+
+
+def _counted(count: int, noun: str) -> str:
+    plural = f"{noun}es" if noun.endswith("s") else f"{noun}s"
+    return f"{count} {noun if count == 1 else plural}"
+
+
+def _detail(*parts: str) -> str:
+    return ", ".join(part for part in parts if part)
 
 
 def _device_rows(state: ServerState) -> list[tuple[str, str]]:

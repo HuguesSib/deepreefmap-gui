@@ -1446,6 +1446,16 @@ class SurveyStore:
     def get_campaign(self, campaign_id: uuid.UUID) -> Campaign | None:
         return self._get("campaign", Campaign, campaign_id)
 
+    def get_campaign_for_reference(self, campaign_id: uuid.UUID) -> Campaign | None:
+        """The trip a pass was recorded on, retired or not.
+
+        The counterpart of get_transect_for_reference, for the same reason: a
+        pass filed against a campaign the registry has since withdrawn still
+        says which trip it belongs to, and a row that answered None would print
+        as unfiled work.
+        """
+        return self._row_including_deleted("campaign", campaign_id)
+
     def list_campaigns(self) -> list[Campaign]:
         # Newest expedition first: the one being worked is the one just begun.
         return self._list("campaign", Campaign, "begin_date DESC, name")
@@ -1993,12 +2003,16 @@ class SurveyStore:
         transect_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
         video_id: uuid.UUID | None = None,
+        campaign_id: uuid.UUID | None = None,
     ) -> list[TransectPass]:
         clauses: list[str] = ["deleted_at IS NULL"]
         params: list[str] = []
         if transect_id is not None:
             clauses.append("transect_id = ?")
             params.append(str(transect_id))
+        if campaign_id is not None:
+            clauses.append("campaign_id = ?")
+            params.append(str(campaign_id))
         if batch_id is not None:
             clauses.append("batch_id = ?")
             params.append(str(batch_id))

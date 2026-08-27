@@ -109,6 +109,7 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.io.frame_grab import shared_frame_grabber
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
 from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.catalogue import (
@@ -231,6 +232,8 @@ MENU_ADD_TO_CART = "Add to cart"
 MENU_REMOVE_FROM_CART = "Take out of the cart"
 MENU_RETRIM = "Adjust trim…"
 MENU_REASSIGN = "Change transect…"
+# Named in runs/pass_campaign.py, imported so the row, the pane and the tests
+# all say it the same way.
 MENU_OPEN_TRANSECT = "Show on the Transects page"
 # An unfiled section has no transect to show, but the page is still where one is
 # drawn or imported, so the action goes there and says that instead of greying
@@ -238,6 +241,7 @@ MENU_OPEN_TRANSECT = "Show on the Transects page"
 MENU_OPEN_TRANSECTS_PAGE = "Open the Transects page"
 MENU_DELETE = "Delete pass"
 NO_TRANSECT_TOOLTIP = "This pass is not filed against a transect."
+NO_CAMPAIGN_NAME = "No campaign"
 RETRIM_TOOLTIP = "Move this pass's window."
 TRIM_UNLINKED_TOOLTIP = "The video file cannot be found. Add it again from where it lives now."
 CART_UNLINKED_TOOLTIP = TRIM_UNLINKED_TOOLTIP
@@ -1163,6 +1167,7 @@ class SectionRow(QWidget):
     add_to_cart_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
     rename_requested = Signal(str)
@@ -1303,6 +1308,7 @@ class SectionRow(QWidget):
         pass_: TransectPass,
         *,
         transect_name: str | None,
+        campaign_name: str | None = None,
         status: str,
         run_count: int = 0,
         in_cart: bool = False,
@@ -1354,7 +1360,11 @@ class SectionRow(QWidget):
         self.trim_btn.setToolTip(RETRIM_TOOLTIP if available else TRIM_UNLINKED_TOOLTIP)
         # The window is not repeated here: the row shows it, and once frames
         # arrive each one is captioned with where in the window it came from.
-        self._plain_tooltip = f"{transect_name or UNASSIGNED_NAME}  ·  {statuses.status_label(status)}"
+        # The campaign is here rather than in a column: this row's widths are
+        # what line its strip up with the clip's above it, and the trip is a
+        # thing to check rather than to scan down.
+        parts = [transect_name or UNASSIGNED_NAME, campaign_name or NO_CAMPAIGN_NAME, statuses.status_label(status)]
+        self._plain_tooltip = "  ·  ".join(parts)
         self._preview = preview if available else None
         self._preview_key = f"{pass_.id}@{pass_.begin_s:.2f}-{pass_.end_s:.2f}"
         self.setToolTip(self._plain_tooltip)
@@ -1499,6 +1509,7 @@ class SectionRow(QWidget):
         cart.triggered.connect(lambda *_: self.add_to_cart_requested.emit(self.pass_id))
         menu.addAction(MENU_RETRIM).triggered.connect(lambda *_: self.retrim_requested.emit(self.pass_id))
         menu.addAction(MENU_REASSIGN).triggered.connect(lambda *_: self.reassign_requested.emit(self.pass_id))
+        menu.addAction(CAMPAIGN_ACTION).triggered.connect(lambda *_: self.campaign_requested.emit(self.pass_id))
         # The one action with nowhere on the row to live: it leaves the page
         # altogether, which is not something a row's own buttons should look
         # like they do.
@@ -1538,6 +1549,7 @@ class SectionList(QScrollArea):
     add_to_cart_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
     rename_requested = Signal(str)
@@ -1578,6 +1590,7 @@ class SectionList(QScrollArea):
         entry: VideoLibraryEntry,
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
+        campaign_name: Callable[[Any], str | None] = lambda _id: None,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
         assets: Mapping[uuid.UUID, VideoAsset] | None = None,
     ) -> None:
@@ -1596,6 +1609,7 @@ class SectionList(QScrollArea):
             self._rows[str(pass_.id)].set_section(
                 pass_,
                 transect_name=transect_name(pass_.transect_id),
+                campaign_name=campaign_name(pass_.campaign_id),
                 status=status,
                 run_count=run_count,
                 in_cart=bool(in_cart(str(pass_.id))),
@@ -1626,6 +1640,7 @@ class SectionList(QScrollArea):
             row.add_to_cart_requested.connect(self.add_to_cart_requested)
             row.retrim_requested.connect(self.retrim_requested)
             row.reassign_requested.connect(self.reassign_requested)
+            row.campaign_requested.connect(self.campaign_requested)
             row.delete_requested.connect(self.delete_requested)
             row.open_transect_requested.connect(self.open_transect_requested)
             row.rename_requested.connect(self.rename_requested)
@@ -1788,6 +1803,7 @@ class VideoLibraryList(QScrollArea):
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
     section_reassign = Signal(str)
+    section_campaign = Signal(str)
     section_rename = Signal(str)
     section_delete = Signal(str)
     section_open_transect = Signal(str)
@@ -1908,6 +1924,7 @@ class VideoLibraryList(QScrollArea):
         groups: Sequence[DateGroup],
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
+        campaign_name: Callable[[Any], str | None] = lambda _id: None,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
         hidden: Callable[[str], bool] = lambda _video_id: False,
     ) -> None:
@@ -1947,6 +1964,7 @@ class VideoLibraryList(QScrollArea):
                     section.set_section(
                         pass_,
                         transect_name=transect_name(pass_.transect_id),
+                        campaign_name=campaign_name(pass_.campaign_id),
                         status=status,
                         run_count=run_count,
                         in_cart=bool(in_cart(str(pass_.id))),
@@ -2056,6 +2074,7 @@ class VideoLibraryList(QScrollArea):
             section.add_to_cart_requested.connect(self.section_add_to_cart)
             section.retrim_requested.connect(self.section_retrim)
             section.reassign_requested.connect(self.section_reassign)
+            section.campaign_requested.connect(self.section_campaign)
             section.delete_requested.connect(self.section_delete)
             section.open_transect_requested.connect(self.section_open_transect)
             section.rename_requested.connect(self.section_rename)

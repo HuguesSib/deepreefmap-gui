@@ -611,7 +611,7 @@ def test_the_section_card_files_its_actions_under_one_menu(window):
     panel = window._section_detail
     assert not hasattr(panel, "cart_btn")
     labels = [a.text() for a in panel.more_btn.menu().actions() if not a.isSeparator()]
-    assert labels == ["Rename pass…", "Adjust trim…", "Change transect…", "Delete pass"]
+    assert labels == ["Rename pass…", "Adjust trim…", "Change transect…", "Set campaign…", "Delete pass"]
 
 
 def test_the_filing_fact_opens_the_dialog_that_sets_it(window):

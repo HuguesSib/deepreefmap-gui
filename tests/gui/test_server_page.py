@@ -1086,8 +1086,8 @@ def test_pulled_sites_and_campaigns_are_listed_by_name(window):
 
     assert window._server_reference_card.isVisibleTo(window)
     rows = _rows(window._server_reference)
-    assert rows["Japanese Garden"] == "Djibouti"
-    assert rows["2026_08_fiji"] == "2026-08-01"
+    assert rows["Japanese Garden"] == "Djibouti, 0 transects"
+    assert rows["2026_08_fiji"] == "2026-08-01, 0 passes"
 
 
 def test_the_reference_card_hides_until_something_has_been_pulled(window):

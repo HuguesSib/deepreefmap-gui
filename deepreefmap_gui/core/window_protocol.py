@@ -477,6 +477,7 @@ if TYPE_CHECKING:
         def _survey_db_health(self) -> SurveyDbHealth: ...  # InterfaceShellMixin
         def check_survey_database(self) -> None: ...  # InterfaceShellMixin
         def _browse_output_root(self) -> None: ...  # FormPanelMixin
+        def _refresh_site_choices(self) -> None: ...  # SimplePlanMixin
         def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...  # SimplePlanMixin
         def _select_transect_row(self, id_str: str) -> None: ...  # SimplePlanMixin
         def _on_transect_selected(self) -> None: ...  # SimplePlanMixin

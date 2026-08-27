@@ -86,13 +86,20 @@ _FACETS = (
     ("runs", "All runs"),
     ("sessions", "By session"),
     ("transects", "By transect"),
+    ("sites", "By site"),
+    ("campaigns", "By campaign"),
 )
 
 # Facets whose left rail groups runs into a tree. "runs" has no grouping, so its
 # rail is hidden.
-_GROUPED_FACETS = ("sessions", "transects")
+_GROUPED_FACETS = ("sessions", "transects", "sites", "campaigns")
 
-_RAIL_TITLES = {"sessions": "Sessions", "transects": "Transects"}
+_RAIL_TITLES = {
+    "sessions": "Sessions",
+    "transects": "Transects",
+    "sites": "Sites",
+    "campaigns": "Campaigns",
+}
 
 # Outcome filters over the listed runs. Counts come from the scan, so a chip
 # reading "Failed 3" answers the question without being clicked.
@@ -739,7 +746,26 @@ class BrowseMixin(MixinBase):
                 except Exception:
                     logger.exception("Could not list transects")
             return catalogue.transects_facet(self._data_entries, transects)
+        if self._data_facet == "sites":
+            return catalogue.sites_facet(self._data_entries, self._known_catalogue("sites"))
+        if self._data_facet == "campaigns":
+            return catalogue.campaigns_facet(self._data_entries, self._known_catalogue("campaigns"))
         return []
+
+    def _known_catalogue(self, which: str) -> list:
+        """The sites or campaigns the survey knows, so empty ones still group.
+
+        Empty rather than raising where there is no store: the rail is a view of
+        work, and a laptop with no survey open has none to show.
+        """
+        if not getattr(self, "_data_store_ok", False):
+            return []
+        try:
+            store = self._survey_store()
+            return store.list_sites() if which == "sites" else store.list_campaigns()
+        except Exception:
+            logger.exception("Could not list the %s", which)
+            return []
 
     def _selected_session_group(self) -> FacetGroup | None:
         """The session the tree has selected, or None if that is not what is.

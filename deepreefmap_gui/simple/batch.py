@@ -62,6 +62,7 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
 from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 from deepreefmap_gui.simple.section_state import (
@@ -211,6 +212,17 @@ def _pass_number(run_dir_name: str) -> int | None:
         if len(token) > 1 and token[0] == "p" and token[1:].isdigit():
             return int(token[1:])
     return None
+
+
+def _filed_note(changed: int, locked: int) -> str:
+    """One line for a whole selection, rather than a dialog per refused row."""
+    if not changed and not locked:
+        return "Nothing to change; those passes were already filed that way."
+    said = f"Filed {passes_phrase(changed)} under the campaign." if changed else ""
+    if locked:
+        skipped = f"Left {passes_phrase(locked)} alone: made on another laptop."
+        return f"{said} {skipped}".strip()
+    return said
 
 
 def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
@@ -1646,6 +1658,31 @@ class SimpleBatchMixin(MixinBase):
             row.label = renamed.label
         self._rebuild_survey_table()
 
+    def _on_survey_campaign(self, indices: list[int]) -> None:
+        """File every selected pass under one campaign."""
+        from deepreefmap_gui.runs.pass_campaign import CampaignChoiceDialog, file_pass
+        from deepreefmap_gui.survey.ownership import OTHER_DEVICE, lock_state, own_device_id
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        passes = [p for p in (store.get_pass(self._survey_rows[i].pass_id) for i in indices if
+                              self._survey_rows[i].pass_id is not None) if p is not None]
+        if not passes:
+            return
+        # Opened on what the selection already agrees on, so confirming does not
+        # silently rewrite a pass whose trip was already right.
+        agreed = {p.campaign_id for p in passes}
+        dialog = CampaignChoiceDialog(self, store, agreed.pop() if len(agreed) == 1 else None)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = dialog.chosen()
+        mine = own_device_id()
+        locked = [p for p in passes if lock_state(p, mine) == OTHER_DEVICE]
+        changed = [p for p in passes if p not in locked and file_pass(store, p, chosen) is not None]
+        self._status_label.setText(_filed_note(len(changed), len(locked)))
+        self._rebuild_survey_table()
+
     def _pass_spec(self, row: _PassRow):
         """What this row will run, in the terms its runtime depends on.
 
@@ -2855,6 +2892,9 @@ class SimpleBatchMixin(MixinBase):
             )
         # One row at a time: a name identifies one section.
         menu.addAction(RENAME_ACTION, partial(self._on_survey_rename, index))
+        # The whole selection: a trip is what a run of rows has in common, and
+        # answering it once is the point of asking it here rather than per pass.
+        menu.addAction(CAMPAIGN_ACTION, partial(self._on_survey_campaign, selected))
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))

@@ -2053,3 +2053,57 @@ def test_an_exported_document_carries_the_retired_line_its_passes_name(store, tm
 
     assert fresh.get_transect_for_reference(transect.id).length_m == 50.0
     assert fresh.list_passes(transect_id=transect.id)
+
+
+def test_list_passes_narrows_to_one_campaign(store):
+    """Scenario: two trips' work in one survey."""
+    from deepreefmap_gui.survey.models import Campaign, TransectPass, VideoAsset
+
+    fiji = Campaign(name="2026_08_fiji")
+    eritrea = Campaign(name="2025_10_eritrea")
+    store.add_campaign(fiji)
+    store.add_campaign(eritrea)
+    video = store.upsert_video(VideoAsset(file_name="a.mp4", path="/a.mp4", hash="ab" * 16))
+    for campaign in (fiji, fiji, eritrea):
+        store.add_pass(
+            TransectPass(
+                transect_id=None, video_id=video.id, begin_s=0.0, end_s=10.0, campaign_id=campaign.id
+            )
+        )
+
+    assert len(store.list_passes(campaign_id=fiji.id)) == 2
+    assert len(store.list_passes(campaign_id=eritrea.id)) == 1
+    assert len(store.list_passes()) == 3
+
+
+def test_a_withdrawn_campaign_still_answers_for_reference(store):
+    """A pass filed against a trip the registry has retired still names it, the
+    way get_transect_for_reference answers for a retired line.
+
+    Pulled rather than added here: a row this laptop authored and still owes
+    holds its local copy against an incoming tombstone, by design.
+    """
+    import uuid as _uuid
+
+    campaign_id = _uuid.uuid4()
+    for seq, deleted_at in ((5, None), (7, "2026-08-07T00:00:00+00:00")):
+        store.apply_from_server(
+            "campaigns",
+            [
+                {
+                    "id": str(campaign_id),
+                    "name": "2026_08_fiji",
+                    "begin_date": None,
+                    "end_date": None,
+                    "description": "",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "updated_at": f"2026-08-0{seq}T00:00:00+00:00",
+                    "deleted_at": deleted_at,
+                    "device_id": None,
+                    "server_seq": seq,
+                }
+            ],
+        )
+
+    assert store.get_campaign(campaign_id) is None
+    assert store.get_campaign_for_reference(campaign_id).name == "2026_08_fiji"

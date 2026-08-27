@@ -228,10 +228,12 @@ class VideoDetailPanel(DetailCard):
         entry: VideoLibraryEntry,
         transect_name: Callable[[Any], str | None],
         *,
+        campaign_name: Callable[[Any], str | None] = lambda _id: None,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
         assets: Mapping[uuid.UUID, VideoAsset] | None = None,
     ) -> None:
-        """Describe one clip. ``transect_name`` resolves a pass's transect id.
+        """Describe one clip. ``transect_name`` resolves a pass's transect id,
+        and ``campaign_name`` its campaign id.
 
         ``assets`` is the rest of the library, passed through so a pass cut
         across chapters can still find the files its frames come from.
@@ -256,7 +258,9 @@ class VideoDetailPanel(DetailCard):
         apply_link_state(self.link_btn, entry.link_state)
         self.unavailable.setVisible(entry.link_state == LINK_MISSING)
         self._set_queue_available(entry.link_state == LINK_LINKED)
-        self.pass_list.set_sections(entry, transect_name, in_cart=in_cart, assets=assets)
+        self.pass_list.set_sections(
+            entry, transect_name, campaign_name=campaign_name, in_cart=in_cart, assets=assets
+        )
         self._entry = entry
 
     def select_section(self, pass_id: str | None) -> None:

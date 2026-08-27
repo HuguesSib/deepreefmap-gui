@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
@@ -41,6 +41,7 @@ from deepreefmap_gui.core.icons import (
     close_icon,
     copy_icon,
     crosshair_icon,
+    pencil_icon,
 )
 from deepreefmap_gui.core.theme import (
     BORDER,
@@ -67,6 +68,13 @@ from deepreefmap_gui.core.widgets import (
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+from deepreefmap_gui.simple.catalogue_dialogs import (
+    EDIT_SITE,
+    NO_SITE,
+    SiteDialog,
+    arm_edit,
+    refill_sites,
+)
 from deepreefmap_gui.simple.section_state import transects_state
 from deepreefmap_gui.survey.models import (
     Transect,
@@ -87,21 +95,29 @@ logger = logging.getLogger(__name__)
 
 # A trailing spacer column absorbs the slack instead of the name column, so the
 # figures stay beside the transect they belong to however wide the window is.
-PLAN_COLUMNS = ("Transect", "Length", "Depth", "Passes", "Runs", "")
+PLAN_COLUMNS = ("Transect", "Site", "Length", "Depth", "Passes", "Runs", "")
 PLAN_SPACER_COLUMN = len(PLAN_COLUMNS) - 1
+# The first column holding a figure rather than a name, and so the first one
+# right-aligned and set in tabular figures.
+_PLAN_FIGURE_COLUMN = 2
+# The em dash every empty cell of this table already uses, for a line nobody has
+# said a site for. Sites stay optional, so this is a common row, not a fault.
+NO_SITE_TEXT = "—"
 
 # Content-sized columns let one long transect name push Depth, Passes and Runs
 # clean off the viewport, so the figures get their reading width first and the
 # name takes what is left. Length is the one that drops on a narrow pane; its
 # value, like every other, is in `transect_tooltip`.
 _PLAN_COLUMN_SPEC = ColumnSpec(
-    fixed={2: 68, 3: 62, 4: 56},
+    fixed={3: 68, 4: 62, 5: 56},
     weights={0: 3, PLAN_SPACER_COLUMN: 1},
     minimums={0: 140, PLAN_SPACER_COLUMN: 0},
-    # Measured against the longest thing it holds: "21875 m GPS" is 103px with
-    # the row padding, and a column short of that elides the figure it exists
-    # to show.
-    optional=((1, 104),),
+    # Site earns its width before Length: which reef a line is on is what a
+    # person scans for, and the length is in `transect_tooltip` either way.
+    # Length is measured against the longest thing it holds: "21875 m GPS" is
+    # 103px with the row padding, and a column short of that elides the figure
+    # it exists to show.
+    optional=((1, 110), (2, 104)),
 )
 # The transect a click on the map is about to draw, and the one being typed into
 # the form, share this row id: neither exists in the store yet.
@@ -162,14 +178,29 @@ def transect_geometry_text(transect: Transect) -> str:
     return f"{transect.geodesic_length_m():.0f} m between the GPS ends  ·  heading {bearing_text(*ends[0], *ends[1])}"
 
 
-def transect_row_columns(transect: Transect, passes: int, runs: int) -> list[str]:
+def _site_text(transect: Transect, site_names: Mapping[uuid.UUID, str] | None) -> str:
+    return _site_text_for_id(transect.site_id, site_names)
+
+
+def _site_text_for_id(site_id: uuid.UUID | None, site_names: Mapping[uuid.UUID, str] | None) -> str:
+    """What the Site cell says: the name, or the placeholder every other cell uses."""
+    if site_id is None or not site_names:
+        return NO_SITE_TEXT
+    return site_names.get(site_id, NO_SITE_TEXT)
+
+
+def transect_row_columns(
+    transect: Transect, passes: int, runs: int, site_names: Mapping[uuid.UUID, str] | None = None
+) -> list[str]:
     """One row of the transect table, column by column.
 
-    Derived from the dataclass and two counts with no per-row store query,
-    because the table is rebuilt on every keystroke while a transect is typed.
+    Derived from the dataclass, two counts and a prepared name table with no
+    per-row store query, because the table is rebuilt on every keystroke while
+    a transect is typed.
     """
     return [
         transect.name,
+        _site_text(transect, site_names),
         transect_length_text(transect.length_m, transect.geodesic_length_m()),
         f"{transect.depth_m:g} m" if transect.depth_m else "—",
         str(passes) if passes else "—",
@@ -178,23 +209,29 @@ def transect_row_columns(transect: Transect, passes: int, runs: int) -> list[str
     ]
 
 
-def transect_row_values(transect: Transect, passes: int, runs: int) -> dict[int, object]:
+def transect_row_values(
+    transect: Transect, passes: int, runs: int, site_names: Mapping[uuid.UUID, str] | None = None
+) -> dict[int, object]:
     """The sort value behind each cell of `transect_row_columns`.
 
     "9 m" sorts above "12 m" as text, so the numeric columns carry their raw
     numbers. An absent value is left out entirely, which sinks the cell under
-    SortableTreeItem's contract.
+    SortableTreeItem's contract, which is what gathers the unsited lines at one
+    end when the table is sorted by site.
     """
     values: dict[int, object] = {0: transect.name.lower()}
+    site = _site_text(transect, site_names)
+    if site != NO_SITE_TEXT:
+        values[1] = site.lower()
     length = transect.length_m or transect.geodesic_length_m()
     if length is not None:
-        values[1] = length
+        values[2] = length
     if transect.depth_m:
-        values[2] = transect.depth_m
+        values[3] = transect.depth_m
     if passes:
-        values[3] = passes
+        values[4] = passes
     if runs:
-        values[4] = runs
+        values[5] = runs
     return values
 
 
@@ -379,13 +416,14 @@ class SimplePlanMixin(MixinBase):
         # to an ellipsis rather than pushing the counts off the right edge.
         self._transect_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         header_item = self._transect_list.headerItem()
-        header_item.setToolTip(3, "Video segments assigned to this transect")
-        header_item.setToolTip(4, "Reconstructions produced from them")
-        for column in range(1, PLAN_SPACER_COLUMN):
+        header_item.setToolTip(1, "The reef this transect is on")
+        header_item.setToolTip(4, "Video segments assigned to this transect")
+        header_item.setToolTip(5, "Reconstructions produced from them")
+        for column in range(_PLAN_FIGURE_COLUMN, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         # Tabular figures on the figures alone: "Vatu-i-Ra North" is a name, and
-        # the feature widens the hyphen it is spelled with.
-        tabular_columns(self._transect_list, range(1, PLAN_SPACER_COLUMN))
+        # the feature widens the hyphen it is spelled with. Site is a name too.
+        tabular_columns(self._transect_list, range(_PLAN_FIGURE_COLUMN, PLAN_SPACER_COLUMN))
         enable_sorting(self._transect_list)
         install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
@@ -468,6 +506,9 @@ class SimplePlanMixin(MixinBase):
         self._tr_new_site_btn.setToolTip("Name a site the registry does not list yet.")
         self._tr_new_site_btn.clicked.connect(self._on_new_site)
         site_row.addWidget(self._tr_new_site_btn)
+        self._tr_edit_site_btn = icon_button(pencil_icon(), EDIT_SITE, EDIT_SITE)
+        self._tr_edit_site_btn.clicked.connect(self._on_edit_site)
+        site_row.addWidget(self._tr_edit_site_btn)
         grid.addLayout(site_row, 1, 1, 1, 2)
         self._refresh_site_choices()
 
@@ -652,34 +693,55 @@ class SimplePlanMixin(MixinBase):
     def _refresh_site_choices(self) -> None:
         """Refill the site combo, keeping whatever is picked. Sites arrive by
         pull, so the choices can grow between visits to this page."""
-        combo = self._tr_site_combo
-        kept = combo.currentData()
         store = self._try_survey_store()
-        sites = store.list_sites() if store is not None else []
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            combo.addItem("No site", None)
-            for site in sites:
-                combo.addItem(site.name, str(site.id))
-            if kept:
-                combo.setCurrentIndex(max(0, combo.findData(kept)))
-        finally:
-            combo.blockSignals(False)
+        if store is None:
+            self._tr_site_combo.clear()
+            self._tr_site_combo.addItem(NO_SITE, None)
+        else:
+            refill_sites(self._tr_site_combo, store)
+        self._refresh_site_edit()
+
+    def _site_names(self) -> dict[uuid.UUID, str]:
+        store = self._try_survey_store()
+        return {site.id: site.name for site in store.list_sites()} if store is not None else {}
+
+    def _refresh_site_edit(self) -> None:
+        store = self._try_survey_store()
+        chosen = self._form_site_id()
+        site = store.get_site(chosen) if store is not None and chosen is not None else None
+        arm_edit(self._tr_edit_site_btn, site, EDIT_SITE)
 
     def _on_new_site(self) -> None:
-        from deepreefmap_gui.simple.catalogue_dialogs import NewSiteDialog
-
         store = self._try_survey_store()
         if store is None:
             return
-        dialog = NewSiteDialog(self, store)
+        dialog = SiteDialog(self, store)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.site is None:
             return
         self._refresh_site_choices()
         self._set_form_site(dialog.site.id)
         self._status_label.setText(f"Added site {dialog.site.name}.")
         self._maybe_autosave()
+        self._survey_data_changed()
+
+    def _on_edit_site(self) -> None:
+        """Change the site the form is pointing at, from the form.
+
+        Only the name is on show in the transect list, but a site carries a
+        country too, and the pair is what the registry keeps unique.
+        """
+        store = self._try_survey_store()
+        chosen = self._form_site_id()
+        site = store.get_site(chosen) if store is not None and chosen is not None else None
+        if store is None or site is None:
+            return
+        dialog = SiteDialog(self, store, site)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.site is None:
+            return
+        self._refresh_site_choices()
+        self._set_form_site(dialog.site.id)
+        self._status_label.setText(f"Site is now called {dialog.site.name}.")
+        self._refresh_transect_list(self._selected_transect_id())
         self._survey_data_changed()
 
     def _locked_transect_note(self, transect_id: uuid.UUID | None) -> str:
@@ -706,6 +768,7 @@ class SimplePlanMixin(MixinBase):
     def _set_form_site(self, site_id: uuid.UUID | None) -> None:
         index = self._tr_site_combo.findData(str(site_id)) if site_id else 0
         self._tr_site_combo.setCurrentIndex(max(0, index))
+        self._refresh_site_edit()
 
     def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None:
         store = self._try_survey_store()
@@ -809,18 +872,21 @@ class SimplePlanMixin(MixinBase):
         name what it is showing and carry the count, and a heading repeating
         both cost a row on a card that is short of them.
         """
+        # One lookup table for the whole rebuild rather than a query per row,
+        # for the reason transect_row_columns gives.
+        site_names = self._site_names()
         for transect in transects:
             passes, runs = counts.get(transect.id, (0, 0))
             item = SortableTreeItem(
                 self._transect_list,
-                transect_row_columns(transect, passes, runs),
-                transect_row_values(transect, passes, runs),
+                transect_row_columns(transect, passes, runs, site_names),
+                transect_row_values(transect, passes, runs, site_names),
             )
             item.setData(0, Qt.ItemDataRole.UserRole, str(transect.id))
             tooltip = transect_tooltip(transect, passes, runs)
             for column in range(len(PLAN_COLUMNS)):
                 item.setToolTip(column, tooltip)
-                if 0 < column < PLAN_SPACER_COLUMN:
+                if _PLAN_FIGURE_COLUMN <= column < PLAN_SPACER_COLUMN:
                     item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
 
     def _add_draft_row(self, columns: list[str]) -> QTreeWidgetItem:
@@ -835,7 +901,7 @@ class SimplePlanMixin(MixinBase):
         font.setItalic(True)
         for column in range(len(PLAN_COLUMNS)):
             item.setFont(column, font)
-            if 0 < column < PLAN_SPACER_COLUMN:
+            if _PLAN_FIGURE_COLUMN <= column < PLAN_SPACER_COLUMN:
                 item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         return item
 
@@ -853,10 +919,10 @@ class SimplePlanMixin(MixinBase):
         try:
             lat1, lon1, lat2, lon2 = self._form_coordinates()
         except ValueError:
-            return [label, "incomplete", "", "", "", ""]
+            return [label, _site_text_for_id(self._form_site_id(), self._site_names()), "incomplete", "", "", "", ""]
         length = transect_length_text(self._tr_length.value() or None, haversine_m(lat1, lon1, lat2, lon2))
         depth = f"{self._tr_depth.value():g} m" if self._tr_depth.value() else "—"
-        return [label, length, depth, "—", "—", ""]
+        return [label, _site_text_for_id(self._form_site_id(), self._site_names()), length, depth, "—", "—", ""]
 
     def _select_transect_row(self, id_str: str) -> None:
         """Select the row for ``id_str``, if the active scope is showing it."""

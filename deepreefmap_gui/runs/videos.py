@@ -244,6 +244,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
         self._video_list.section_reassign.connect(self._on_section_reassign)
+        self._video_list.section_campaign.connect(self._on_section_campaign)
         self._video_list.section_delete.connect(self._on_section_delete)
         self._video_list.section_open_transect.connect(self._open_transect_page)
         self._video_list.selection_changed.connect(self._refresh_video_actions)
@@ -288,6 +289,7 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail = SectionDetailPanel()
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
+        self._section_detail.campaign_requested.connect(self._on_section_campaign)
         self._section_detail.rename_requested.connect(self._on_section_rename)
         self._section_detail.delete_requested.connect(self._on_section_delete)
         self._section_detail.run_activated.connect(self._on_section_run_activated)
@@ -564,6 +566,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.set_groups(
             groups,
             self._transect_name_for,
+            campaign_name=self._campaign_name_for,
             in_cart=self._cart_pass_ids().__contains__,
             hidden=self._hidden_clip_ids.__contains__,
         )
@@ -606,6 +609,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.show_entry(
             clip,
             self._transect_name_for,
+            campaign_name=self._campaign_name_for,
             in_cart=self._cart_pass_ids().__contains__,
             # Hidden clips included: a chapter being out of the list does not
             # stop the section that spans it wanting a frame from it.
@@ -657,6 +661,21 @@ class VideoLibraryMixin(MixinBase):
             logger.exception("Could not read the transect for a pass")
             return None
         return transect.name if transect is not None else None
+
+    def _campaign_name_for(self, campaign_id) -> str | None:
+        if campaign_id is None:
+            return None
+        store = self._try_survey_store()
+        if store is None:
+            return None
+        try:
+            # The trip the swim belongs to, withdrawn or not, for the reason
+            # _transect_name_for gives.
+            campaign = store.get_campaign_for_reference(campaign_id)
+        except Exception:
+            logger.exception("Could not read the campaign for a pass")
+            return None
+        return campaign.name if campaign is not None else None
 
     def _start_clip_link_scan(self) -> None:
         """Ask, off the paint path, whether each clip's file is still there.
@@ -846,6 +865,7 @@ class VideoLibraryMixin(MixinBase):
             runs=runs,
             session_name=self._session_name_for,
             in_cart=self._pass_in_current_cart(pass_id),
+            campaign_name=self._campaign_name_for(pass_.campaign_id),
             output_bytes=sum(sizes.get(r.run_dir_name, 0) for r in runs),
         )
         self._section_detail.paint_archive_states(self._archive_state_for_run, self._archive_note_for_run)
@@ -1182,6 +1202,24 @@ class VideoLibraryMixin(MixinBase):
         self._status_label.setText(said or renamed_note(renamed.label))
         self._refresh_video_library()
         self._select_section(pass_id)
+
+    def _on_section_campaign(self, pass_id: str) -> None:
+        """File a pass under a campaign, without reopening the whole picker."""
+        from deepreefmap_gui.runs.pass_campaign import set_campaign
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            return
+        said = set_campaign(self, store, pass_.id)
+        if said is None:
+            return
+        self._status_label.setText(said)
+        self._refresh_video_library()
+        self._select_section(pass_id)
+        self._refresh_survey_batch_tab()
 
     def _on_section_reassign(self, pass_id: str) -> None:
         """Change which transect a pass belongs to, or its direction."""
