@@ -1,7 +1,7 @@
 """Scenario: a camera the bundled profiles do not cover is calibrated from a clip
 inside the app, reviewed, and kept where runs find it.
 
-Expected behaviour: the dialog drives the library calibrator on a worker thread,
+Expected behaviour: the dialog drives the calibrator on a worker thread,
 shows the review, and Save moves the profile out of staging into the user's
 profile directory, where the form's combo picks it up. A failure is shown in
 place, and a cancel or discard leaves nothing behind.
@@ -14,13 +14,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from deepreefmap.camera.colmap_calibration import CalibrationError
-from deepreefmap.camera.intrinsics import CameraProfile, available_profile_names
-from deepreefmap.paths import camera_profiles_dir
+from deepreefmap.camera.intrinsics import CameraProfile
 from PySide6.QtWidgets import QDialog
 
 from deepreefmap_gui.camera import calibration_dialog as module
+from deepreefmap_gui.camera.calibration import CalibrationError
 from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog
+from deepreefmap_gui.camera.profiles import available_profile_names, camera_profiles_dir, save_profile
 
 STAGES = ("sampling", "extracting", "matching", "reconstructing", "diagnostics")
 
@@ -37,7 +37,7 @@ def _fake_profile(name: str) -> CameraProfile:
 
 
 def _install_calibrator(monkeypatch, outcome: str = "ok") -> list[tuple[str, int, int]]:
-    """Stand in for the library call: writes what a real run writes, or fails."""
+    """Stand in for the calibrator: writes what a real run writes, or fails."""
     seen: list[tuple[str, int, int]] = []
 
     def calibrate(video, name, *, output_dir, progress_callback, **kwargs):
@@ -46,7 +46,7 @@ def _install_calibrator(monkeypatch, outcome: str = "ok") -> list[tuple[str, int
             seen.append((stage, 0, 0))
         if outcome == "error":
             raise CalibrationError("only 2 registered images out of 12")
-        path = _fake_profile(name).save(output_dir)
+        path = save_profile(_fake_profile(name), output_dir)
         previews = output_dir / f"{name}_diagnostics"
         previews.mkdir()
         (previews / "compare_000000.png").write_bytes(b"")
@@ -159,7 +159,7 @@ def test_the_name_must_be_new_and_well_formed(qapp, clip):
 
 def test_the_form_picks_up_a_profile_kept_by_the_dialog(window, monkeypatch, clip):
     _install_calibrator(monkeypatch)
-    _fake_profile("field_cam").save(camera_profiles_dir())
+    save_profile(_fake_profile("field_cam"), camera_profiles_dir())
 
     window._reload_camera_profiles(select="field_cam")
 

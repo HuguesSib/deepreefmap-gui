@@ -1,8 +1,7 @@
 """Calibrate a camera profile from one clip, without leaving the app.
 
-The library's COLMAP calibrator is one blocking call that reports nothing while
-its three C++ stages run, so the dialog shows a real count while frames are
-sampled and a named, indeterminate stage after that. Cancel is honoured between
+COLMAP reports nothing while its three C++ stages run, so the dialog shows a
+real count while frames are sampled and a named, indeterminate stage after that. Cancel is honoured between
 stages, which the tooltip says. The result is reviewed (registered frames,
 reprojection error, a raw|rectified preview) before it is kept: the profile is
 calibrated into a staging folder and only Save moves it where runs find it.
@@ -15,14 +14,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from deepreefmap.camera.colmap_calibration import (
-    CalibrationCancelled,
-    CalibrationError,
-    calibrate_camera_profile,
-    verify_camera_profile,
-)
-from deepreefmap.camera.intrinsics import available_profile_names, validate_profile_name
-from deepreefmap.paths import camera_profiles_dir
+from deepreefmap.camera.intrinsics import validate_profile_name
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -41,6 +33,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.camera.calibration import (
+    CalibrationCancelled,
+    CalibrationError,
+    calibrate_camera_profile,
+    verify_camera_profile,
+)
+from deepreefmap_gui.camera.profiles import available_profile_names, camera_profiles_dir
 from deepreefmap_gui.core.widgets import muted_label, secondary_label
 from deepreefmap_gui.survey.video_probe import probe_metadata
 
@@ -328,7 +327,7 @@ class CalibrationDialog(QDialog):
                     video, name, n_frames=n_frames, fps=fps, begin_s=begin, end_s=end,
                     output_dir=staging, progress_callback=report,
                 )
-                self._sig_done.emit(verify_camera_profile(name, output_dir=staging), None)
+                self._sig_done.emit(verify_camera_profile(name, staging), None)
             except CalibrationCancelled:
                 self._sig_done.emit(None, None)
             except CalibrationError as exc:

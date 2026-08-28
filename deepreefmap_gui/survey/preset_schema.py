@@ -183,7 +183,7 @@ def choices_for(name: str) -> tuple[str, ...]:
 
             return tuple(list_mapping_backends())
         if name == "camera":
-            from deepreefmap.camera.intrinsics import available_profile_names
+            from deepreefmap_gui.camera.profiles import available_profile_names
 
             return tuple(available_profile_names())
     except Exception:

@@ -245,9 +245,9 @@ class FormPanelMixin(MixinBase):
     """DeepReefMapWindow methods that build and drive the run form and the status bars."""
 
     def _build_form_widgets(self) -> None:
-        from deepreefmap.camera.intrinsics import available_profile_names
         from deepreefmap.mapping.registry import list_mapping_backends
 
+        from deepreefmap_gui.camera.profiles import available_profile_names
         from deepreefmap_gui.models.cache import segmentation_model_names
 
         profiles = available_profile_names() or ["gopro_hero_10"]
@@ -408,7 +408,7 @@ class FormPanelMixin(MixinBase):
 
     def _reload_camera_profiles(self, select: str | None = None) -> None:
         """Re-read the profiles on disk into the combo, keeping the selection."""
-        from deepreefmap.camera.intrinsics import available_profile_names
+        from deepreefmap_gui.camera.profiles import available_profile_names
 
         wanted = select or self._profile_combo.currentText()
         profiles = available_profile_names() or ["gopro_hero_10"]

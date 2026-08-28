@@ -588,6 +588,9 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
     _install_crash_dialog()
+    from deepreefmap_gui.camera.profiles import bind_profiles_dir
+
+    bind_profiles_dir()
     classes_config = load_classes(classes_path) if classes_path is not None else load_classes()
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()

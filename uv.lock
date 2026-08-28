@@ -784,6 +784,7 @@ source = { editable = "." }
 dependencies = [
     { name = "deepreefmap", extra = ["gopro", "loger"] },
     { name = "huggingface-hub" },
+    { name = "imageio" },
     { name = "imohash" },
     { name = "keyring" },
     { name = "numcodecs", version = "0.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
@@ -833,6 +834,7 @@ rocm = [
 requires-dist = [
     { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=36110a30cc5a16f002da4a1ff0674a97e5b0fa86" },
     { name = "huggingface-hub", specifier = ">=0.30" },
+    { name = "imageio", specifier = ">=2.37" },
     { name = "imohash", specifier = ">=1.1.0" },
     { name = "keyring", specifier = ">=24" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0.0" },

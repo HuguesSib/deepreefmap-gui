@@ -2025,9 +2025,7 @@ class SimpleBatchMixin(MixinBase):
 
     def _survey_unread_gravity(self) -> int:
         """Queued passes whose clip recorded gravity that this platform cannot read."""
-        from deepreefmap.telemetry.gopro import gravity_telemetry_available
-
-        from deepreefmap_gui.survey.video_probe import YES
+        from deepreefmap_gui.survey.video_probe import YES, gravity_telemetry_available
 
         if gravity_telemetry_available():
             return 0
