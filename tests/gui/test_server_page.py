@@ -13,10 +13,12 @@ import uuid
 import pytest
 from _factories import make_transect
 
+from deepreefmap_gui.server import reachability
 from deepreefmap_gui.server.page_ui import (
     GAUGE_STEPS,
     NOT_CONNECTED,
     ONBOARDED_BY,
+    SERVER_STATUS,
     SESSION_RUNNING,
     SET_ASIDE,
     _set_aside_value,
@@ -30,11 +32,14 @@ from deepreefmap_gui.server.state import (
     PUSH_LANDED,
     SERVER_SECTION,
     SYNC_ERROR_KEY,
+    SYNC_ERROR_KIND_KEY,
+    UNREACHABLE_KIND,
 )
 from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.sync import client as client_mod
 from deepreefmap_gui.sync import contract, credentials
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX
 from deepreefmap_gui.sync.engine import (
     CONFLICT_DISCARDED,
     CONTRACT_VERSION_KEY,
@@ -329,7 +334,7 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
     secret = "ab" * 32
-    pasted = f"drm1.{secret}"
+    pasted = f"{CODE_PREFIX}{secret}"
 
     def fake_connect(code):
         assert code == pasted
@@ -366,7 +371,7 @@ def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(window,
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
-    window._start_enrolment("drm1.whatever")
+    window._start_enrolment(f"{CODE_PREFIX}whatever")
 
     assert settle(qapp, lambda: window._server_blocker.isVisibleTo(window))
     assert "already been used" in window._server_blocker._reason.text()
@@ -1070,6 +1075,130 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
 
     assert made[0].calls == ["pull", "push"]
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_the_badge_says_the_server_is_unavailable_when_nothing_answers(window, qapp, server_probe):
+    """Scenario: the laptop is enrolled and carried out of wifi.
+
+    Expected behaviour: the badge names the server rather than counting rows.
+    Nothing here is lost and nothing the diver did is wrong, so the fault the
+    last sync recorded is not the answer to lead with.
+    """
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+    window._survey_store().set_sync_state(SYNC_ERROR_KEY, "The registry did not answer. Cannot reach it.")
+    server_probe(reachability.OFFLINE, "Cannot reach https://reef.example.org: no route.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Server unavailable" in window._sync_badge._label.text())
+    assert "no route" in window._sync_badge.toolTip()
+
+
+def test_the_badge_reads_a_refusal_the_registry_has_not_been_asked_for_yet(window, qapp, server_probe):
+    """Scenario: the device was revoked in the console between syncs.
+
+    Expected behaviour: the probe carries the device token, so this is known
+    before the next sync runs, and it is not called unavailable: the registry
+    is up, and only a fresh connect code fixes it.
+    """
+    enrol_this_device()
+    server_probe(reachability.DENIED, "Answered in 12 ms and would not have this device. Access revoked.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Reconnect needed" in window._sync_badge._label.text())
+    assert "revoked" in window._sync_badge.toolTip()
+    # Neither of the other two faces: the server is up, and no sync is at fault.
+    assert "Server unavailable" not in window._sync_badge._label.text()
+    assert "Sync fault" not in window._sync_badge._label.text()
+
+
+def test_a_sync_that_got_no_answer_is_not_worded_as_a_fault(window, qapp):
+    """Scenario: the app is reopened after a sync that never reached the server,
+    before the first probe of this session has answered.
+
+    Expected behaviour: the stored failure already said nothing answered, so the
+    badge says the server is unavailable rather than that a sync is at fault.
+    """
+    enrol_this_device()
+    store = window._survey_store()
+    store.set_sync_state(SYNC_ERROR_KEY, "The registry did not answer. Cannot reach it.")
+    store.set_sync_state(SYNC_ERROR_KIND_KEY, UNREACHABLE_KIND)
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Server unavailable" in window._sync_badge._label.text())
+    assert "Sync fault" not in window._sync_badge._label.text()
+
+
+def test_a_sync_the_registry_refused_is_still_a_fault(window, qapp):
+    """The other half: a registry that answered and rejected the document is a
+    fault, and must not be softened into a server being unavailable."""
+    enrol_this_device()
+    window._survey_store().set_sync_state(SYNC_ERROR_KEY, "The registry would not take this document.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Sync fault" in window._sync_badge._label.text())
+
+
+def test_the_recorded_failure_kind_survives_the_sync(window, qapp, registry):
+    """What the badge reads next launch is written by the sync that failed."""
+    from deepreefmap_gui.sync import client as client_module
+
+    enrol_this_device()
+    registry(fail=client_module.ServerUnreachableError("Cannot reach the registry."))
+    window._survey_store().add_transect(make_transect())
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._survey_store().sync_state(SYNC_ERROR_KIND_KEY) == UNREACHABLE_KIND
+
+
+def test_a_registry_answering_leaves_the_badge_counting_rows(window, qapp, server_probe):
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+    server_probe(reachability.ONLINE, "Answered in 12 ms.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "1 to send" in window._sync_badge._label.text())
+
+
+def test_a_registry_without_an_identity_route_is_not_called_unavailable(window, qapp, server_probe):
+    """Expected behaviour: a 404 proves something is there, so an older registry
+    must not read as a server that has gone away."""
+    enrol_this_device()
+    server_probe(reachability.DEGRADED, "Answered in 12 ms, but has no identity route.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: getattr(window, "_sync_badge_state", None) is not None)
+    assert "Server unavailable" not in window._sync_badge._label.text()
+
+
+def test_the_connection_card_reports_what_the_server_said(window, qapp, server_probe):
+    enrol_this_device()
+    server_probe(reachability.OFFLINE, "Cannot reach https://reef.example.org: no route.")
+    window._set_simple_section(SERVER_SECTION)
+
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: "Unavailable" in facts(window).get(SERVER_STATUS, ""))
+
+    status = facts(window)[SERVER_STATUS]
+    assert "no route" in status
+    assert "just now" in status
+
+
+def test_the_connection_card_says_when_the_server_has_not_been_asked(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._refresh_server_page()
+
+    assert facts(window)[SERVER_STATUS].startswith("Unknown")
 
 
 def test_pulled_sites_and_campaigns_are_listed_by_name(window):

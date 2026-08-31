@@ -153,6 +153,7 @@ class DeepReefMapWindow(
     _sig_sync_progress = Signal(str)
     _sig_sync_done = Signal(object, object)
     _sig_sync_badge = Signal(object)
+    _sig_server_reach = Signal(object)
     # The archive queue, on the same worker-and-signal shape as the sync. One
     # object rather than a pair: the slot tells a report from a Failure itself.
     _sig_archive_progress = Signal(str)
@@ -198,6 +199,7 @@ class DeepReefMapWindow(
         self._sig_sync_progress.connect(self._on_sync_progress)
         self._sig_sync_done.connect(self._on_sync_done)
         self._sig_sync_badge.connect(self._apply_sync_badge)
+        self._sig_server_reach.connect(self._apply_server_reachability)
         self._sig_archive_progress.connect(self._on_archive_progress)
         self._sig_archive_bytes.connect(self._on_archive_bytes)
         self._sig_archive_plan.connect(self._on_archive_plan_ready)

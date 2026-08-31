@@ -329,6 +329,7 @@ if TYPE_CHECKING:
         _sig_sync_progress = Signal(str)
         _sig_sync_done = Signal(object, object)
         _sig_sync_badge = Signal(object)
+        _sig_server_reach = Signal(object)
         _sig_archive_progress = Signal(str)
         _sig_archive_bytes = Signal(object)
         _sig_archive_plan = Signal(object)
@@ -444,6 +445,8 @@ if TYPE_CHECKING:
         def _archive_note_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin
         def _paint_archive_badges(self) -> None: ...  # VideoLibraryMixin
         def _apply_sync_badge(self, state: object) -> None: ...  # ServerPageMixin
+        def _probe_server(self, force: bool = False) -> None: ...  # ServerPageMixin
+        def _apply_server_reachability(self, reading: object) -> None: ...  # ServerPageMixin
         def _on_sync_badge_clicked(self) -> None: ...  # ServerPageMixin
         def _host_machine_panels(self) -> None: ...  # SimpleMachineMixin
         def _machine_verdict(self) -> SectionState: ...  # SimpleMachineMixin

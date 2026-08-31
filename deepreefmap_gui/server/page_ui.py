@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -50,6 +51,7 @@ from deepreefmap_gui.models.cache_ui import MODELS_SECTION
 from deepreefmap_gui.notify.widgets import relative_age
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.server import enrolment as enrolment_mod
+from deepreefmap_gui.server import reachability
 from deepreefmap_gui.server.connect_ui import ConnectDialog
 from deepreefmap_gui.server.state import (
     DEVICE_NAME_KEY,
@@ -60,6 +62,7 @@ from deepreefmap_gui.server.state import (
     SECTION_LABELS,
     SERVER_SECTION,
     SYNC_ERROR_KEY,
+    SYNC_ERROR_KIND_KEY,
     Failure,
     ServerState,
     SyncOutcome,
@@ -100,6 +103,8 @@ REFERENCE_NOTE = (
     "a change to one the console owns is sent as a proposal."
 )
 ONBOARDED_BY = "Onboarded by"
+# Whether the registry is answering at all, asked apart from any sync.
+SERVER_STATUS = "Server status"
 # Records the registry holds that could not be taken, by name.
 SET_ASIDE = "Not taken"
 
@@ -391,10 +396,13 @@ class ServerPageMixin(MixinBase):
         if connected:
             self._server_device_label.setText(state.device_name or default_device_name())
             self._server_device_facts.set_rows(_device_rows(state))
-            self._server_facts.set_rows(_fact_rows(state))
+            self._server_facts.set_rows(_fact_rows(state, self._server_reachability()))
             self._server_waiting.set_rows(
                 [(SECTION_LABELS.get(section, section), str(count)) for section, count in state.pending.items()]
             )
+        # Asked here as well as on the badge's cadence, so a page opened to find
+        # out what is wrong is not reading a minute-old answer.
+        self._probe_server()
         reference = _reference_rows(self._try_survey_store()) if connected else []
         self._server_reference_card.setVisible(bool(reference))
         if reference:
@@ -978,6 +986,52 @@ class ServerPageMixin(MixinBase):
         if getattr(self, "_sync_badge_rerun", False):
             self._sync_badge_rerun = False
             self._refresh_sync_badge()
+        # The badge state is read from disk and says nothing about the network,
+        # so the address it just produced is what the probe is aimed at.
+        self._probe_server()
+
+    # --- is the registry answering -------------------------------------------
+
+    def _server_reachability(self) -> reachability.Reachability:
+        """The last answer from the registry probe, unasked until one lands."""
+        return getattr(self, "_server_reach", reachability.UNCHECKED)
+
+    def _probe_server(self, force: bool = False) -> None:
+        """Ask whether the registry knows this device, off the thread painting the badge.
+
+        Only for an enrolled laptop: the probe carries this installation's own
+        token, and one that never joined a registry has nothing to be refused
+        or unavailable. Not while an exchange is in flight either, since a sync
+        is the better evidence and reports on the same fields when it lands.
+        """
+        state = getattr(self, "_sync_badge_state", None)
+        if not isinstance(state, ServerState) or not state.connected:
+            return
+        if self._server_syncing or self._server_archiving:
+            return
+        if getattr(self, "_server_probe_running", False):
+            return
+        if not force and not self._server_reachability().stale(time.monotonic()):
+            return
+        self._server_probe_running = True
+        threading.Thread(target=self._read_server_reachability, name="server-probe", daemon=True).start()
+
+    def _read_server_reachability(self) -> None:
+        reading = reachability.probe()
+        try:
+            self._sig_server_reach.emit(reading)
+        except (RuntimeError, TypeError):
+            logger.debug("The window closed before the registry answered")
+
+    def _apply_server_reachability(self, reading: object) -> None:
+        self._server_probe_running = False
+        if not isinstance(reading, reachability.Reachability):
+            return
+        self._server_reach = reading
+        badge = getattr(self, "_sync_badge", None)
+        if badge is not None:
+            badge.show_face(self._badge_face(getattr(self, "_sync_badge_state", None)))
+        self._refresh_server_page()
 
     def _badge_face(self, state: ServerState | None) -> sync_badge.SyncBadgeFace:
         if self._server_syncing:
@@ -986,6 +1040,24 @@ class ServerPageMixin(MixinBase):
             return sync_badge.FAULT if state is not None else sync_badge.NOT_CONNECTED
         if not state.connected:
             return sync_badge.NOT_CONNECTED
+        # Ahead of the stored sync fault, which is what happened last time: a
+        # registry that is not answering now explains the fault as well as the
+        # rows, and a laptop carried out of wifi is owed that answer and not a
+        # failure it can do nothing about.
+        reach = self._server_reachability()
+        if reach.unavailable:
+            return sync_badge.unavailable_face(reach.detail)
+        # The registry answered and will not have this laptop. Read now rather
+        # than at the next sync, because nothing waiting here is going anywhere
+        # until somebody issues a fresh connect code.
+        if reach.denied:
+            return sync_badge.rejected_face(reach.detail)
+        # Before the probe has answered, the last sync is the only evidence there
+        # is, and a sync that got no answer already said the server was down.
+        # Wording that as a fault would tell a diver something is wrong with
+        # their laptop over what is almost always a boat out of range.
+        if state.sync_fault and state.sync_fault_unreachable and not reach.answered:
+            return sync_badge.unavailable_face(state.sync_fault)
         # Ahead of the pending count: rows waiting behind a failed sync are not
         # going anywhere until whatever it said is read.
         if state.sync_fault:
@@ -1049,11 +1121,22 @@ class ServerPageMixin(MixinBase):
                 SYNC_ERROR_KEY,
                 f"{blocker.title}. {blocker.detail}" if isinstance(blocker, Failure) else None,
             )
+            # Beside the words, so the badge can pick a face from it on a launch
+            # that happens before the first probe has answered.
+            store.set_sync_state(
+                SYNC_ERROR_KIND_KEY,
+                blocker.kind or None if isinstance(blocker, Failure) else None,
+            )
             # Only a sync that ran both halves dates the survey: the badge's
             # "synced N minutes ago" must not stand for half an exchange.
             if outcome is not None and outcome.complete:
                 store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
         if isinstance(blocker, Failure):
+            # A sync that failed is the moment the link is most in question, so
+            # the probe is re-asked rather than left to its interval: it decides
+            # whether the badge says the registry is unreachable or that it
+            # answered and refused.
+            self._probe_server(force=True)
             self._server_notice.clear()
             # The page refresh first: it paints the persisted message without an
             # action, and this blocker carries the reconnect offer over it.
@@ -1219,7 +1302,7 @@ def _device_rows(state: ServerState) -> list[tuple[str, str]]:
     return rows
 
 
-def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
+def _fact_rows(state: ServerState, reach: reachability.Reachability) -> list[tuple[str, str]]:
     """The connection and the position, as the page lists them."""
     age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
     if not state.last_sync:
@@ -1230,6 +1313,7 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
         last = f"{age} ago ({state.last_sync})"
     rows = [
         ("Server", state.base_url),
+        (SERVER_STATUS, _status_value(reach)),
         ("Last sync", last),
         ("Pulled up to", "Nothing yet" if state.cursor is None else str(state.cursor)),
         ("Waiting to send", f"{state.waiting} row(s)"),
@@ -1237,6 +1321,21 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
     if state.set_aside:
         rows.append((SET_ASIDE, _set_aside_value(state.set_aside)))
     return rows
+
+
+def _status_value(reach: reachability.Reachability) -> str:
+    """What the registry said last time it was asked, and how long ago.
+
+    Both halves are shown because either alone misleads: a verdict with no age
+    reads as current when the laptop has been asleep, and an age with no verdict
+    says nothing about what came back.
+    """
+    label = reachability.STATE_LABELS.get(reach.state, reach.state)
+    if not reach.asked:
+        return f"{label}. {reach.detail}"
+    age = relative_age(reach.checked_at, utc_now_iso())
+    when = "just now" if age in ("", "just now") else f"checked {age} ago"
+    return f"{label}. {reach.detail} ({when})"
 
 
 def _set_aside_value(names: Sequence[str], shown: int = 4) -> str:

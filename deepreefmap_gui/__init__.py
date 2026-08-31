@@ -67,9 +67,9 @@ literally: `packs.py` is the model-pack format and the file copying, `packs_ui.p
 and the mixin that drive them. Prefer the suffix for new splits.
 
 `notify/` follows it too: `model.py`, `conditions.py`, `center.py` and `log.py` are pure, and the
-`_ui` modules are the bell, the popover and the Activity view. So does `server/`: `state.py` and
-`enrolment.py` read and act, `page_ui.py` and `connect_ui.py` are the page and the dialog. `sync/`
-below it is Qt-free throughout, and knows nothing about a window.
+`_ui` modules are the bell, the popover and the Activity view. So does `server/`: `state.py`,
+`reachability.py` and `enrolment.py` read and act, `page_ui.py` and `connect_ui.py` are the page
+and the dialog. `sync/` below it is Qt-free throughout, and knows nothing about a window.
 
 The same split exists under older names, and those stay: `survey/` is the Qt-free domain layer
 under `simple/`'s UI, `simple/section_state.py` the pure verdict behind the header badges,

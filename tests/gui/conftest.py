@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -107,6 +108,45 @@ def _isolate_sync_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPREEFMAP_SYNC_DEVICE", str(tmp_path / "sync_device.json"))
     monkeypatch.setenv("DEEPREEFMAP_SYNC_TOKEN", str(tmp_path / "sync_token.json"))
     monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_registry_probe(monkeypatch):
+    """The registry probe must never reach a network during tests.
+
+    It runs off the status bar's timer for any enrolled laptop, so without this
+    every test that enrols would put a background thread on a real DNS lookup.
+    The reading it answers with is settable, so the tests that are *about* the
+    probe programme it and go on exercising the real badge and page.
+    """
+    from deepreefmap_gui.server import reachability
+
+    programmed = {"reading": reachability.UNCHECKED}
+
+    def answer() -> reachability.Reachability:
+        return programmed["reading"]
+
+    monkeypatch.setattr(reachability, "probe", answer)
+    return programmed
+
+
+@pytest.fixture
+def server_probe(_no_registry_probe):
+    """Programme what the registry answers when asked whether it knows this device."""
+
+    def set_reading(state: str, detail: str = "", latency_ms: int | None = 12) -> None:
+        from deepreefmap_gui.server import reachability
+        from deepreefmap_gui.survey.models.common import utc_now_iso
+
+        _no_registry_probe["reading"] = reachability.Reachability(
+            state=state,
+            detail=detail,
+            latency_ms=latency_ms,
+            checked_at=utc_now_iso(),
+            _at=time.monotonic(),
+        )
+
+    return set_reading
 
 
 @pytest.fixture(autouse=True)

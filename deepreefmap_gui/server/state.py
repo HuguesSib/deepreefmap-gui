@@ -45,6 +45,15 @@ LAST_SYNC_KEY = "sync.last_sync_at"
 # status-bar badge repaints from this key on a timer.
 SYNC_ERROR_KEY = "sync.last_error"
 
+# Which kind of failure that was, beside the words. Stored rather than derived
+# from the message, because the badge has to choose a face from it after a
+# restart, and matching English is not a way to decide what a laptop is told.
+# Absent in a survey written before this key, which reads as the general face.
+SYNC_ERROR_KIND_KEY = "sync.last_error_kind"
+# The registry never answered. The one kind the badge words differently: it is
+# the server being unreachable, not the sync being at fault.
+UNREACHABLE_KIND = "unreachable"
+
 # In QSettings rather than the survey, because what this laptop calls itself is
 # about the laptop. A colleague opening the same output root has their own.
 DEVICE_NAME_KEY = "sync_device_name"
@@ -120,6 +129,9 @@ class ServerState:
     # token is still a readable credential, so `connected` alone would paint
     # a healthy badge over a connection the registry has refused.
     sync_fault: str = ""
+    # Whether the last failure was the registry not answering, which the badge
+    # words as the server being unavailable rather than as a fault.
+    sync_fault_unreachable: bool = False
     # Whether a survey database was open to be read. Without one the pending
     # counts are empty because nothing was counted, not because nothing waits.
     has_survey: bool = False
@@ -141,6 +153,13 @@ class Failure:
     detail: str
     # True when only a fresh connect code fixes it, so the page offers one.
     reconnect: bool = False
+    # True when nothing answered, which is the server rather than the sync.
+    unreachable: bool = False
+
+    @property
+    def kind(self) -> str:
+        """What to record beside the words, for the badge to read next launch."""
+        return UNREACHABLE_KIND if self.unreachable else ""
 
 
 @dataclass(frozen=True)
@@ -197,6 +216,9 @@ def read_state(store: SurveyStore | None, device_name: str = "", enrolled_by: st
         last_sync=store.sync_state(LAST_SYNC_KEY) if store is not None else None,
         pending=pending_rows(store) if store is not None else {},
         sync_fault=(store.sync_state(SYNC_ERROR_KEY) or "") if store is not None else "",
+        sync_fault_unreachable=(
+            store.sync_state(SYNC_ERROR_KIND_KEY) == UNREACHABLE_KIND if store is not None else False
+        ),
         has_survey=store is not None,
         set_aside=set_aside_names(store),
     )
@@ -329,7 +351,7 @@ def describe_failure(exc: BaseException) -> Failure:
     if isinstance(exc, CredentialsError):
         return Failure("The device credentials could not be stored", str(exc))
     if isinstance(exc, client.ServerUnreachableError):
-        return Failure("The registry did not answer", f"{exc} {RETRY_LATER}")
+        return Failure("The registry did not answer", f"{exc} {RETRY_LATER}", unreachable=True)
     if isinstance(exc, client.EnrolmentRejectedError):
         return Failure("The connect code was refused", str(exc), reconnect=True)
     if isinstance(exc, client.DeviceRevokedError):
