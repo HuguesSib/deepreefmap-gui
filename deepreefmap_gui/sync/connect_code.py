@@ -1,7 +1,8 @@
 """Decode the one string that onboards this installation onto a registry.
 
-A connect code is `drm1.<base64url of {"url": …, "code": …}>`. The server address
-travels inside it, so this repository ships no address of its own.
+A connect code is `<prefix><base64url of {"url": …, "code": …}>`, the prefix coming
+from the vendored contract. The server address travels inside it, so this repository
+ships no address of its own.
 """
 
 from __future__ import annotations
@@ -13,7 +14,10 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-CODE_PREFIX = "drm1."
+from deepreefmap_gui.sync import contract
+
+CODE_PREFIX = contract.CONNECT_CODE_PREFIX
+CODE_VERSION = contract.CONNECT_CODE_VERSION
 SECRET_HEX_LEN = 64
 
 INSECURE_TRANSPORT_WARNING = (
@@ -23,11 +27,19 @@ INSECURE_TRANSPORT_WARNING = (
 )
 
 _SECRET = re.compile(f"^[0-9a-f]{{{SECRET_HEX_LEN}}}$")
+_FAMILY = re.compile(rf"^{re.escape(contract.CONNECT_CODE_FAMILY)}(\d+)\.")
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# The shape, for a dialog to show beside the box a code is pasted into.
+CODE_SCHEMA = f"{CODE_PREFIX}<the code from the registry's web interface>"
 
 
 class ConnectCodeError(ValueError):
     """A pasted string that is not a usable connect code."""
+
+
+class ConnectCodeVersionError(ConnectCodeError):
+    """A code in this family, from a version of the registry this build predates."""
 
 
 @dataclass(frozen=True)
@@ -48,7 +60,7 @@ def decode_connect_code(pasted: str) -> ConnectCode:
     """Decode a pasted connect code, or raise `ConnectCodeError` naming the fault."""
     text = pasted.strip()
     if not text.startswith(CODE_PREFIX):
-        raise ConnectCodeError(f"Not a connect code: it must start with `{CODE_PREFIX}`.")
+        _refuse_prefix(text)
     encoded = text[len(CODE_PREFIX) :]
     if not encoded:
         raise ConnectCodeError("The connect code is empty after its prefix.")
@@ -73,6 +85,19 @@ def decode_connect_code(pasted: str) -> ConnectCode:
         raise ConnectCodeError(f"The connect code's secret is malformed: expected {SECRET_HEX_LEN} hex characters.")
     base_url, insecure = _server_url(payload["url"])
     return ConnectCode(base_url=base_url, secret=secret, insecure_transport=insecure)
+
+
+def _refuse_prefix(text: str) -> None:
+    """Raise for a string that is not this build's connect code, naming which fault."""
+    seen = _FAMILY.match(text)
+    if seen and int(seen.group(1)) > CODE_VERSION:
+        raise ConnectCodeVersionError(
+            "This code was made by a newer version of the registry. Update this app."
+        )
+    raise ConnectCodeError(
+        f"A connect code starts with `{CODE_PREFIX}`. Paste the whole string from the "
+        "registry's web interface."
+    )
 
 
 def _server_url(value: str) -> tuple[str, bool]:

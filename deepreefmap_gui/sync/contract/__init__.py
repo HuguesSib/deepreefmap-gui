@@ -60,6 +60,13 @@ PUSH_SECTIONS: tuple[str, ...] = tuple(DOCUMENT["push_sections"])
 # What the contract header carries. A bare version would read as a point range.
 CONTRACT_RANGE = f"{MIN_CONTRACT_VERSION}-{CONTRACT_VERSION}"
 
+# How a connect code announces its format. The prefix is the only human-legible part
+# of the pasted string, so the dialog shows it and the decoder matches on it; the
+# family and version are what let an older build say a code is newer than it is.
+CONNECT_CODE_FAMILY: str = str(DOCUMENT["connect_code"]["family"])
+CONNECT_CODE_VERSION: int = int(DOCUMENT["connect_code"]["version"])
+CONNECT_CODE_PREFIX: str = str(DOCUMENT["connect_code"]["prefix"])
+
 
 def required_columns(section: str) -> tuple[str, ...]:
     """The columns the registry will not accept a row of this section without."""

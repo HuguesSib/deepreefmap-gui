@@ -13,6 +13,7 @@ from deepreefmap_gui.sync.connect_code import (
     SECRET_HEX_LEN,
     ConnectCode,
     ConnectCodeError,
+    ConnectCodeVersionError,
     decode_connect_code,
 )
 
@@ -39,8 +40,8 @@ def test_strips_trailing_slash_from_address(make_code) -> None:
 @pytest.mark.parametrize(
     "pasted, message",
     [
-        ("drm2.abcd", "must start with"),
-        ("", "must start with"),
+        ("drm1.abcd", "starts with"),
+        ("", "starts with"),
         (CODE_PREFIX, "empty after its prefix"),
         (CODE_PREFIX + "!!!!", "base64url"),
         (encode(b"not json"), "does not contain JSON"),
@@ -52,6 +53,17 @@ def test_strips_trailing_slash_from_address(make_code) -> None:
 def test_rejects_malformed_codes(pasted, message) -> None:
     with pytest.raises(ConnectCodeError, match=message):
         decode_connect_code(pasted)
+
+
+def test_a_newer_version_in_this_family_says_so_rather_than_blaming_the_paste() -> None:
+    """A field laptop cannot be updated on demand, so it must name the real fault."""
+    with pytest.raises(ConnectCodeVersionError, match="newer version"):
+        decode_connect_code("reef2.abcd")
+
+
+def test_a_version_error_is_still_a_connect_code_error() -> None:
+    """The failure reporter catches the base class, so a new subclass stays covered."""
+    assert issubclass(ConnectCodeVersionError, ConnectCodeError)
 
 
 @pytest.mark.parametrize("secret", ["deadbeef", "A" * SECRET_HEX_LEN, "z" * SECRET_HEX_LEN])

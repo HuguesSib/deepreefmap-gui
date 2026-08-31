@@ -22,7 +22,7 @@ from deepreefmap_gui.server.state import (
 )
 from deepreefmap_gui.survey.models import Site
 from deepreefmap_gui.sync import client, credentials
-from deepreefmap_gui.sync.connect_code import ConnectCodeError
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX, ConnectCodeError
 from deepreefmap_gui.sync.engine import (
     CONTRACT_VERSION_KEY,
     CURSOR_KEY,
@@ -217,10 +217,10 @@ def test_a_withheld_section_is_said_in_the_summary_rather_than_as_a_failure():
 
 
 def test_a_bad_connect_code_is_reported_as_the_code_and_not_the_server():
-    failure = describe_failure(ConnectCodeError("Not a connect code: it must start with `drm1.`."))
+    failure = describe_failure(ConnectCodeError(f"A connect code starts with `{CODE_PREFIX}`."))
 
     assert "connect code" in failure.title
-    assert "drm1." in failure.detail
+    assert CODE_PREFIX in failure.detail
 
 
 def test_the_device_name_defaults_to_this_machine(monkeypatch):
