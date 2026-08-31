@@ -364,6 +364,9 @@ if TYPE_CHECKING:
         def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
         def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
         def _on_calibrate_camera(self) -> None: ...  # FormPanelMixin
+        def _write_registry_camera_profiles(  # SimpleModeMixin
+            self, store: SurveyStore
+        ) -> None: ...
         def _reload_camera_profiles(  # FormPanelMixin
             self, select: str | None = None
         ) -> None: ...

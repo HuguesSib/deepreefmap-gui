@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 PASS_VIDEOS = "pass_videos"
 COVER_ROWS = "cover_rows"
 PRESETS = "presets"
+CAMERA_PROFILES = "camera_profiles"
+CAMERA_CALIBRATIONS = "camera_calibrations"
 
 # The only estimator that travels. The pooled figure is a pure function of the
 # per-pass counts, denominators and the latest-run-per-pass rule, so storing it
@@ -49,6 +51,10 @@ WIRE_SECTIONS: tuple[str, ...] = (
     # Registry-published run settings, pull-only, ahead of the runs that name
     # the preset they ran under.
     PRESETS,
+    # The lenses, pull-only too, and ahead of the runs that name the calibration
+    # they were rectified with. A calibration follows the profile it measures.
+    CAMERA_PROFILES,
+    CAMERA_CALIBRATIONS,
     "runs",
     COVER_ROWS,
 )

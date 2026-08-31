@@ -235,6 +235,16 @@ class SyncClient:
         """
         return self._request("GET", PING_PATH, verify_contract=False, timeout=PING_TIMEOUT)
 
+    def publish_calibration(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Offer a calibration this laptop made to the registry.
+
+        Not a push: camera rows are pull-only, so a device publishes through an
+        endpoint of its own rather than authoring a row the ledger would have to
+        judge. Idempotent by content, so offering the same document twice returns
+        the calibration already stored rather than a second one.
+        """
+        return self._request("POST", "/camera_calibrations/upload", body=dict(payload))
+
     def archive_initiate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Begin or resume one content-addressed upload.
 

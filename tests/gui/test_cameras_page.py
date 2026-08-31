@@ -193,3 +193,37 @@ def test_the_bundled_profile_offers_no_export(panel):
     """Exporting is for a calibration this laptop holds; the bundled one ships
     with every install already."""
     assert [b for b in panel.findChildren(QPushButton) if b.text() == "Export…"] == []
+
+
+def test_publishing_is_offered_only_once_a_registry_is_enrolled(panel):
+    """A control that publishes nowhere is worse than no control, which is how
+    every other archive affordance in the app behaves."""
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    panel.refresh()
+
+    assert [b for b in panel.findChildren(QPushButton) if b.text() == "Publish"] == []
+
+    panel.set_server_connected(True)
+
+    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 1
+
+    panel.set_server_connected(False)
+
+    assert [b for b in panel.findChildren(QPushButton) if b.text() == "Publish"] == []
+
+
+def test_a_bundled_profile_is_not_ours_to_publish(panel):
+    panel.set_server_connected(True)
+
+    assert [b for b in panel.findChildren(QPushButton) if b.text() == "Publish"] == []
+
+
+def test_what_the_registry_answered_is_said_on_the_page(panel):
+    panel._on_published({"created": True, "version": 2}, None)
+    assert "version 2" in panel._status.text()
+
+    panel._on_published({"created": False, "version": 1}, None)
+    assert "already holds" in panel._status.text()
+
+    panel._on_published(None, "the registry is not answering")
+    assert "not answering" in panel._status.text()

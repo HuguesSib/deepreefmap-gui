@@ -71,6 +71,8 @@ SECTION_LABELS = {
     "passes": "Passes",
     "runs": "Runs",
     "presets": "Presets",
+    "camera_profiles": "Cameras",
+    "camera_calibrations": "Calibrations",
 }
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."
@@ -84,9 +86,11 @@ DISCLAIMER = (
     "with Archive to server.",
     "• Reports this machine's software versions, platform, hardware totals, "
     "free space on the survey disk and preset name. No file paths.",
-    "• Presets, sites, campaigns and transects come down from the console: one "
-    "edited or deleted there replaces or removes the copy here, and the app says "
-    "when that overwrites an edit made here. The console can also assign a "
+    "• Presets, cameras, calibrations, sites, campaigns and transects come down "
+    "from the console: one edited or deleted there replaces or removes the copy "
+    "here, and the app says when that overwrites an edit made here. A calibration "
+    "the console publishes is written into this laptop's camera profiles, beside "
+    "any calibrated here, which are left alone. The console can also assign a "
     "default preset. Clips, passes and runs come back as the console leaves them. "
     "An edit here to a row the console validated or edited becomes a proposal, "
     "and the app reports its outcome.",

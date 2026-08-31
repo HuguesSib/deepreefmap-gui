@@ -99,9 +99,12 @@ def test_the_pull_sections_are_a_subset_of_the_whole() -> None:
     assert set(contract.PULL_SECTIONS) <= set(contract.SECTIONS)
 
 
-# Presets are pull-only and never enter a push document, so there is no pushed
-# row to hold to the requirement.
-@pytest.mark.parametrize("section", sorted(set(SYNC_SECTIONS) - {"presets"}))
+# The pull-only sections never enter a push document, so there is no pushed row to
+# hold to the requirement: presets and the lenses are the registry's to publish.
+_PULL_ONLY = {"presets", "camera_profiles", "camera_calibrations"}
+
+
+@pytest.mark.parametrize("section", sorted(set(SYNC_SECTIONS) - _PULL_ONLY))
 def test_a_pushed_row_carries_every_column_the_registry_requires(section) -> None:
     """A required column added server-side shows up here, not as a rejected push."""
     row = wire.rows_to_wire(section, [one_of_each()[section]])[0]
@@ -153,3 +156,18 @@ def test_the_registry_derives_the_depth_from_the_two_ends() -> None:
     table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
     derived = {column["name"] for column in table["columns"] if column.get("derived")}
     assert derived == {"depth_m"}
+
+
+def test_the_lenses_are_pulled_and_never_pushed() -> None:
+    """A calibration is published through the registry's upload endpoint, which
+    returns a row that comes back down like any other. Authoring one here would
+    make two laptops' measurements of one rig fight over a name."""
+    assert {"camera_profiles", "camera_calibrations"} <= set(contract.PULL_SECTIONS)
+    assert {"camera_profiles", "camera_calibrations"}.isdisjoint(contract.PUSH_SECTIONS)
+
+
+def test_a_calibration_row_carries_the_document_a_run_needs() -> None:
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "camera_calibrations")
+    names = {column["name"] for column in table["columns"]}
+
+    assert {"camera_profile_id", "version", "document"} <= names

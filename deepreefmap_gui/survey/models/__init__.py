@@ -1,6 +1,7 @@
 """Survey domain models, one per module, with conversion tools alongside."""
 
 from deepreefmap_gui.survey.models.batch_item import BatchItem
+from deepreefmap_gui.survey.models.camera import CameraCalibration, CameraProfile
 from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.notification import (
     BLOCKER,
@@ -38,6 +39,8 @@ from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 __all__ = [
     "BLOCKER",
+    "CameraCalibration",
+    "CameraProfile",
     "DIRECTION_ARROWS",
     "DIRECTION_UNRECORDED",
     "CONDITION",

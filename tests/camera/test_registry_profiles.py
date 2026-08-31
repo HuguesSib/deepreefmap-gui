@@ -1,0 +1,123 @@
+"""Scenario: the console publishes a camera profile and this laptop pulls it.
+
+Expected behaviour: the calibration becomes a file in the profiles directory,
+because that is the only place a run resolves a profile name against. A profile
+this laptop calibrated itself is never replaced by one from the registry.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+import numpy as np
+import pytest
+from deepreefmap.camera.intrinsics import CameraProfile as LibraryProfile
+
+from deepreefmap_gui.camera.inventory import list_profiles
+from deepreefmap_gui.camera.profiles import camera_profiles_dir, save_profile
+from deepreefmap_gui.camera.registry import materialise_pulled, materialised_from
+from deepreefmap_gui.survey.models import CameraCalibration, CameraProfile
+from deepreefmap_gui.survey.store import SurveyStore
+
+
+def document(name: str, focal: float = 1243.0) -> dict:
+    return {
+        "name": name,
+        "source": "colmap_radial_v1",
+        "distorted": {
+            "model": "RADIAL",
+            "params": {"fx": focal, "fy": focal, "cx": 960.0, "cy": 540.0, "k1": 0.36, "k2": 0.24},
+        },
+        "rectified_pinhole": {
+            "image_size": [1920, 1080],
+            "K": [[focal, 0.0, 959.5], [0.0, focal, 539.5], [0.0, 0.0, 1.0]],
+        },
+    }
+
+
+def local_profile(name: str) -> LibraryProfile:
+    return LibraryProfile(
+        name=name,
+        image_size=(1920, 1440),
+        k=np.array([[1035.0, 0.0, 960.0], [0.0, 1035.0, 720.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+        distorted_model="RADIAL",
+        radial={"fx": 1035.0, "fy": 1035.0, "cx": 960.0, "cy": 720.0, "k1": 0.01, "k2": 0.0},
+        diagnostics={"n_input_frames": 100},
+    )
+
+
+@pytest.fixture
+def store(tmp_path) -> SurveyStore:
+    held = SurveyStore(tmp_path / "survey.db")
+    yield held
+    held.close()
+
+
+def publish(store: SurveyStore, name: str, *, version: int = 1, focal: float = 1243.0) -> uuid.UUID:
+    """What a pull lands: a profile row and a calibration row."""
+    held = {p.name: p for p in store.list_camera_profiles()}
+    profile = held.get(name) or CameraProfile(name=name)
+    calibration = CameraCalibration(
+        camera_profile_id=profile.id,
+        document=document(name, focal),
+        version=version,
+        image_width=1920,
+        image_height=1080,
+    )
+    if name not in held:
+        store._add("camera_profile", profile)
+    store._add("camera_calibration", calibration)
+    return calibration.id
+
+
+def test_a_pulled_calibration_becomes_a_file_a_run_can_resolve(store):
+    publish(store, "hero12_dome")
+
+    written = materialise_pulled(store)
+
+    assert written == ["hero12_dome"]
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["rectified_pinhole"]["image_size"] == [1920, 1080]
+    assert "hero12_dome" in {entry.name for entry in list_profiles()}
+
+
+def test_the_newest_version_is_the_one_written(store):
+    publish(store, "hero12_dome", version=1, focal=1243.0)
+    materialise_pulled(store)
+    publish(store, "hero12_dome", version=2, focal=1301.0)
+
+    materialise_pulled(store)
+
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["distorted"]["params"]["fx"] == 1301.0
+
+
+def test_writing_again_with_nothing_new_writes_nothing(store):
+    publish(store, "hero12_dome")
+    materialise_pulled(store)
+
+    assert materialise_pulled(store) == []
+
+
+def test_a_profile_calibrated_here_is_never_replaced(store):
+    """This laptop measured that rig, and the file it wrote is what its runs were
+    rectified with."""
+    save_profile(local_profile("hero12_dome"), camera_profiles_dir())
+    publish(store, "hero12_dome")
+
+    assert materialise_pulled(store) == []
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["rectified_pinhole"]["image_size"] == [1920, 1440]
+
+
+def test_a_materialised_profile_names_the_calibration_it_came_from(store):
+    calibration_id = publish(store, "hero12_dome")
+
+    materialise_pulled(store)
+
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(calibration_id)
+
+
+def test_a_survey_that_never_synced_has_nothing_to_write(store):
+    assert materialise_pulled(store) == []

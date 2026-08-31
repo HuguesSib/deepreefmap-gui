@@ -1078,6 +1078,22 @@ class InterfaceShellMixin(MixinBase):
     def _reset_form_defaults(self) -> None:
         self._restore_form_settings(self._form_defaults)
 
+    def _write_registry_camera_profiles(self, store: SurveyStore) -> None:
+        """Put the registry's calibrations on disk, where a run resolves them.
+
+        Never raises: a survey that has never synced has none to write, and a
+        profile that could not be written must not stop the window opening.
+        """
+        from deepreefmap_gui.camera.registry import materialise_pulled
+
+        try:
+            written = materialise_pulled(store)
+        except Exception:
+            logger.warning("Could not write the registry's camera profiles", exc_info=True)
+            return
+        if written and hasattr(self, "_profile_combo"):
+            self._reload_camera_profiles()
+
     def _survey_store(self) -> SurveyStore:
         """Store keyed to the current output root; reopened when the root changes.
 

@@ -21,6 +21,7 @@ from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
 from deepreefmap_gui.survey.models.batch_item import BatchItem
+from deepreefmap_gui.survey.models.camera import CameraCalibration, CameraProfile
 from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.convert import (
@@ -839,6 +840,53 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE transect ADD COLUMN end_depth_m REAL;
         """,
     ),
+    # The registry's camera profiles and their calibrations, pulled whole the way
+    # presets are. Never authored here: a laptop publishes what it calibrated
+    # through the registry's upload endpoint and reads it back on the next pull.
+    Migration(
+        21,
+        "the registry's camera profiles are pulled into their own tables",
+        """
+        CREATE TABLE camera_profile (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER
+        );
+
+        CREATE TABLE camera_calibration (
+            id TEXT PRIMARY KEY,
+            camera_profile_id TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            document TEXT NOT NULL DEFAULT '{}',
+            image_width INTEGER,
+            image_height INTEGER,
+            reprojection_error_px REAL,
+            registered_frames INTEGER,
+            source_clip TEXT NOT NULL DEFAULT '',
+            calibrated_at TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER
+        );
+        CREATE INDEX camera_calibration_profile_idx
+            ON camera_calibration (camera_profile_id);
+        """,
+    ),
+    # Which measurement of the lens a run was rectified with, where the device
+    # knew one. The run directory carries the document itself.
+    Migration(
+        22,
+        "a run names the calibration it was rectified with",
+        "ALTER TABLE run_record ADD COLUMN camera_calibration_id TEXT;",
+    ),
 ]
 
 
@@ -868,6 +916,8 @@ SYNC_SECTIONS: dict[str, str] = {
     # Pull-only, ahead of the runs that name the preset they ran under. Never
     # authored here: the contract keeps it out of the push sections.
     "presets": "server_preset",
+    "camera_profiles": "camera_profile",
+    "camera_calibrations": "camera_calibration",
     "runs": "run_record",
 }
 
@@ -881,6 +931,8 @@ _SYNC_MODELS: dict[str, type] = {
     "transect_pass": TransectPass,
     "run_record": RunRecord,
     "server_preset": ServerPreset,
+    "camera_profile": CameraProfile,
+    "camera_calibration": CameraCalibration,
 }
 
 # Which attribute of a row names which parent section, for building a closed push
@@ -2112,6 +2164,22 @@ class SurveyStore:
             (name, int(version)),
         ).fetchone()
         return from_row(ServerPreset, row) if row is not None else None
+
+    def list_camera_profiles(self) -> list[CameraProfile]:
+        """The registry's camera profiles, by name."""
+        rows = self._conn().execute(
+            "SELECT * FROM camera_profile WHERE deleted_at IS NULL ORDER BY LOWER(name)"
+        ).fetchall()
+        return [from_row(CameraProfile, r) for r in rows]
+
+    def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
+        """The latest measurement of one profile, which is what a run should use."""
+        row = self._conn().execute(
+            "SELECT * FROM camera_calibration WHERE camera_profile_id = ? "
+            "AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
+            (str(profile_id),),
+        ).fetchone()
+        return from_row(CameraCalibration, row) if row is not None else None
 
     def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
         """Copy a finished run's provenance onto its row.

@@ -876,8 +876,8 @@ class VideoLibraryMixin(MixinBase):
         """Offer the archive controls only once there is a registry to send to.
 
         Every pane that carries one, together: the clip rows, the clip and pass
-        detail panes and the run card's menu. A control that sends footage
-        nowhere is worse than no control.
+        detail panes, the run card's menu, and the Cameras page's publish
+        buttons. A control that sends footage nowhere is worse than no control.
 
         `connected` is passed by a caller that has just read the server state,
         so the status bar's own refresh does not pay for a second read.
@@ -888,7 +888,7 @@ class VideoLibraryMixin(MixinBase):
         if listing is not None:
             listing.set_server_connected(connected)
             self._paint_clip_row_archive_buttons()
-        for name in ("_video_detail", "_section_detail", "_run_detail"):
+        for name in ("_video_detail", "_section_detail", "_run_detail", "_cameras_panel"):
             pane = getattr(self, name, None)
             if pane is not None:
                 pane.set_server_connected(connected)
