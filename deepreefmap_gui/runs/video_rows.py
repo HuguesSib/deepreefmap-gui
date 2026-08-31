@@ -1192,11 +1192,14 @@ class SectionRow(QWidget):
         if not compact:
             _fixed_width(self._window, WINDOW_CHARS, figures=True)
         else:
-            # No column here: the pane is a third of the page, and a column
-            # wide enough for the longest window a clip could have spends the
-            # difference on a gap in front of the transect. Every section of one
-            # clip writes its window to much the same length anyway, so they
-            # line up without being made to.
+            # No fixed column here: a column wide enough for the longest window
+            # a clip could have spends the difference on a gap in front of the
+            # transect, and the pane is a third of the page. The list sizes this
+            # to the widest window it actually holds instead (``set_window_width``),
+            # so the passes of one clip line up with each other without reserving
+            # room for windows none of them writes. Tabular digits, so the times
+            # themselves line up inside that width.
+            self._window.setFont(tabular(self._window.font()))
             self._window.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         row.addWidget(self._window)
 
@@ -1278,6 +1281,14 @@ class SectionRow(QWidget):
         self._preview: list[tuple[str, float]] | None = None
         self._preview_key = ""
         self._preview_wired = False
+
+    def window_hint(self) -> int:
+        """How much room this row's window text wants, for the list to level."""
+        return self._window.fontMetrics().horizontalAdvance(self._window.text())
+
+    def set_window_width(self, width: int) -> None:
+        """Hold the window column at ``width``, so the rows beside it align."""
+        self._window.setFixedWidth(width)
 
     def set_name_width(self, width: int) -> None:
         """Follow the clip name's column, so this row's strip stays under its clip's."""
@@ -1616,8 +1627,23 @@ class SectionList(QScrollArea):
                 available=entry.link_state != LINK_MISSING,
                 preview=preview_points(pass_, known),
             )
+        self._level_windows()
         self.empty.setVisible(not facts)
         self._paint_selection()
+
+    def _level_windows(self) -> None:
+        """One width for every window in the pane, taken from the widest.
+
+        The windows are what the transect names and the buttons after them
+        start from, so a row whose times are a digit shorter than its
+        neighbour's would otherwise set every column on it a few pixels left.
+        """
+        rows = list(self._rows.values())
+        if not rows:
+            return
+        width = max(row.window_hint() for row in rows)
+        for row in rows:
+            row.set_window_width(width)
 
     def set_selected(self, pass_id: str | None) -> None:
         self._selected = pass_id
