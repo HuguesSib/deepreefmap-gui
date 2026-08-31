@@ -10,9 +10,10 @@ against the clip it came from, and pruned.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -125,6 +126,12 @@ class CameraProfilesPanel(QWidget):
         chip.set_status(CALIBRATED if entry.local else BUNDLED, PRIMARY if entry.local else TEXT_MUTED)
         title.addWidget(chip)
         title.addStretch(1)
+        if entry.log is not None:
+            log = QPushButton("Log")
+            log.setProperty("quiet", "true")
+            log.setToolTip("What the calibration did, and what COLMAP made of the clip.")
+            log.clicked.connect(lambda _=False, path=entry.log: self._open_log(path))
+            title.addWidget(log)
         if entry.local:
             remove = QPushButton("Delete")
             remove.setProperty("quiet", "true")
@@ -152,6 +159,9 @@ class CameraProfilesPanel(QWidget):
                 layout.addWidget(preview)
         layout.addSpacing(SPACE_SM)
         return card
+
+    def _open_log(self, path: Path) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_calibrate(self) -> None:
         from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog

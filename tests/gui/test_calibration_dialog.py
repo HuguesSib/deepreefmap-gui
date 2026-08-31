@@ -48,7 +48,9 @@ def _install_calibrator(monkeypatch, outcome: str = "ok") -> list[tuple[str, int
             raise CalibrationError("only 2 registered images out of 12")
         path = save_profile(_fake_profile(name), output_dir)
         previews = output_dir / f"{name}_diagnostics"
-        previews.mkdir()
+        # The dialog opens the log in here before the calibrator runs, so the
+        # real one finds the directory already made.
+        previews.mkdir(exist_ok=True)
         (previews / "compare_000000.png").write_bytes(b"")
         return path
 
@@ -165,3 +167,93 @@ def test_the_form_picks_up_a_profile_kept_by_the_dialog(window, monkeypatch, cli
 
     assert window._profile_combo.currentText() == "field_cam"
     assert "gopro_hero_10" in [window._profile_combo.itemText(i) for i in range(window._profile_combo.count())]
+
+
+def test_the_stage_line_carries_the_count_colmap_reported(qapp):
+    """A bar that only spins says nothing about a stage that runs for minutes."""
+    assert CalibrationDialog._stage_text("extracting", 34, 100) == "Extracting features: 34 of 100"
+    assert CalibrationDialog._stage_text("matching", 91, 100) == "Matching frames: 91 of 100"
+    assert CalibrationDialog._stage_text("reconstructing", 12, 100) == "Reconstructing: 12 of 100 frames placed"
+    assert CalibrationDialog._stage_text("diagnostics", 0, 0) == "Writing previews"
+
+
+def test_the_log_records_the_run_and_survives_a_failure(qapp, monkeypatch, clip):
+    _install_calibrator(monkeypatch, outcome="error")
+    dialog = CalibrationDialog(None, initial_video=clip)
+    dialog._name.setText("weak")
+
+    dialog._start.click()
+    _wait(qapp, dialog)
+
+    kept = camera_profiles_dir() / module.LAST_LOG_NAME
+    assert kept.is_file()
+    assert "only 2 registered images" in kept.read_text(encoding="utf-8")
+
+
+def test_a_kept_profile_keeps_its_log_beside_it(qapp, monkeypatch, clip):
+    _install_calibrator(monkeypatch)
+    dialog = CalibrationDialog(None, initial_video=clip)
+    dialog._name.setText("hero_12")
+
+    dialog._start.click()
+    _wait(qapp, dialog)
+    dialog._save.click()
+
+    assert (camera_profiles_dir() / "hero_12_diagnostics" / module.LOG_NAME).is_file()
+
+
+def test_the_window_is_picked_by_watching_the_clip(qapp, monkeypatch, clip):
+    """The same picker the clip library trims a pass with, so a calibration window
+    is chosen by eye rather than typed as two numbers."""
+    opened = {}
+
+    class FakeScrub:
+        def __init__(self, video, duration, begin, end, parent=None, **kwargs):
+            opened.update(video=video, duration=duration, begin=begin, end=end)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def time_range(self):
+            return 12.0, 48.0
+
+    monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
+    dialog = CalibrationDialog(None, initial_video=clip)
+    dialog._duration_s = 120.0
+    dialog._refresh_scrub_state()
+    assert dialog._scrub.isEnabled()
+
+    dialog._scrub.click()
+
+    assert opened["duration"] == 120.0
+    assert (dialog._begin.value(), dialog._end.value()) == (12.0, 48.0)
+
+
+def test_the_picker_waits_for_a_clip_whose_length_is_known(qapp):
+    dialog = CalibrationDialog(None)
+
+    assert not dialog._scrub.isEnabled()
+    assert "length" in dialog._scrub.toolTip()
+
+
+def test_a_window_running_to_the_end_stays_saying_so(qapp, monkeypatch, clip):
+    class FakeScrub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def time_range(self):
+            return 5.0, 120.0
+
+    monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
+    dialog = CalibrationDialog(None, initial_video=clip)
+    dialog._duration_s = 120.0
+    dialog._refresh_scrub_state()
+
+    dialog._scrub.click()
+
+    assert dialog._begin.value() == 5.0
+    assert dialog._end.value() == 0.0
+    assert dialog._end.text() == "end of clip"

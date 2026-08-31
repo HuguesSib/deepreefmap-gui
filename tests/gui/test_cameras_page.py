@@ -88,3 +88,26 @@ def test_a_refused_delete_leaves_the_profile_alone(panel, monkeypatch):
     _delete_buttons(panel)[0].click()
 
     assert (camera_profiles_dir() / "field_cam.json").exists()
+
+
+def test_a_profile_with_a_log_offers_to_open_it(panel, monkeypatch):
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    diagnostics = camera_profiles_dir() / "field_cam_diagnostics"
+    diagnostics.mkdir(parents=True, exist_ok=True)
+    (diagnostics / "calibration.log").write_text("Calibrating 'field_cam'\n", encoding="utf-8")
+    panel.refresh()
+    opened = []
+    monkeypatch.setattr(module.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+
+    log_buttons = [b for b in panel.findChildren(QPushButton) if b.text() == "Log"]
+    log_buttons[0].click()
+
+    assert opened == [str(diagnostics / "calibration.log")]
+
+
+def test_a_profile_with_no_log_offers_no_button(panel):
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+
+    panel.refresh()
+
+    assert [b for b in panel.findChildren(QPushButton) if b.text() == "Log"] == []

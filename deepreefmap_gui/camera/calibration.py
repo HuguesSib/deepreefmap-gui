@@ -9,8 +9,10 @@ camera parsing is the library's.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,10 +23,14 @@ from deepreefmap.camera.colmap_calibration import _camera_model_debug, _parse_co
 from deepreefmap.camera.intrinsics import CameraProfile
 from deepreefmap.camera.rectification import Rectifier
 
+from deepreefmap_gui.camera import colmap_output
 from deepreefmap_gui.camera.profiles import load_profile_file, save_profile
 
-# Reported to the progress callback in this order. Only sampling counts frames;
-# the COLMAP stages block in C++ and report (stage, 0, 0).
+logger = logging.getLogger(__name__)
+
+# Reported to the progress callback in this order. Sampling counts the frames it
+# writes; the three COLMAP stages count what COLMAP itself says it has done,
+# read off its console output.
 CALIBRATION_STAGES = ("sampling", "extracting", "matching", "reconstructing", "diagnostics")
 
 ProgressCallback = Callable[[str, int, int], None]
@@ -105,6 +111,29 @@ def calibrate_camera_profile(
         if progress_callback is not None:
             progress_callback(stage, done, total)
 
+    # The log is the record of a calibration: what was asked for, what COLMAP was
+    # given, and what came back. It is what somebody reads when a profile looks
+    # wrong weeks later, and what they quote when asking why it failed.
+    logger.info("Calibrating %r from %s", name, video)
+    logger.info(
+        "Window %s to %s, sampling %d fps, up to %d frames",
+        f"{begin_s:.1f} s" if begin_s is not None else "start",
+        f"{end_s:.1f} s" if end_s is not None else "end of clip",
+        fps,
+        n_frames,
+    )
+    logger.info(
+        "The same calibration outside the app: deepreefmap calibrate %s --name %s "
+        "--n-frames %d --fps %d%s%s",
+        video,
+        name,
+        n_frames,
+        fps,
+        f" --begin {begin_s:g}" if begin_s is not None else "",
+        f" --end {end_s:g}" if end_s is not None else "",
+    )
+    started = time.monotonic()
+
     with tempfile.TemporaryDirectory(prefix="drm_calib_") as tmp:
         tmp_dir = Path(tmp)
         image_dir = tmp_dir / "images"
@@ -114,6 +143,7 @@ def calibrate_camera_profile(
         if sample_img is None:
             raise CalibrationError(f"Failed to read sample frame: {sample_paths[0]}")
         h, w = sample_img.shape[:2]
+        logger.info("Sampled %d frames at %dx%d in %.1f s", len(sample_paths), w, h, time.monotonic() - started)
 
         try:
             import pycolmap
@@ -138,18 +168,79 @@ def calibrate_camera_profile(
             extract_kwargs["camera_mode"] = pycolmap.CameraMode.SINGLE
         elif hasattr(reader_options, "single_camera"):
             reader_options.single_camera = True
-        report("extracting")
-        pycolmap.extract_features(**extract_kwargs)  # type: ignore[arg-type]
-        report("matching")
-        pycolmap.match_sequential(database_path=str(database_path))
-        report("reconstructing")
-        maps = pycolmap.incremental_mapping(
-            database_path=str(database_path), image_path=str(image_dir), output_path=str(sparse_path)
+        logger.info(
+            "pycolmap %s, one RADIAL camera over %s",
+            getattr(pycolmap, "__version__", "version unknown"),
+            image_dir,
         )
+
+        # COLMAP reports how far it is through each stage on its own stderr, and
+        # nowhere else. Read there, the two long stages get a real count instead
+        # of a bar that only spins, and a reconstruction thrown away says so while
+        # it is happening rather than as a failure at the end.
+        stage = ""
+        watched = len(sample_paths)
+
+        def on_colmap_line(line: str) -> None:
+            # Never raises: this runs on the thread draining COLMAP's pipe, and a
+            # pipe that stops being read blocks COLMAP itself. Cancellation is a
+            # question the calling thread asks between stages.
+            try:
+                _handle_colmap_line(line)
+            except Exception:
+                logger.debug("Could not read a COLMAP line", exc_info=True)
+
+        def _handle_colmap_line(line: str) -> None:
+            event = colmap_output.parse_line(line)
+            if event is None:
+                logger.debug("%s", line)
+                return
+            if event.kind == colmap_output.WARNING:
+                logger.warning("COLMAP: %s", event.text)
+                return
+            if event.kind == colmap_output.EXTRACTED and stage == "extracting":
+                report("extracting", event.done, event.total)
+            elif event.kind == colmap_output.MATCHED and stage == "matching":
+                report("matching", event.done, event.total)
+            elif event.kind == colmap_output.REGISTERED:
+                report("reconstructing", event.done, watched)
+            elif event.kind == colmap_output.DISCARDED:
+                logger.info("COLMAP discarded a reconstruction: %s", event.text)
+            elif event.kind == colmap_output.KEPT:
+                logger.info("COLMAP kept a reconstruction")
+        # No subprocess and no CLI: pycolmap runs COLMAP's C++ in this process, so
+        # these three calls are the whole of what COLMAP is asked to do. Its own
+        # console output goes to the app's stdout, which the log window captures.
+        with colmap_output.capture_stderr(on_colmap_line):
+            stage = "extracting"
+            report("extracting", 0, watched)
+            stage_at = time.monotonic()
+            logger.info("extract_features(database=%s, images=%s)", database_path, image_dir)
+            pycolmap.extract_features(**extract_kwargs)  # type: ignore[arg-type]
+            logger.info("Features extracted in %.1f s", time.monotonic() - stage_at)
+
+            stage = "matching"
+            report("matching", 0, watched)
+            stage_at = time.monotonic()
+            logger.info("match_sequential(database=%s)", database_path)
+            pycolmap.match_sequential(database_path=str(database_path))
+            logger.info("Frames matched in %.1f s", time.monotonic() - stage_at)
+
+            stage = "reconstructing"
+            report("reconstructing", 0, watched)
+            stage_at = time.monotonic()
+            logger.info(
+                "incremental_mapping(database=%s, images=%s, out=%s)", database_path, image_dir, sparse_path
+            )
+            maps = pycolmap.incremental_mapping(
+                database_path=str(database_path), image_path=str(image_dir), output_path=str(sparse_path)
+            )
         if not maps:
             raise CalibrationError("COLMAP mapping failed: no reconstruction produced.")
+        logger.info("Reconstructed %d model(s) in %.1f s", len(maps), time.monotonic() - stage_at)
 
         best_rec = max(maps.values(), key=lambda rec: len(rec.images))
+        logger.info("Registered %d of %d frames", len(best_rec.images), len(sample_paths))
         if len(best_rec.images) < max(10, len(sample_paths) // 3):
             raise CalibrationError(
                 f"Calibration failed quality gate: only {len(best_rec.images)} registered images "
@@ -204,6 +295,13 @@ def calibrate_camera_profile(
             diagnostics=diagnostics,
         )
         saved_path = save_profile(profile, output_dir)
+        logger.info(
+            "Camera %s, mean reprojection error %s, rectified focal length %.1f px",
+            model_name,
+            f"{mean_reproj:.2f} px" if mean_reproj is not None else "not reported",
+            float(k_rect[0][0]),
+        )
+        logger.info("Wrote %s in %.1f s", saved_path, time.monotonic() - started)
         rectifier = Rectifier(profile)
 
         diagnostics_dir = output_dir / f"{name}_diagnostics"

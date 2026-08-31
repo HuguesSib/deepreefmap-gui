@@ -27,6 +27,7 @@ class ProfileEntry:
     registered: tuple[int, int] | None = None
     reprojection_error_px: float | None = None
     preview: Path | None = None
+    log: Path | None = None
     error: str = ""
 
     @property
@@ -34,6 +35,12 @@ class ProfileEntry:
         if self.image_size is None:
             return ""
         return f"{self.image_size[0]} x {self.image_size[1]}"
+
+
+def _log(directory: Path, name: str) -> Path | None:
+    """The record the calibration wrote, where the profile still has one."""
+    path = directory / f"{name}_diagnostics" / "calibration.log"
+    return path if path.is_file() else None
 
 
 def _preview(directory: Path, name: str) -> Path | None:
@@ -70,6 +77,7 @@ def _entry(name: str, directory: Path) -> ProfileEntry:
         registered=registered,
         reprojection_error_px=float(error) if error is not None else None,
         preview=_preview(directory, name) if local else None,
+        log=_log(directory, name) if local else None,
     )
 
 
