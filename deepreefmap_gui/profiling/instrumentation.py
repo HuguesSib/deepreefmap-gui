@@ -344,19 +344,26 @@ def _record_run_command(output_dir: Path, kwargs: dict) -> dict:
     still leaves behind what it was asked to do. Never raises: losing the record
     must not lose the run.
     """
+    from deepreefmap_gui.camera.profiles import copy_profile_into_run
     from deepreefmap_gui.runs.run_command import (
         build_reconstruct_argv,
         format_command,
         write_run_command_script,
     )
 
+    # The profile first: the script it writes stages that copy, and a run that
+    # crashes has still recorded what it was rectified with.
+    name = kwargs.get("camera_profile_name")
+    recorded = copy_profile_into_run(str(name), output_dir) if name else {}
     try:
         argv = build_reconstruct_argv(kwargs)
-        write_run_command_script(output_dir, argv)
-        return {"cli_argv": argv, "cli_command": format_command(argv)}
+        write_run_command_script(
+            output_dir, argv, camera_profile_name=str(name) if name and recorded else None
+        )
+        return {"cli_argv": argv, "cli_command": format_command(argv), **recorded}
     except Exception:
         logger.warning("Failed to record the run command", exc_info=True)
-        return {}
+        return dict(recorded)
 
 
 def failed_run_manifest(

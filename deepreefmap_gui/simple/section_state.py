@@ -44,6 +44,7 @@ CAUSE_UNASSIGNED_PASSES = "process.unassigned_passes"
 CAUSE_UNSCALED_PASSES = "process.unscaled_passes"
 CAUSE_RETIRED_TRANSECT = "process.retired_transect"
 CAUSE_UNREAD_GRAVITY = "process.unread_gravity"
+CAUSE_PROFILE_RESOLUTION = "process.profile_resolution"
 CAUSE_UNMET_REQUIREMENTS = "machine.unmet_requirements"
 CAUSE_MACHINE_ADVISORY = "machine.advisory"
 
@@ -61,6 +62,7 @@ CAUSES = (
     CAUSE_UNSCALED_PASSES,
     CAUSE_RETIRED_TRANSECT,
     CAUSE_UNREAD_GRAVITY,
+    CAUSE_PROFILE_RESOLUTION,
     CAUSE_UNMET_REQUIREMENTS,
     CAUSE_MACHINE_ADVISORY,
 )
@@ -292,6 +294,7 @@ def run_gate(
     retired_lines: int = 0,
     missing_files: int = 0,
     unread_gravity: int = 0,
+    profile_resolution: tuple[int, str, str] | None = None,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
 
@@ -309,6 +312,9 @@ def run_gate(
     on, and ``unscaled_lines`` how many still-listed lines the unscaled ones are.
     A caller that does not count them gets the singular, which is what one line
     reads as and what every caller before this said.
+
+    ``profile_resolution`` is (passes, the size they were shot at, the size the
+    camera profile was calibrated at), or None where they agree.
     """
     if pass_count == 0:
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
@@ -422,6 +428,20 @@ def run_gate(
             "platform, so the reconstruction is not gravity-aligned.",
             cause=CAUSE_UNREAD_GRAVITY,
             n=unread_gravity,
+        )
+    # The camera profile describes a lens at a resolution, and a GoPro changes
+    # its field of view with its mode. Footage shot at another size may have been
+    # shot through another crop, in which case the intrinsics are not this
+    # footage's. Said, not blocked: the same size in another mode is just as
+    # wrong, and only the diver knows which.
+    if profile_resolution:
+        return SectionState(
+            OK,
+            f"{counts} · {profile_resolution[0]} off the profile",
+            f"{passes_phrase(profile_resolution[0])} shot at {profile_resolution[1]}, and the camera "
+            f"profile was calibrated at {profile_resolution[2]}. Check the camera was in the same mode.",
+            cause=CAUSE_PROFILE_RESOLUTION,
+            n=profile_resolution[0],
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")

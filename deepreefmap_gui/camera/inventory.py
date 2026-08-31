@@ -1,16 +1,25 @@
 """Every camera profile this computer can run with, and where each came from.
 
 Qt-free: the page renders what this reports, and the tests read it without a
-window. A profile is either bundled with the library or calibrated here, and
-only the second kind can be deleted.
+window. A profile is bundled with the library, calibrated here, or imported from
+another machine; only the last two can be deleted, and only they can be exported
+for a laptop that has no way to calibrate the rig itself.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from deepreefmap_gui.camera.profiles import available_profile_names, camera_profiles_dir, load_profile
+from deepreefmap_gui.camera.profiles import (
+    available_profile_names,
+    camera_profiles_dir,
+    load_profile,
+    load_profile_file,
+    profile_payload,
+    save_profile,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +37,7 @@ class ProfileEntry:
     reprojection_error_px: float | None = None
     preview: Path | None = None
     log: Path | None = None
+    imported: bool = False
     error: str = ""
 
     @property
@@ -66,6 +76,8 @@ def _entry(name: str, directory: Path) -> ProfileEntry:
             int(diagnostics.get("n_input_frames") or 0),
         )
     error = diagnostics.get("mean_reprojection_error_px")
+    # Calibrated here or brought here: a calibration writes its previews and its
+    # log beside the profile, and an imported file arrives on its own.
     return ProfileEntry(
         name=name,
         local=local,
@@ -78,6 +90,7 @@ def _entry(name: str, directory: Path) -> ProfileEntry:
         reprojection_error_px=float(error) if error is not None else None,
         preview=_preview(directory, name) if local else None,
         log=_log(directory, name) if local else None,
+        imported=local and not (directory / f"{name}_diagnostics").is_dir(),
     )
 
 
@@ -90,6 +103,36 @@ def list_profiles() -> list[ProfileEntry]:
     directory = camera_profiles_dir()
     entries = [_entry(name, directory) for name in available_profile_names()]
     return sorted(entries, key=lambda entry: (not entry.local, entry.name))
+
+
+def import_profile(path: Path, *, name: str | None = None) -> ProfileEntry:
+    """Bring a profile file onto this machine, under `name` or its own.
+
+    Reads it before writing it, so a file that is not a profile is refused here
+    rather than at the start of a run. Raises FileExistsError when the name is
+    taken by different content: two laptops calibrating one rig both produce
+    `hero12_dome`, and the caller offers a new name rather than overwriting a
+    calibration somebody made.
+    """
+    profile = load_profile_file(path)
+    if name:
+        profile = replace(profile, name=name)
+    directory = camera_profiles_dir()
+    target = directory / f"{profile.name}.json"
+    if target.is_file():
+        if json.loads(target.read_text(encoding="utf-8")) == profile_payload(profile):
+            return _entry(profile.name, directory)
+        raise FileExistsError(profile.name)
+    save_profile(profile, directory)
+    return _entry(profile.name, directory)
+
+
+def export_profile(entry: ProfileEntry, target: Path) -> Path:
+    """Write a profile out as the file another machine imports."""
+    profile = load_profile(entry.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(profile_payload(profile), indent=2), encoding="utf-8")
+    return target
 
 
 def delete_profile(entry: ProfileEntry) -> None:

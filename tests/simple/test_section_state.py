@@ -7,6 +7,7 @@ import pytest
 from deepreefmap_gui.simple.section_state import (
     ATTENTION,
     BLOCKED,
+    CAUSE_PROFILE_RESOLUTION,
     CAUSE_RETIRED_TRANSECT,
     CAUSE_UNREAD_GRAVITY,
     FIX_HERE,
@@ -458,3 +459,25 @@ def test_gravity_this_platform_cannot_read_is_said_without_blocking():
 def test_unread_gravity_yields_to_every_other_reason():
     state = gate(pass_count=3, unread_gravity=2, unscaled=1)
     assert state.cause != CAUSE_UNREAD_GRAVITY
+
+
+def test_footage_off_the_profile_size_is_said_without_blocking():
+    """A GoPro changes its field of view with its mode, so footage at another
+    size may have been shot through another crop. Only the diver knows."""
+    state = gate(pass_count=3, profile_resolution=(2, "3840x2160", "1920x1080"))
+
+    assert state.state == OK
+    assert "2 off the profile" in state.count
+    assert "3840x2160" in state.reason
+    assert "1920x1080" in state.reason
+    assert state.cause == CAUSE_PROFILE_RESOLUTION
+
+
+def test_the_profile_size_yields_to_unread_gravity():
+    state = gate(pass_count=3, unread_gravity=1, profile_resolution=(2, "3840x2160", "1920x1080"))
+
+    assert state.cause == CAUSE_UNREAD_GRAVITY
+
+
+def test_matching_sizes_say_nothing():
+    assert gate(pass_count=3, profile_resolution=None).cause == ""

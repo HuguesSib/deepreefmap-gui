@@ -9,13 +9,17 @@ process, so the same binding is what a run sees.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 
 import platformdirs
 from deepreefmap.camera import intrinsics
 from deepreefmap.camera.intrinsics import CameraProfile
+
+logger = logging.getLogger(__name__)
 
 
 def camera_profiles_dir() -> Path:
@@ -83,3 +87,34 @@ def load_profile_file(path: Path) -> CameraProfile:
         radial=data["distorted"]["params"],
         diagnostics=data.get("diagnostics"),
     )
+
+
+RUN_PROFILE_NAME = "camera_profile.json"
+
+
+def copy_profile_into_run(name: str, run_dir: Path) -> dict[str, str]:
+    """Write the calibration a run is about to use into its own output directory.
+
+    A run manifest records the profile's NAME and nothing else, and the name
+    resolves against a directory on one laptop. Without the document beside the
+    outputs, a reconstruction cannot be reproduced anywhere else, a curator
+    cannot tell two calibrations called `gopro_hero_10` apart, and deleting the
+    profile takes the only record of what the run was rectified with.
+
+    Returns the manifest fields naming what was written, or an empty dict when
+    there was nothing to write. Never raises: losing the record must not lose
+    the run.
+    """
+    try:
+        profile = load_profile(name)
+        payload = json.dumps(profile_payload(profile), indent=2)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / RUN_PROFILE_NAME
+        path.write_text(payload, encoding="utf-8")
+        # Hashed over the bytes on disk rather than the dict, so the digest is of
+        # the file a reader can check rather than of a value only we can rebuild.
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        logger.warning("Could not copy the camera profile into %s", run_dir, exc_info=True)
+        return {}
+    return {"camera_profile_file": RUN_PROFILE_NAME, "camera_profile_sha256": digest}

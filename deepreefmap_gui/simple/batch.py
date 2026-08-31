@@ -2028,6 +2028,43 @@ class SimpleBatchMixin(MixinBase):
                 count += 1
         return count
 
+    def _survey_profile_resolution(self) -> tuple[int, str, str] | None:
+        """Queued passes shot at a size the chosen camera profile was not calibrated at.
+
+        Reported, never blocked: the same size in another field of view is just
+        as wrong and nothing here can tell, so the diver is told what the two
+        sizes are and left to decide.
+        """
+        from deepreefmap_gui.camera.profiles import load_profile
+
+        name = self._profile_combo.currentText() if hasattr(self, "_profile_combo") else ""
+        if not name:
+            return None
+        try:
+            profile = load_profile(name)
+        except Exception:
+            logger.debug("Could not read the camera profile %s", name, exc_info=True)
+            return None
+        calibrated = (int(profile.image_size[0]), int(profile.image_size[1]))
+        # The tolerant accessor: a database this build cannot open is a verdict
+        # of its own, and a note about a lens must not be what raises instead.
+        store = self._try_survey_store()
+        if store is None:
+            return None
+        sizes: dict[tuple[int, int], int] = {}
+        for row in self._survey_rows:
+            pass_ = store.get_pass(row.pass_id)
+            video = store.get_video(pass_.video_id) if pass_ is not None else None
+            if video is None or not video.width or not video.height:
+                continue
+            shot = (int(video.width), int(video.height))
+            if shot != calibrated:
+                sizes[shot] = sizes.get(shot, 0) + 1
+        if not sizes:
+            return None
+        shot, count = max(sizes.items(), key=lambda item: item[1])
+        return count, f"{shot[0]}x{shot[1]}", f"{calibrated[0]}x{calibrated[1]}"
+
     def _survey_missing_models(self) -> list[str]:
         """Required-but-uncached models, judged against what the run will load.
 
@@ -2184,6 +2221,7 @@ class SimpleBatchMixin(MixinBase):
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
             unread_gravity=self._survey_unread_gravity(),
+            profile_resolution=self._survey_profile_resolution(),
             pass_count=len(self._survey_rows),
             missing_files=self._rows_without_footage(),
             unassigned=unassigned,

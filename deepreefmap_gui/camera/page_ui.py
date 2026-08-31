@@ -16,14 +16,23 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.camera.inventory import ProfileEntry, delete_profile, list_profiles
+from deepreefmap_gui.camera.inventory import (
+    ProfileEntry,
+    delete_profile,
+    export_profile,
+    import_profile,
+    list_profiles,
+)
 from deepreefmap_gui.camera.profiles import camera_profiles_dir
 from deepreefmap_gui.core.theme import GUTTER, PRIMARY, SPACE_SM, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
@@ -38,11 +47,21 @@ logger = logging.getLogger(__name__)
 
 INTRO = (
     "A profile undistorts the footage before it is mapped. The bundled ones cover the "
-    "cameras we ship with; calibrate a clip to add any other."
+    "cameras we ship with; calibrate a clip to add any other, or import one calibrated "
+    "on another laptop."
 )
 BUNDLED = "Bundled"
 CALIBRATED = "Calibrated here"
+IMPORTED = "Imported"
 _PREVIEW_WIDTH = 420
+_PROFILE_FILTER = "Camera profiles (*.json);;All files (*)"
+
+
+def _origin(entry: ProfileEntry) -> str:
+    """Where this profile came from, in one word."""
+    if not entry.local:
+        return BUNDLED
+    return IMPORTED if entry.imported else CALIBRATED
 
 
 def _facts(entry: ProfileEntry) -> str:
@@ -72,6 +91,8 @@ class CameraProfilesPanel(QWidget):
     """The profile list, its Calibrate button, and the delete beside each one."""
 
     changed = Signal()
+    # Named so a caller can select what just arrived, as the calibration does.
+    _imported = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -83,6 +104,11 @@ class CameraProfilesPanel(QWidget):
         intro = muted_label(INTRO)
         intro.setWordWrap(True)
         header.addWidget(intro, 1)
+        self._import = QPushButton("Import…")
+        self._import.setProperty("quiet", "true")
+        self._import.setToolTip("Add a profile calibrated on another laptop, from a file.")
+        self._import.clicked.connect(self._on_import)
+        header.addWidget(self._import, 0, Qt.AlignmentFlag.AlignTop)
         self._calibrate = QPushButton("Calibrate…")
         self._calibrate.setProperty("cta", "true")
         self._calibrate.setToolTip("Calibrate a new profile from a clip shot on the camera it describes.")
@@ -113,7 +139,10 @@ class CameraProfilesPanel(QWidget):
                 widget.deleteLater()
         for entry in list_profiles():
             self._cards.addWidget(self._card(entry))
-        self._location.setText(f"Profiles calibrated here are kept in {camera_profiles_dir()}")
+        self._location.setText(
+            f"Profiles are kept in {camera_profiles_dir()}. Set DEEPREEFMAP_CAMERA_PROFILES "
+            "to point this laptop at a shared folder instead."
+        )
 
     def _card(self, entry: ProfileEntry) -> QWidget:
         card, layout = section_card()
@@ -123,9 +152,15 @@ class CameraProfilesPanel(QWidget):
         name.setStyleSheet("font-weight: 600;")
         title.addWidget(name)
         chip = StatusChip()
-        chip.set_status(CALIBRATED if entry.local else BUNDLED, PRIMARY if entry.local else TEXT_MUTED)
+        chip.set_status(_origin(entry), PRIMARY if entry.local else TEXT_MUTED)
         title.addWidget(chip)
         title.addStretch(1)
+        if entry.local:
+            share = QPushButton("Export…")
+            share.setProperty("quiet", "true")
+            share.setToolTip("Write this profile to a file, to import on another laptop.")
+            share.clicked.connect(lambda _=False, e=entry: self._on_export(e))
+            title.addWidget(share)
         if entry.log is not None:
             log = QPushButton("Log")
             log.setProperty("quiet", "true")
@@ -135,7 +170,7 @@ class CameraProfilesPanel(QWidget):
         if entry.local:
             remove = QPushButton("Delete")
             remove.setProperty("quiet", "true")
-            remove.setToolTip("Remove this profile from this computer. Runs already made keep their own copy.")
+            remove.setToolTip("Remove this profile from this computer. Runs already made carry their own copy.")
             remove.clicked.connect(lambda _=False, e=entry: self._on_delete(e))
             title.addWidget(remove)
         layout.addLayout(title)
@@ -160,6 +195,51 @@ class CameraProfilesPanel(QWidget):
         layout.addSpacing(SPACE_SM)
         return card
 
+    def _on_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import camera profile", "", _PROFILE_FILTER)
+        if not path:
+            return
+        self._import_file(Path(path))
+
+    def _import_file(self, path: Path, name: str | None = None) -> None:
+        """Take the file, asking for another name when this one is taken.
+
+        A name already held by different content is a collision, not a mistake:
+        two laptops calibrating one rig both produce `hero12_dome`, and the one
+        already here was somebody's measurement too.
+        """
+        try:
+            entry = import_profile(path, name=name)
+        except FileExistsError as exc:
+            chosen, accepted = QInputDialog.getText(
+                self,
+                "Name taken",
+                f"This laptop already has a different {exc.args[0]}.\nImport it as:",
+                text=f"{exc.args[0]}_2",
+            )
+            if accepted and chosen.strip():
+                self._import_file(path, chosen.strip())
+            return
+        except Exception as exc:
+            logger.warning("Could not import the camera profile at %s: %s", path, exc)
+            QMessageBox.warning(self, "Import failed", f"{path.name} is not a camera profile.")
+            return
+        self.refresh()
+        self.changed.emit()
+        self._imported.emit(entry.name)
+
+    def _on_export(self, entry: ProfileEntry) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export camera profile", f"{entry.name}.json", _PROFILE_FILTER
+        )
+        if not path:
+            return
+        try:
+            export_profile(entry, Path(path))
+        except OSError as exc:
+            logger.warning("Could not export %s: %s", entry.name, exc)
+            QMessageBox.warning(self, "Export failed", str(exc))
+
     def _open_log(self, path: Path) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
@@ -175,8 +255,8 @@ class CameraProfilesPanel(QWidget):
         if not confirm(
             self,
             "Delete camera profile",
-            f"Delete {entry.name}? A run already made with it is unaffected; a new run "
-            "cannot use it until it is calibrated again.",
+            f"Delete {entry.name}? Runs already made carry their own copy of it; a new run "
+            "cannot use it until it is calibrated or imported again.",
         ):
             return
         try:

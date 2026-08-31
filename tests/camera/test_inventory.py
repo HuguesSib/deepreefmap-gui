@@ -6,12 +6,19 @@ distinction is tested on the values rather than through the page.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from deepreefmap.camera.intrinsics import CameraProfile
 
-from deepreefmap_gui.camera.inventory import delete_profile, list_profiles
-from deepreefmap_gui.camera.profiles import camera_profiles_dir, save_profile
+from deepreefmap_gui.camera.inventory import (
+    delete_profile,
+    export_profile,
+    import_profile,
+    list_profiles,
+)
+from deepreefmap_gui.camera.profiles import camera_profiles_dir, profile_payload, save_profile
 
 
 def _profile(name: str, **diagnostics) -> CameraProfile:
@@ -89,3 +96,83 @@ def test_a_calibrated_profile_shows_its_preview():
     (previews / "compare_000.png").write_bytes(b"")
 
     assert _named("field_cam").preview == previews / "compare_000.png"
+
+
+def test_an_imported_profile_says_so_rather_than_calibrated_here():
+    """A calibration leaves its previews and its log beside the profile; a file
+    brought from another laptop arrives on its own."""
+    exported = camera_profiles_dir().parent / "shared" / "hero12.json"
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    export_profile(_named("field_cam"), exported)
+    delete_profile(_named("field_cam"))
+
+    import_profile(exported)
+
+    entry = _named("field_cam")
+    assert entry.local
+    assert entry.imported
+
+
+def test_a_calibrated_profile_is_not_marked_imported():
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    (camera_profiles_dir() / "field_cam_diagnostics").mkdir(parents=True, exist_ok=True)
+
+    assert not _named("field_cam").imported
+
+
+def test_a_round_trip_through_a_file_preserves_the_calibration():
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    exported = camera_profiles_dir().parent / "usb" / "field_cam.json"
+
+    export_profile(_named("field_cam"), exported)
+
+    assert json.loads(exported.read_text()) == json.loads((camera_profiles_dir() / "field_cam.json").read_text())
+
+
+def test_importing_the_same_content_again_is_a_no_op():
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    exported = camera_profiles_dir().parent / "usb" / "field_cam.json"
+    export_profile(_named("field_cam"), exported)
+
+    entry = import_profile(exported)
+
+    assert entry.name == "field_cam"
+    assert len([e for e in list_profiles() if e.name == "field_cam"]) == 1
+
+
+def test_a_name_held_by_different_content_is_a_collision():
+    """Two laptops calibrating one rig both produce the same name, and the one
+    already here was somebody's measurement too."""
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    other = camera_profiles_dir().parent / "usb" / "field_cam.json"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    theirs = _profile("field_cam")
+    theirs.k[0][0] = 2048.0
+    other.write_text(json.dumps(profile_payload(theirs), indent=2))
+
+    with pytest.raises(FileExistsError, match="field_cam"):
+        import_profile(other)
+
+
+def test_a_collision_imports_under_the_name_it_is_given():
+    save_profile(_profile("field_cam"), camera_profiles_dir())
+    other = camera_profiles_dir().parent / "usb" / "field_cam.json"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    theirs = _profile("field_cam")
+    theirs.k[0][0] = 2048.0
+    other.write_text(json.dumps(profile_payload(theirs), indent=2))
+
+    entry = import_profile(other, name="field_cam_2")
+
+    assert entry.name == "field_cam_2"
+    assert entry.focal_px == pytest.approx(2048.0)
+    assert _named("field_cam").focal_px == pytest.approx(1035.0)
+
+
+def test_a_file_that_is_not_a_profile_is_refused():
+    junk = camera_profiles_dir().parent / "junk.json"
+    junk.parent.mkdir(parents=True, exist_ok=True)
+    junk.write_text('{"hello": "world"}')
+
+    with pytest.raises(KeyError):
+        import_profile(junk)
