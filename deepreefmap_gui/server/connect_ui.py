@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.spinner import BusySpinner
 from deepreefmap_gui.core.theme import ERROR, TEXT_MUTED, WEIGHT_SEMIBOLD
 from deepreefmap_gui.core.widgets import muted_label
-from deepreefmap_gui.sync.connect_code import CODE_PREFIX, ConnectCodeError, decode_connect_code
+from deepreefmap_gui.sync.connect_code import CODE_SCHEMA, ConnectCodeError, decode_connect_code
 
 TITLE = "Connect to server"
 
@@ -41,7 +41,10 @@ CONNECTING = "Connecting…"
 
 # The address the code carries, shown before the button works.
 SERVER_LABEL = "Connects to"
-UNREADABLE = "That is not a connect code."
+
+# The shape of a valid code, beside the box rather than only inside it: a placeholder
+# disappears at the first keystroke, which is when it starts being useful.
+SCHEMA_NOTE = f"Format: {CODE_SCHEMA}"
 
 
 class ConnectDialog(QDialog):
@@ -65,10 +68,14 @@ class ConnectDialog(QDialog):
         self._code_edit = QPlainTextEdit()
         # Multiline: a code is a couple of hundred characters and arrives wrapped
         # out of an email or a chat window.
-        self._code_edit.setPlaceholderText(f"{CODE_PREFIX}…")
+        self._code_edit.setPlaceholderText(CODE_SCHEMA)
         self._code_edit.setFixedHeight(88)
         self._code_edit.textChanged.connect(self._sync_connect_enabled)
         layout.addWidget(self._code_edit)
+
+        schema = muted_label(SCHEMA_NOTE)
+        schema.setWordWrap(True)
+        layout.addWidget(schema)
 
         self._server = QLabel("")
         self._server.setWordWrap(True)
@@ -150,8 +157,10 @@ class ConnectDialog(QDialog):
 
         try:
             code = decode_connect_code(typed)
-        except ConnectCodeError:
-            self._say(UNREADABLE, bad=True)
+        except ConnectCodeError as exc:
+            # The decoder already names the fault, and the faults differ in what they
+            # ask of the reader: re-copy, update the app, ask for an https address.
+            self._say(str(exc), bad=True)
             self._connect_btn.setEnabled(False)
             return
 
