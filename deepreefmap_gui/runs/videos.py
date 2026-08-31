@@ -571,7 +571,7 @@ class VideoLibraryMixin(MixinBase):
             hidden=self._hidden_clip_ids.__contains__,
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
-        self._refresh_clip_archive_affordance()
+        self._refresh_archive_affordances()
         self._refresh_video_chips()
         self._refresh_video_actions()
         self._refresh_video_detail()
@@ -872,17 +872,26 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail.setVisible(True)
         self._maybe_refresh_archive_badges()
 
-    def _refresh_clip_archive_affordance(self) -> None:
-        """Offer the clip rows their archive button only once there is a server.
+    def _refresh_archive_affordances(self, connected: bool | None = None) -> None:
+        """Offer the archive controls only once there is a registry to send to.
 
-        Called wherever the server's state is read: a button that sends a clip
-        nowhere is worse than no button.
+        Every pane that carries one, together: the clip rows, the clip and pass
+        detail panes and the run card's menu. A control that sends footage
+        nowhere is worse than no control.
+
+        `connected` is passed by a caller that has just read the server state,
+        so the status bar's own refresh does not pay for a second read.
         """
+        if connected is None:
+            connected = self._server_is_connected()
         listing = getattr(self, "_video_list", None)
-        if listing is None:
-            return
-        listing.set_server_connected(self._server_is_connected())
-        self._paint_clip_row_archive_buttons()
+        if listing is not None:
+            listing.set_server_connected(connected)
+            self._paint_clip_row_archive_buttons()
+        for name in ("_video_detail", "_section_detail", "_run_detail"):
+            pane = getattr(self, name, None)
+            if pane is not None:
+                pane.set_server_connected(connected)
 
     def _server_is_connected(self) -> bool:
         from deepreefmap_gui.server import state as server_state

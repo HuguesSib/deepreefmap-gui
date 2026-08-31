@@ -986,6 +986,12 @@ class ServerPageMixin(MixinBase):
         if getattr(self, "_sync_badge_rerun", False):
             self._sync_badge_rerun = False
             self._refresh_sync_badge()
+        # Every archive control in the app hangs off the same credential this
+        # badge does, so they are offered and withdrawn together, and enrolling
+        # or disconnecting reaches them without leaving the page.
+        self._refresh_archive_affordances(
+            self._sync_badge_state is not None and self._sync_badge_state.connected
+        )
         # The badge state is read from disk and says nothing about the network,
         # so the address it just produced is what the probe is aimed at.
         self._probe_server()

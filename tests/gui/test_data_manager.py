@@ -626,12 +626,32 @@ def test_a_run_whose_data_went_cannot_have_its_command_copied(out_root, make_win
     assert "gone" in copy.toolTip()
 
 
+def test_the_archive_action_is_absent_without_a_registry(out_root, make_window):
+    """Expected behaviour: nothing in the app offers to send footage anywhere
+    until this laptop is connected to a registry."""
+    write_survey_run(out_root, "recorded")
+    window = make_window()
+
+    select_run(window, row_of(window, "recorded"))
+
+    assert not window._run_detail.menu_actions["archive"].isVisible()
+
+
+def enrol(window) -> None:
+    """Connect this laptop to a registry, so the archive controls are offered."""
+    from deepreefmap_gui.sync import credentials
+
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+    window._refresh_archive_affordances()
+
+
 def test_archive_is_offered_only_on_a_recorded_finished_run(out_root, make_window):
     """The registry catalogues artefacts against the run row, so a folder-only
     run has nothing to hang them off."""
     write_run(out_root, "folder_only")
     write_survey_run(out_root, "recorded")
     window = make_window()
+    enrol(window)
     archive = window._run_detail.menu_actions["archive"]
 
     select_run(window, row_of(window, "folder_only"))
@@ -649,6 +669,7 @@ def test_a_failed_run_cannot_be_archived(out_root, make_window):
     store.set_run_status(run.id, "failed", "ran out of memory")
     store.close()
     window = make_window()
+    enrol(window)
 
     select_run(window, 0)
     archive = window._run_detail.menu_actions["archive"]
@@ -659,6 +680,7 @@ def test_a_failed_run_cannot_be_archived(out_root, make_window):
 def test_a_run_whose_data_went_cannot_be_archived(out_root, make_window, monkeypatch):
     write_survey_run(out_root, "kept_record")
     window = make_window()
+    enrol(window)
     select_run(window, 0)
     archive = window._run_detail.menu_actions["archive"]
     assert archive.isEnabled()

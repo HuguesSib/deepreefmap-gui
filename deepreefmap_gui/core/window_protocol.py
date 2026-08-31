@@ -444,6 +444,7 @@ if TYPE_CHECKING:
         def _archive_state_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin
         def _archive_note_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin
         def _paint_archive_badges(self) -> None: ...  # VideoLibraryMixin
+        def _refresh_archive_affordances(self, connected: bool | None = None) -> None: ...  # VideoLibraryMixin
         def _apply_sync_badge(self, state: object) -> None: ...  # ServerPageMixin
         def _probe_server(self, force: bool = False) -> None: ...  # ServerPageMixin
         def _apply_server_reachability(self, reading: object) -> None: ...  # ServerPageMixin

@@ -345,6 +345,9 @@ class RunDetailPanel(DetailCard):
         self.menu_actions = self._fill_run_actions(menu)
         self.menu_actions["copy_command"].setIcon(copy_icon(ICON_SM))
         self.menu_actions["show_log"].setIcon(log_icon())
+        # Off the menu until a registry is enrolled: an action that sends a run
+        # nowhere is worse than no action.
+        self.menu_actions["archive"].setVisible(False)
         self.more_btn.setMenu(menu)
 
         self.add_actions(self.open_btn, self.more_btn)
@@ -354,6 +357,10 @@ class RunDetailPanel(DetailCard):
         item = cast(QLayoutItem, self.body.itemAt(self.body.count() - 1))
         cast(QHBoxLayout, item.layout()).insertWidget(1, self.log_btn)
         self._entry: RunEntry | None = None
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Offer the archive action only where there is a registry to send to."""
+        self.menu_actions["archive"].setVisible(connected)
 
     def _run_action_specs(self) -> tuple[tuple[str, str, object], ...]:
         """Everything the menu offers on this run, in one list."""

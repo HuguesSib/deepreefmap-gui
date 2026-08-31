@@ -185,8 +185,14 @@ class RunRow(QWidget):
         self.setToolTip(tooltip)
         self.archive_btn = icon_button(upload_icon(), ARCHIVE_RUN, ARCHIVE_RUN_TOOLTIP)
         self.archive_btn.clicked.connect(self._on_archive_clicked)
+        # Hidden until a registry is enrolled, like the clip rows' own.
+        self.archive_btn.setVisible(False)
         row.addWidget(self.archive_btn)
         self.set_archive_state(None)
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Offer this run's archive button only where there is a registry."""
+        self.archive_btn.setVisible(connected)
 
     def text(self) -> str:
         """The whole line, however much of it the pane has room to draw."""
@@ -278,6 +284,8 @@ class SectionDetailPanel(DetailCard):
 
         self._pass: TransectPass | None = None
         self._run_rows: list[RunRow] = []
+        # No registry until the window says there is one.
+        self._server_connected = False
 
     def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
         """Everything the menu offers on this pass, in one list.
@@ -326,6 +334,17 @@ class SectionDetailPanel(DetailCard):
 
     def run_rows(self) -> list[RunRow]:
         return list(self._run_rows)
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Show or hide every run row's archive button, now and on rebuild.
+
+        Remembered rather than pushed once: the rows are rebuilt on every
+        section shown, and a new row must not arrive carrying a button the
+        window has already said there is no server for.
+        """
+        self._server_connected = connected
+        for row in self._run_rows:
+            row.set_server_connected(connected)
 
     def paint_archive_states(
         self,
@@ -388,6 +407,7 @@ class SectionDetailPanel(DetailCard):
         for run in sorted(runs, key=lambda r: r.created_at or "", reverse=True):
             name = session_name(run.batch_id) or _NO_SESSION
             row = RunRow(run, name, run.error or run.run_dir_name)
+            row.set_server_connected(self._server_connected)
             row.activated.connect(self.run_activated)
             row.archive_requested.connect(self.archive_run_requested)
             item = QListWidgetItem()

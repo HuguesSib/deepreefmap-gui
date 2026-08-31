@@ -779,6 +779,69 @@ def test_an_archive_press_stays_on_the_row_that_made_it(window, qapp, monkeypatc
     assert "Outputs on server" in row.archive_btn.toolTip()
 
 
+def test_no_archive_control_is_offered_without_a_registry(window):
+    """Scenario: a laptop that has never been connected to a registry.
+
+    Expected behaviour: nothing anywhere offers to send footage or outputs to a
+    server, on the clip rows, in either detail pane, or in the run card's menu.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010080.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    row = window._video_list.rows()[str(video.id)]
+    assert not row.archive_btn.isVisibleTo(row)
+    assert not window._video_detail.archive_btn.isVisibleTo(window._video_detail)
+    run_row = window._section_detail.run_rows()[0]
+    assert not run_row.archive_btn.isVisibleTo(run_row)
+    assert not window._run_detail.menu_actions["archive"].isVisible()
+
+
+def test_connecting_a_registry_offers_them_all(window):
+    """The other half: enrolling puts the same controls back, without the pane
+    being rebuilt or the page left."""
+    from deepreefmap_gui.sync import credentials
+
+    store = window._survey_store()
+    video = _seed(store, "GX010081.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_)
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+    window._refresh_archive_affordances()
+
+    row = window._video_list.rows()[str(video.id)]
+    assert row.archive_btn.isVisibleTo(row)
+    assert window._video_detail.archive_btn.isVisibleTo(window._video_detail)
+    run_row = window._section_detail.run_rows()[0]
+    assert run_row.archive_btn.isVisibleTo(run_row)
+    assert window._run_detail.menu_actions["archive"].isVisible()
+
+
+def test_a_pass_shown_after_connecting_carries_the_button(window):
+    """A rebuilt row must not arrive without the button the window has already
+    said there is a server for."""
+    from deepreefmap_gui.sync import credentials
+
+    store = window._survey_store()
+    video = _seed(store, "GX010082.MP4")
+    pass_ = _cut(store, video)
+    _seed_run(store, pass_)
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    run_row = window._section_detail.run_rows()[0]
+    assert run_row.archive_btn.isVisibleTo(run_row)
+
+
 def test_a_run_whose_outputs_are_gone_says_so_on_its_row(window, qapp, monkeypatch):
     from deepreefmap_gui.sync import client as client_mod
     from deepreefmap_gui.sync import credentials

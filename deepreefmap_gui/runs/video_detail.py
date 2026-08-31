@@ -146,6 +146,9 @@ class VideoDetailPanel(DetailCard):
         # field uplink is never spent by accident.
         self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
         self.archive_btn.clicked.connect(self._emit_archive)
+        # Hidden until a registry is enrolled: a button that sends a clip
+        # nowhere is worse than no button.
+        self.archive_btn.setVisible(False)
         heading_row.addWidget(self.archive_btn)
         # Cutting a section belongs to the list it adds to, not to the bottom of
         # the card: the same + the clip's own row carries, in the same blue.
@@ -266,6 +269,10 @@ class VideoDetailPanel(DetailCard):
     def select_section(self, pass_id: str | None) -> None:
         """Highlight the pass the page is showing below, or none."""
         self.pass_list.set_selected(pass_id)
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Offer the archive button only where there is a registry to send to."""
+        self.archive_btn.setVisible(connected)
 
     def clear(self) -> None:
         super().clear()
