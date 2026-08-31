@@ -891,8 +891,8 @@ def test_a_site_another_laptop_made_is_not_editable_here(window):
     assert w._tr_edit_site_btn.toolTip() == READ_ONLY_NOTE
 
 
-def test_a_validated_site_offers_no_edit_from_the_form(window):
-    """The console settled it, so the laptop stops pursuing changes to it."""
+def test_a_validated_site_is_still_editable_from_the_form(window):
+    """The edit stands, and the button says a curator decides what becomes of it."""
     from deepreefmap_gui.survey.ownership import VALIDATED_NOTE
 
     w = window
@@ -901,11 +901,11 @@ def test_a_validated_site_offers_no_edit_from_the_form(window):
     w._refresh_site_choices()
     w._set_form_site(site.id)
 
-    assert not w._tr_edit_site_btn.isEnabled()
+    assert w._tr_edit_site_btn.isEnabled()
     assert w._tr_edit_site_btn.toolTip() == VALIDATED_NOTE
 
 
-def test_a_validated_transect_cannot_be_edited_here(window):
+def test_a_validated_transect_is_still_editable_here(window):
     w = window
     site = pick_site(w)
     transect = make_transect("T1", site_id=site.id)
@@ -913,4 +913,4 @@ def test_a_validated_transect_cannot_be_edited_here(window):
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
 
-    assert w._transect_is_read_only(transect.id)
+    assert not w._transect_is_read_only(transect.id)

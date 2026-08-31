@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -558,7 +559,8 @@ class SimplePlanMixin(MixinBase):
         self._tr_length.setToolTip("Tape length measured underwater. Scales the run when set.")
         self._tr_depth = OptionalMetresSpinBox(100.0)
         self._tr_depth.setToolTip(
-            "Depth of the transect. Fills in as the mean of the two end depths when left unset."
+            "Depth of the transect: the mean of the two end depths, or a single "
+            "reading where the ends were never recorded."
         )
         grid.addWidget(_field_label("Length"), 5, 0)
         grid.addWidget(self._tr_length, 5, 1)
@@ -1071,6 +1073,7 @@ class SimplePlanMixin(MixinBase):
         self._tr_depth.setValue(transect.depth_m or 0.0)
         self._tr_start_depth.setValue(transect.start_depth_m or 0.0)
         self._tr_end_depth.setValue(transect.end_depth_m or 0.0)
+        self._sync_depth_from_ends()
         self._tr_start_accuracy.setValue(transect.start_accuracy_m or 0.0)
         self._tr_end_accuracy.setValue(transect.end_accuracy_m or 0.0)
         self._set_form_site(transect.site_id)
@@ -1108,6 +1111,7 @@ class SimplePlanMixin(MixinBase):
         self._tr_depth.setValue(0.0)
         self._tr_start_depth.setValue(0.0)
         self._tr_end_depth.setValue(0.0)
+        self._sync_depth_from_ends()
         self._tr_start_accuracy.setValue(0.0)
         self._tr_end_accuracy.setValue(0.0)
         self._tr_lock_note.setText("")
@@ -1164,13 +1168,26 @@ class SimplePlanMixin(MixinBase):
         )
 
     def _on_depth_ends_edited(self) -> None:
-        # A blank depth follows the ends; a typed one is the diver's own reading
-        # and stays.
-        if self._tr_depth.value() == 0.0:
-            mean = mean_depth_m(self._tr_start_depth.value() or None, self._tr_end_depth.value() or None)
-            if mean is not None:
-                self._tr_depth.setValue(mean)
+        self._sync_depth_from_ends()
         self._maybe_autosave()
+
+    def _sync_depth_from_ends(self) -> None:
+        """Depth follows the two ends wherever both are recorded.
+
+        A line measured at each end has one depth and it is their mean, so the
+        box states it rather than offering a third number that can disagree.
+        The ends are what the registry derives it from too. Where an end is
+        missing, the box is the only place the depth can come from and stays
+        editable: that is how the historical sheets read.
+        """
+        mean = mean_depth_m(self._tr_start_depth.value() or None, self._tr_end_depth.value() or None)
+        derived = mean is not None
+        if mean is not None:
+            self._tr_depth.setValue(mean)
+        self._tr_depth.setReadOnly(derived)
+        self._tr_depth.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons if derived else QAbstractSpinBox.ButtonSymbols.UpDownArrows
+        )
 
     def _on_transect_save(self) -> None:
         store = self._survey_store()

@@ -26,7 +26,7 @@ from deepreefmap_gui.survey.models import (
     VideoAsset,
 )
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
-from deepreefmap_gui.sync import contract, wire
+from deepreefmap_gui.sync import connect_code, contract, wire
 from deepreefmap_gui.sync.client import CONTRACT_VERSION
 
 
@@ -64,6 +64,15 @@ def test_every_constant_is_read_out_of_the_artefact(artefact) -> None:
     assert tuple(artefact["pull_sections"]) == contract.PULL_SECTIONS
     range_ = f"{artefact['min_contract_version']}-{artefact['contract_version']}"
     assert range_ == contract.CONTRACT_RANGE
+
+
+def test_the_connect_code_prefix_comes_out_of_the_artefact(artefact) -> None:
+    """The prefix is repeated in the registry and the console, so nothing here may
+    hand-type it: a bump lands in one file and this catches a stale copy."""
+    published = artefact["connect_code"]
+    assert published["prefix"] == contract.CONNECT_CODE_PREFIX
+    assert published["prefix"] == f"{contract.CONNECT_CODE_FAMILY}{contract.CONNECT_CODE_VERSION}."
+    assert connect_code.CODE_PREFIX == contract.CONNECT_CODE_PREFIX
 
 
 def test_the_client_re_exports_the_derived_version() -> None:
@@ -136,3 +145,11 @@ def test_a_transect_row_carries_the_depth_at_each_end() -> None:
     table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
     names = {column["name"] for column in table["columns"]}
     assert {"depth_m", "start_depth_m", "end_depth_m"} <= names
+
+
+def test_the_registry_derives_the_depth_from_the_two_ends() -> None:
+    """So a laptop holding a stale mean is not in conflict with one that has both
+    ends, and the figure this app shows is the one the registry will hold."""
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
+    derived = {column["name"] for column in table["columns"] if column.get("derived")}
+    assert derived == {"depth_m"}
