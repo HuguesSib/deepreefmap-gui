@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QDialog
 
 from deepreefmap_gui.camera import calibration_dialog as module
 from deepreefmap_gui.camera.calibration import CalibrationError
-from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog
+from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog, overall_fraction
 from deepreefmap_gui.camera.profiles import available_profile_names, camera_profiles_dir, save_profile
 
 STAGES = ("sampling", "extracting", "matching", "reconstructing", "diagnostics")
@@ -218,10 +218,9 @@ def test_the_window_is_picked_by_watching_the_clip(qapp, monkeypatch, clip):
             return 12.0, 48.0
 
     monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
+    monkeypatch.setattr(module, "decoded_length", lambda _: (120.0, 30.0))
     dialog = CalibrationDialog(None, initial_video=clip)
-    dialog._duration_s = 120.0
-    dialog._refresh_scrub_state()
-    assert dialog._scrub.isEnabled()
+    assert dialog._scrub.isEnabled(), "picking a clip must offer the picker"
 
     dialog._scrub.click()
 
@@ -248,12 +247,56 @@ def test_a_window_running_to_the_end_stays_saying_so(qapp, monkeypatch, clip):
             return 5.0, 120.0
 
     monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
+    monkeypatch.setattr(module, "decoded_length", lambda _: (120.0, 30.0))
     dialog = CalibrationDialog(None, initial_video=clip)
-    dialog._duration_s = 120.0
-    dialog._refresh_scrub_state()
 
     dialog._scrub.click()
 
     assert dialog._begin.value() == 5.0
     assert dialog._end.value() == 0.0
     assert dialog._end.text() == "end of clip"
+
+
+def test_a_clip_the_container_cannot_read_is_decoded_for_its_length(qapp, monkeypatch, clip):
+    """The container parser reads MP4 atoms and nothing else, so a clip from
+    another camera would otherwise never offer the picker."""
+    monkeypatch.setattr(module, "decoded_length", lambda _: (90.0, 25.0))
+
+    dialog = CalibrationDialog(None, initial_video=clip)
+
+    assert dialog._duration_s == 90.0
+    assert dialog._scrub.isEnabled()
+    assert "90 s" in dialog._clip_note.text()
+
+
+def test_a_clip_nothing_can_measure_says_why_the_picker_is_off(qapp, monkeypatch, clip):
+    monkeypatch.setattr(module, "decoded_length", lambda _: None)
+
+    dialog = CalibrationDialog(None, initial_video=clip)
+
+    assert not dialog._scrub.isEnabled()
+    assert "length" in dialog._scrub.toolTip()
+
+
+def test_the_overall_bar_runs_across_every_stage(qapp):
+    """One bar per stage restarts five times and never says how far in the run is."""
+    assert overall_fraction("sampling", 0, 100) == 0.0
+    assert overall_fraction("sampling", 100, 100) == pytest.approx(0.10)
+    assert overall_fraction("extracting", 50, 100) == pytest.approx(0.225)
+    assert overall_fraction("matching", 100, 100) == pytest.approx(0.65)
+    assert overall_fraction("diagnostics", 1, 1) == pytest.approx(1.0)
+    assert overall_fraction("something else", 1, 1) == 0.0
+
+
+def test_the_overall_bar_does_not_fall_back_when_a_reconstruction_is_dropped(qapp, monkeypatch, clip):
+    """COLMAP discards a reconstruction it cannot grow and counts frames again
+    from two. The stage bar follows it; the overall bar has still moved on."""
+    monkeypatch.setattr(module, "decoded_length", lambda _: (120.0, 30.0))
+    dialog = CalibrationDialog(None, initial_video=clip)
+
+    dialog._on_progress("reconstructing", 40, 100)
+    high = dialog._overall.value()
+    dialog._on_progress("reconstructing", 2, 100)
+
+    assert dialog._overall.value() == high
+    assert dialog._bar.value() == 2

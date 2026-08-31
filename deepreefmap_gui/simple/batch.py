@@ -297,24 +297,14 @@ def _style_missing_cell(button: QPushButton) -> None:
 
 
 def _probe_video(path: str) -> tuple[float, float] | None:
-    """(duration_s, fps) via cv2, or None when the file cannot be decoded.
+    """(duration_s, fps) by decoding, or None when the file cannot be read.
 
     Opening and measuring a 4 GB clip off an SD card takes long enough to freeze
     the window, which is why _add_video_paths hands this to a worker thread.
     """
-    import cv2
+    from deepreefmap_gui.io.video_length import decoded_length
 
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        return None
-    try:
-        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-    finally:
-        cap.release()
-    if not fps or fps <= 0 or not frames or frames <= 0:
-        return None
-    return float(frames) / float(fps), float(fps)
+    return decoded_length(path)
 
 
 def _clip_time(mtime: str | None) -> str:

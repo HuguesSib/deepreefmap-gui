@@ -47,6 +47,7 @@ from deepreefmap_gui.camera.calibration import (
 )
 from deepreefmap_gui.camera.profiles import available_profile_names, camera_profiles_dir
 from deepreefmap_gui.core.widgets import muted_label, secondary_label
+from deepreefmap_gui.io.video_length import decoded_length
 from deepreefmap_gui.survey.video_probe import probe_metadata
 from deepreefmap_gui.system.log_view import LogView, QtLogHandler, close_run_log_file, open_run_log_file
 
@@ -67,10 +68,40 @@ STAGE_TEXT = {
 # Reconstruction counts frames it has placed rather than frames it has been
 # through, so it is phrased as a tally and not as progress towards the total.
 _TALLY_STAGES = ("reconstructing",)
+
+# Roughly what each stage costs of a whole calibration, measured on a 100 frame
+# run: sampling and the previews are quick, the three COLMAP stages are the wait.
+# It only has to be close: the point is a bar that keeps moving forwards, not a
+# prediction.
+_STAGE_SHARE = {
+    "sampling": 0.10,
+    "extracting": 0.25,
+    "matching": 0.30,
+    "reconstructing": 0.30,
+    "diagnostics": 0.05,
+}
+_OVERALL_TICKS = 1000
 _VIDEO_FILTER = "Videos (*.mp4 *.MP4 *.mov *.MOV);;All files (*)"
 LOG_NAME = "calibration.log"
 LAST_LOG_NAME = "last-calibration.log"
 _PREVIEW_WIDTH = 560
+
+
+def overall_fraction(stage: str, done: int, total: int) -> float:
+    """How far through the whole calibration a stage's own progress puts it.
+
+    A stage nobody weighed counts as finished from the stages before it, which
+    keeps an unknown message from dragging the bar backwards.
+    """
+    if stage not in _STAGE_SHARE:
+        return 0.0
+    before = 0.0
+    for name, share in _STAGE_SHARE.items():
+        if name == stage:
+            within = (done / total) if total > 0 else 0.0
+            return before + share * min(1.0, max(0.0, within))
+        before += share
+    return before
 
 
 class CalibrationDialog(QDialog):
@@ -160,6 +191,15 @@ class CalibrationDialog(QDialog):
         hint = secondary_label(PARALLAX_HINT)
         hint.setWordWrap(True)
         root.addWidget(hint)
+
+        # Two bars: the whole calibration, and the stage in hand. One alone is
+        # either a bar that restarts five times or a bar that never says what is
+        # happening.
+        self._overall = QProgressBar()
+        self._overall.setRange(0, _OVERALL_TICKS)
+        self._overall.setValue(0)
+        self._overall.setFormat("%p%")
+        root.addWidget(self._overall)
 
         self._stage = muted_label("")
         root.addWidget(self._stage)
@@ -347,17 +387,25 @@ class CalibrationDialog(QDialog):
             return
         meta = probe_metadata(Path(text))
         notes = []
-        self._duration_s = float(meta.duration_s or 0.0)
-        if meta.duration_s:
-            notes.append(f"{meta.duration_s:.0f} s")
-            self._end.setMaximum(float(meta.duration_s))
-            self._begin.setMaximum(float(meta.duration_s))
+        # The container is asked first because it costs a millisecond. A clip it
+        # cannot read is decoded instead, or the window could never be picked by
+        # watching it.
+        duration = float(meta.duration_s or 0.0)
+        if duration <= 0.0:
+            decoded = decoded_length(text)
+            duration = decoded[0] if decoded else 0.0
+        self._duration_s = duration
+        if duration > 0.0:
+            notes.append(f"{duration:.0f} s")
+            self._end.setMaximum(duration)
+            self._begin.setMaximum(duration)
         if meta.resolution:
             notes.append(meta.resolution)
         self._clip_note.setText(", ".join(notes))
         if not self._name.text().strip():
             self._name.setText(Path(text).stem.lower().replace(" ", "_")[:24])
         self._refresh_start_state()
+        self._refresh_scrub_state()
 
     def _start_log(self, diagnostics_dir: Path) -> None:
         """Send this run's lines to the panel and to a file beside the profile.
@@ -420,6 +468,7 @@ class CalibrationDialog(QDialog):
         end = float(self._end.value()) or None
         n_frames = int(self._frames.value())
         fps = int(self._fps.value())
+        self._overall.setValue(0)
         self._start_log(staging / f"{name}_diagnostics")
         self._show_running()
         self._sig_progress.emit("sampling", 0, n_frames)
@@ -454,6 +503,11 @@ class CalibrationDialog(QDialog):
             self._bar.setValue(done)
         else:
             self._bar.setRange(0, 0)
+        # Never backwards: COLMAP drops a reconstruction it cannot grow and
+        # starts the count again, which is progress through the stage even though
+        # the tally fell.
+        ticks = round(overall_fraction(stage, done, total) * _OVERALL_TICKS)
+        self._overall.setValue(max(self._overall.value(), ticks))
 
     @staticmethod
     def _stage_text(stage: str, done: int, total: int) -> str:
