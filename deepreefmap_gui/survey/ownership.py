@@ -1,13 +1,15 @@
 """Who may change a catalogue row on this laptop.
 
-A row made here is this laptop's until the console validates it. A row another
-laptop made is read-only here. A row the console authored can still be edited,
-and the registry keeps the change as a proposal for a curator.
+A row another laptop made is read-only here: it is that laptop's to correct.
+Everything else is editable, including a row the console authored and a row a
+curator has validated. The registry decides what becomes of the change:
+`/api/sync/push` records an edit to a validated or console-owned row as a
+proposal, and a curator accepts or dismisses it.
 
-Validation ends the conversation: once a curator has stamped a row, it is
-changed in the console and nowhere else. The laptop shows what it holds and
-offers no edit, rather than sending proposals against a row somebody has
-already settled.
+Validation is not the end of the conversation. A depth measured after the
+review, a name corrected on the boat, a clip verdict that changed: the laptop
+sends it and the console sees it, rather than the field losing its only way to
+say so.
 """
 
 from __future__ import annotations
@@ -19,7 +21,10 @@ VALIDATED = "validated"
 PROPOSAL = "proposal"
 
 READ_ONLY_NOTE = "Made on another laptop, so it cannot be changed here."
-VALIDATED_NOTE = "Validated in the console, so it is changed there from now on."
+VALIDATED_NOTE = (
+    "Validated in the console. A change made here is sent as a proposal for a "
+    "curator to accept."
+)
 CONSOLE_NOTE = (
     "Made in the console. A change made here is sent as a proposal for a curator "
     "to accept."
@@ -29,9 +34,9 @@ CONSOLE_NOTE = (
 def lock_state(row: Any, own_device_id: str | None) -> str | None:
     """Why this laptop may not freely change a row, or None when it may.
 
-    OTHER_DEVICE and VALIDATED are both read-only here and differ only in what
-    they say; ``read_only`` is the question most callers are asking. PROPOSAL is
-    editable, with the change decided by a curator.
+    OTHER_DEVICE is the only read-only state; ``read_only`` is the question most
+    callers are asking. VALIDATED and PROPOSAL are both editable, with the change
+    decided by a curator.
     """
     owner = getattr(row, "device_id", None)
     if owner is not None and str(owner) != (own_device_id or ""):
@@ -44,8 +49,8 @@ def lock_state(row: Any, own_device_id: str | None) -> str | None:
 
 
 def read_only(row: Any, own_device_id: str | None) -> bool:
-    """Whether this laptop must leave a row alone: another laptop's, or validated."""
-    return lock_state(row, own_device_id) in (OTHER_DEVICE, VALIDATED)
+    """Whether this laptop must leave a row alone: only another laptop's."""
+    return lock_state(row, own_device_id) == OTHER_DEVICE
 
 
 def lock_note(row: Any, own_device_id: str | None) -> str:

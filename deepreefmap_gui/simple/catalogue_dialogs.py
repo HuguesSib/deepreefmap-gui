@@ -227,9 +227,10 @@ def combo_id(combo: QComboBox) -> uuid.UUID | None:
 def arm_edit(button: QToolButton, row: object | None, tooltip: str) -> None:
     """Offer the edit beside a catalogue box, where there is one to offer.
 
-    A row another laptop authored, or one the console has validated, is not
-    editable here, and the button says which rather than disappearing: a control
-    that comes and goes is harder to read than one that explains itself.
+    A row another laptop authored is not editable here, and the button says so
+    rather than disappearing: a control that comes and goes is harder to read
+    than one that explains itself. A validated or console-authored row is
+    editable, and the tooltip says a curator decides what becomes of the change.
     """
     if row is None:
         button.setEnabled(False)

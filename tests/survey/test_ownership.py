@@ -62,31 +62,29 @@ def test_a_console_row_is_editable_and_goes_up_as_a_proposal():
     assert lock_note(row, MINE) == CONSOLE_NOTE
 
 
-def test_a_validated_row_is_read_only_here():
-    """Scenario: a curator has stamped the row in the console.
+def test_a_validated_row_is_still_editable_here():
+    """Scenario: a curator has stamped the row, and a depth is measured after.
 
-    Expected behaviour: the laptop stops offering an edit rather than sending a
-    proposal against something already settled.
+    Expected behaviour: the laptop offers the edit and says where it goes. The
+    registry records a push against a validated row as a proposal.
     """
     row = a_row(device_id=None, head_seq=12, validated_at="2026-08-20T00:00:00+00:00")
 
     assert lock_state(row, MINE) == VALIDATED
-    assert read_only(row, MINE)
+    assert not read_only(row, MINE)
     assert lock_note(row, MINE) == VALIDATED_NOTE
 
 
-def test_validation_locks_a_row_this_laptop_made():
-    """Authorship does not survive validation: a site made in the field is the
-    console's to change once a curator has accepted it."""
+def test_validation_leaves_a_row_this_laptop_made_editable():
     row = a_row(device_id=uuid.UUID(MINE), validated_at="2026-08-20T00:00:00+00:00")
 
-    assert read_only(row, MINE)
+    assert not read_only(row, MINE)
     assert lock_note(row, MINE) == VALIDATED_NOTE
 
 
-def test_another_laptop_outranks_validation_in_what_it_says():
-    """Both are read-only, so only the sentence differs. The nearer reason wins:
-    it is not this laptop's row in the first place."""
+def test_another_laptop_outranks_validation():
+    """The nearer reason wins: it is not this laptop's row in the first place,
+    which is read-only where validation is not."""
     row = a_row(device_id=uuid.uuid4(), validated_at="2026-08-20T00:00:00+00:00")
 
     assert lock_state(row, MINE) == OTHER_DEVICE
