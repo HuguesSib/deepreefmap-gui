@@ -102,9 +102,12 @@ def copy_profile_into_run(name: str, run_dir: Path) -> dict[str, str]:
     profile takes the only record of what the run was rectified with.
 
     Returns the manifest fields naming what was written, or an empty dict when
-    there was nothing to write. Never raises: losing the record must not lose
-    the run.
+    there was nothing to write. A profile the registry published carries its
+    calibration id too, which is what ties the run to the measurement a curator
+    can open. Never raises: losing the record must not lose the run.
     """
+    from deepreefmap_gui.camera.registry import materialised_from
+
     try:
         profile = load_profile(name)
         payload = json.dumps(profile_payload(profile), indent=2)
@@ -114,7 +117,13 @@ def copy_profile_into_run(name: str, run_dir: Path) -> dict[str, str]:
         # Hashed over the bytes on disk rather than the dict, so the digest is of
         # the file a reader can check rather than of a value only we can rebuild.
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        # Read now rather than at push time: the file this run was rectified with
+        # is the one sitting there at launch, and a later pull may replace it.
+        calibration_id = materialised_from(camera_profiles_dir(), name)
     except Exception:
         logger.warning("Could not copy the camera profile into %s", run_dir, exc_info=True)
         return {}
-    return {"camera_profile_file": RUN_PROFILE_NAME, "camera_profile_sha256": digest}
+    recorded = {"camera_profile_file": RUN_PROFILE_NAME, "camera_profile_sha256": digest}
+    if calibration_id:
+        recorded["camera_calibration_id"] = calibration_id
+    return recorded

@@ -341,6 +341,30 @@ def test_the_configuration_a_run_processed_at_comes_out_of_the_manifest(tmp_path
     assert provenance["preprocess_batch_size"] == 8
 
 
+def test_the_calibration_a_run_used_travels_with_it(tmp_path):
+    """A run rectified with a profile the registry published names it, so a
+    curator opens the measurement rather than a name that means one thing here."""
+    run = seed_manifest(
+        tmp_path,
+        camera_profile="gopro_hero_10",
+        camera_calibration_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["camera_profile"] == "gopro_hero_10"
+    assert provenance["camera_calibration_id"] == "11111111-1111-4111-8111-111111111111"
+
+
+def test_a_locally_calibrated_run_names_no_calibration(tmp_path):
+    run = seed_manifest(tmp_path, camera_profile="field_cam")
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["camera_profile"] == "field_cam"
+    assert provenance["camera_calibration_id"] is None
+
+
 def test_a_manifest_from_before_the_configuration_was_recorded_reads_as_nulls(tmp_path):
     """An older run still pushes everything else it knows."""
     run = seed_manifest(tmp_path)

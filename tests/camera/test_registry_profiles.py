@@ -15,7 +15,7 @@ import pytest
 from deepreefmap.camera.intrinsics import CameraProfile as LibraryProfile
 
 from deepreefmap_gui.camera.inventory import list_profiles
-from deepreefmap_gui.camera.profiles import camera_profiles_dir, save_profile
+from deepreefmap_gui.camera.profiles import camera_profiles_dir, copy_profile_into_run, save_profile
 from deepreefmap_gui.camera.registry import materialise_pulled, materialised_from
 from deepreefmap_gui.survey.models import CameraCalibration, CameraProfile
 from deepreefmap_gui.survey.store import SurveyStore
@@ -121,3 +121,22 @@ def test_a_materialised_profile_names_the_calibration_it_came_from(store):
 
 def test_a_survey_that_never_synced_has_nothing_to_write(store):
     assert materialise_pulled(store) == []
+
+
+def test_a_run_names_the_calibration_the_registry_gave_it(store, tmp_path):
+    """The id is what ties a run to a measurement a curator can open."""
+    calibration_id = publish(store, "gopro_hero_10")
+    materialise_pulled(store)
+
+    recorded = copy_profile_into_run("gopro_hero_10", tmp_path / "run")
+
+    assert recorded["camera_calibration_id"] == str(calibration_id)
+
+
+def test_a_locally_calibrated_profile_names_no_registry_calibration(tmp_path):
+    save_profile(local_profile("field_cam"), camera_profiles_dir())
+
+    recorded = copy_profile_into_run("field_cam", tmp_path / "run")
+
+    assert recorded["camera_profile_file"]
+    assert "camera_calibration_id" not in recorded

@@ -62,6 +62,9 @@ class RunRecord:
     # and crop width the run used, the metres per pixel that gave, and how the
     # scale was established.
     camera_profile: str | None = None
+    # The registry calibration the profile file came from, when it came from
+    # there at all: a profile calibrated on this laptop has no registry id.
+    camera_calibration_id: str | None = None
     pixel_size_m: float | None = None
     scale_type: str | None = None
     transect_length_m: float | None = None

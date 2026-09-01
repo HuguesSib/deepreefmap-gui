@@ -134,6 +134,7 @@ _PROVENANCE_FIELDS = (
     "stage_durations",
     "stage_peaks",
     "camera_profile",
+    "camera_calibration_id",
     "pixel_size_m",
     "scale_type",
     "transect_length_m",
@@ -407,6 +408,7 @@ def provenance_from_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     # The scale the cover was measured at. The tape length and crop width are the
     # ones the run used, which may differ from the transect's current reading.
     provenance["camera_profile"] = _text(manifest.get("camera_profile"))
+    provenance["camera_calibration_id"] = _text(manifest.get("camera_calibration_id"))
     provenance["pixel_size_m"] = _seconds(manifest.get("pixel_size_m"))
     provenance["scale_type"] = _text(manifest.get("scale_type"))
     transect = _block(manifest, "transect")
