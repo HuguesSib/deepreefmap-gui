@@ -140,3 +140,25 @@ def test_a_locally_calibrated_profile_names_no_registry_calibration(tmp_path):
 
     assert recorded["camera_profile_file"]
     assert "camera_calibration_id" not in recorded
+
+
+def test_a_registry_copy_says_where_it_came_from(store):
+    publish(store, "hero12_dome")
+    materialise_pulled(store)
+
+    entry = next(e for e in list_profiles() if e.name == "hero12_dome")
+
+    assert entry.from_registry
+    assert not entry.imported
+    assert not entry.shadows_bundled
+
+
+def test_a_registry_copy_of_a_bundled_name_says_it_stands_in_front_of_it(store):
+    """The pipeline ships gopro_hero_10; a published calibration of that name is
+    what runs here resolve, and the page has to say so."""
+    publish(store, "gopro_hero_10", focal=999.0)
+    materialise_pulled(store)
+
+    entry = next(e for e in list_profiles() if e.name == "gopro_hero_10")
+
+    assert entry.shadows_bundled

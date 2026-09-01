@@ -205,17 +205,35 @@ def test_publishing_is_offered_only_once_a_registry_is_enrolled(panel):
 
     panel.set_server_connected(True)
 
-    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 1
+    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 2
 
     panel.set_server_connected(False)
 
     assert [b for b in panel.findChildren(QPushButton) if b.text() == "Publish"] == []
 
 
-def test_a_bundled_profile_is_not_ours_to_publish(panel):
+def test_a_bundled_profile_is_published_to_bring_the_registry_up_to_the_pipeline(panel):
+    """The registry learns the profiles the pipeline ships from a laptop running
+    it: a newer install is what knows what the current set is."""
     panel.set_server_connected(True)
 
-    assert [b for b in panel.findChildren(QPushButton) if b.text() == "Publish"] == []
+    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 1
+
+
+def test_a_profile_the_registry_gave_this_laptop_is_neither_published_nor_deleted(panel):
+    """It came from there; a copy sent back and a delete undone by the next pull
+    are both noise."""
+    save_profile(_profile("hero12_dome"), camera_profiles_dir())
+    (camera_profiles_dir() / "hero12_dome.from-registry").write_text(
+        "11111111-1111-4111-8111-111111111111", encoding="utf-8"
+    )
+    panel.set_server_connected(True)
+    panel.refresh()
+
+    buttons = [b.text() for b in panel.findChildren(QPushButton)]
+    assert buttons.count("Publish") == 1, "the bundled one only"
+    assert "Delete" not in buttons
+    assert module.FROM_REGISTRY in _text(panel)
 
 
 def test_what_the_registry_answered_is_said_on_the_page(panel):

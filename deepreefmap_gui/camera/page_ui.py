@@ -54,6 +54,11 @@ INTRO = (
 BUNDLED = "Bundled"
 CALIBRATED = "Calibrated here"
 IMPORTED = "Imported"
+FROM_REGISTRY = "From the registry"
+SHADOWS_BUNDLED = (
+    "The registry's calibration of this name is the one runs use here. The pipeline "
+    "ships a different one under the same name."
+)
 _PREVIEW_WIDTH = 420
 _PROFILE_FILTER = "Camera profiles (*.json);;All files (*)"
 
@@ -62,6 +67,8 @@ def _origin(entry: ProfileEntry) -> str:
     """Where this profile came from, in one word."""
     if not entry.local:
         return BUNDLED
+    if entry.from_registry:
+        return FROM_REGISTRY
     return IMPORTED if entry.imported else CALIBRATED
 
 
@@ -163,15 +170,17 @@ class CameraProfilesPanel(QWidget):
         name.setStyleSheet("font-weight: 600;")
         title.addWidget(name)
         chip = StatusChip()
-        chip.set_status(_origin(entry), PRIMARY if entry.local else TEXT_MUTED)
+        made_here = entry.local and not entry.from_registry
+        chip.set_status(_origin(entry), PRIMARY if made_here else TEXT_MUTED)
         title.addWidget(chip)
         title.addStretch(1)
-        if entry.local and self._connected:
+        if self._connected and not entry.from_registry and not entry.error:
             publish = QPushButton("Publish")
             publish.setProperty("quiet", "true")
             publish.setToolTip(
                 "Send this calibration to the registry, so the console can give it to "
-                "every laptop that shoots on this camera."
+                "every laptop that shoots on this camera. A bundled profile published "
+                "this way is how the registry catches up with the pipeline."
             )
             publish.clicked.connect(lambda _=False, e=entry: self._on_publish(e))
             title.addWidget(publish)
@@ -187,7 +196,7 @@ class CameraProfilesPanel(QWidget):
             log.setToolTip("What the calibration did, and what COLMAP made of the clip.")
             log.clicked.connect(lambda _=False, path=entry.log: self._open_log(path))
             title.addWidget(log)
-        if entry.local:
+        if entry.local and not entry.from_registry:
             remove = QPushButton("Delete")
             remove.setProperty("quiet", "true")
             remove.setToolTip("Remove this profile from this computer. Runs already made carry their own copy.")
@@ -200,6 +209,8 @@ class CameraProfilesPanel(QWidget):
             return card
 
         layout.addWidget(muted_label(_facts(entry)))
+        if entry.shadows_bundled:
+            layout.addWidget(secondary_label(SHADOWS_BUNDLED))
         provenance = _provenance(entry)
         if provenance:
             layout.addWidget(secondary_label(provenance))

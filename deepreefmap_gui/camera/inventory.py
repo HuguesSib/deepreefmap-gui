@@ -38,6 +38,12 @@ class ProfileEntry:
     preview: Path | None = None
     log: Path | None = None
     imported: bool = False
+    # The registry calibration this file was written from, when it came from
+    # there rather than from a calibration or an import on this machine.
+    from_registry: str = ""
+    # A registry copy standing in front of a bundled profile of the same name
+    # that says something different. The registry's is the one runs use.
+    shadows_bundled: bool = False
     error: str = ""
 
     @property
@@ -61,13 +67,37 @@ def _preview(directory: Path, name: str) -> Path | None:
     return next(iter(sorted(diagnostics.glob("compare_*"))), None)
 
 
+def _bundled_document(name: str) -> dict | None:
+    """The profile of this name the pipeline ships, where it ships one.
+
+    Read from the package rather than through the library's resolver, which
+    answers with the file in ``camera_profiles_dir`` when there is one.
+    """
+    try:
+        from importlib.resources import files
+
+        resource = files("deepreefmap.resources.camera_profiles") / f"{name}.json"
+        return json.loads(resource.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _entry(name: str, directory: Path) -> ProfileEntry:
+    from deepreefmap_gui.camera.registry import materialised_from
+
     local_path = directory / f"{name}.json"
     local = local_path.is_file()
+    from_registry = materialised_from(directory, name) if local else ""
     try:
         profile = load_profile(name)
     except Exception as exc:
-        return ProfileEntry(name=name, local=local, path=local_path if local else None, error=str(exc))
+        return ProfileEntry(
+            name=name,
+            local=local,
+            path=local_path if local else None,
+            from_registry=from_registry,
+            error=str(exc),
+        )
     diagnostics = profile.diagnostics or {}
     registered = None
     if diagnostics.get("n_registered_images") is not None:
@@ -90,7 +120,12 @@ def _entry(name: str, directory: Path) -> ProfileEntry:
         reprojection_error_px=float(error) if error is not None else None,
         preview=_preview(directory, name) if local else None,
         log=_log(directory, name) if local else None,
-        imported=local and not (directory / f"{name}_diagnostics").is_dir(),
+        imported=local
+        and not from_registry
+        and not (directory / f"{name}_diagnostics").is_dir(),
+        from_registry=from_registry,
+        shadows_bundled=bool(from_registry)
+        and _bundled_document(name) not in (None, profile_payload(profile)),
     )
 
 
