@@ -1132,6 +1132,9 @@ class InterfaceShellMixin(MixinBase):
                         "section": "browse",
                     }
                 )
+            # What the registry published becomes files a run can resolve, before
+            # the form enumerates profile names from the directory.
+            self._write_registry_camera_profiles(store)
         self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, latest_schema_version())
         return store
 

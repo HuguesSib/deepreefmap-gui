@@ -65,11 +65,20 @@ def profile_payload(profile: CameraProfile) -> dict[str, object]:
 
 
 def save_profile(profile: CameraProfile, directory: Path) -> Path:
-    """Write ``<directory>/<name>.json`` in the library's format."""
+    """Write ``<directory>/<name>.json`` in the library's format.
+
+    A calibration or an import under this name makes the file this laptop's
+    own, so any registry marker on it is cleared: the next pull must not
+    replace a local measurement, and a run made with it must not be attributed
+    to the registry calibration the file used to be.
+    """
+    from deepreefmap_gui.camera.registry import MARKER_SUFFIX
+
     intrinsics.validate_profile_name(profile.name)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{profile.name}.json"
     path.write_text(json.dumps(profile_payload(profile), indent=2), encoding="utf-8")
+    (directory / f"{profile.name}{MARKER_SUFFIX}").unlink(missing_ok=True)
     return path
 
 

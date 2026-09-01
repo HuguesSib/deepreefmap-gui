@@ -69,6 +69,42 @@ def materialise_pulled(store) -> list[str]:
             logger.warning("Could not write the camera profile %s", profile.name, exc_info=True)
             continue
         written.append(profile.name)
+    _remove_withdrawn(directory, profiles, store)
     if written:
         logger.info("Wrote camera profiles from the registry: %s", ", ".join(written))
     return written
+
+
+def _remove_withdrawn(directory: Path, profiles, store) -> None:
+    """Take back a materialised profile the registry no longer stands behind.
+
+    Only files carrying a marker are touched: the marker is what says this
+    laptop did not make them. And only on evidence of withdrawal, a tombstoned
+    profile or one whose calibrations were all tombstoned. A name this survey's
+    store simply does not hold is left alone: the profiles directory is
+    machine-wide and another survey's sync may have written it.
+    """
+    for marker in directory.glob(f"*{MARKER_SUFFIX}"):
+        name = marker.name.removesuffix(MARKER_SUFFIX)
+        if not _withdrawn(store, name):
+            continue
+        try:
+            (directory / f"{name}.json").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove the withdrawn profile %s", name, exc_info=True)
+            continue
+        logger.info("Removed the withdrawn camera profile %s", name)
+
+
+def _withdrawn(store, name: str) -> bool:
+    try:
+        row = store.camera_profile_by_name(name)
+    except Exception:
+        logger.warning("Could not read the camera profile %s", name, exc_info=True)
+        return False
+    if row is None:
+        return False
+    if row.deleted_at:
+        return True
+    return store.newest_camera_calibration(row.id) is None

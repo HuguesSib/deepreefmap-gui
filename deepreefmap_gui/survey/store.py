@@ -2172,6 +2172,19 @@ class SurveyStore:
         ).fetchall()
         return [from_row(CameraProfile, r) for r in rows]
 
+    def camera_profile_by_name(self, name: str) -> CameraProfile | None:
+        """The profile row of this name, tombstoned or not.
+
+        Tombstones included deliberately: a materialised file is only taken back
+        on evidence of withdrawal, and the tombstone is that evidence.
+        """
+        row = self._conn().execute(
+            "SELECT * FROM camera_profile WHERE LOWER(name) = LOWER(?) "
+            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        return from_row(CameraProfile, row) if row is not None else None
+
     def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
         """The latest measurement of one profile, which is what a run should use."""
         row = self._conn().execute(

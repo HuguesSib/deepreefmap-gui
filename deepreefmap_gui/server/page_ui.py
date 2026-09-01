@@ -1165,6 +1165,10 @@ class ServerPageMixin(MixinBase):
         # After the pull has landed, so it sees the preset row and the
         # assignment in whichever order the registry delivered them.
         self._offer_preset_model_downloads(store)
+        # After the pull for the same reason: a preset naming a profile that
+        # arrived in this same exchange must find the file on disk.
+        if store is not None:
+            self._write_registry_camera_profiles(store)
         # A pull rewrites the survey underneath every list drawn from it, and
         # every box that offers a choice out of it.
         self._refresh_site_choices()

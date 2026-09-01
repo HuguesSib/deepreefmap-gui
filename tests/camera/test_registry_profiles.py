@@ -162,3 +162,46 @@ def test_a_registry_copy_of_a_bundled_name_says_it_stands_in_front_of_it(store):
     entry = next(e for e in list_profiles() if e.name == "gopro_hero_10")
 
     assert entry.shadows_bundled
+
+
+def test_calibrating_over_a_registry_name_makes_the_file_this_laptops_own(store, tmp_path):
+    """The marker goes with the overwrite: the next pull must not replace a
+    local measurement, and a run must not be attributed to the registry
+    calibration the file used to be."""
+    publish(store, "hero12_dome")
+    materialise_pulled(store)
+
+    save_profile(local_profile("hero12_dome"), camera_profiles_dir())
+
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == ""
+    assert materialise_pulled(store) == [], "the pull replaced a local calibration"
+    recorded = copy_profile_into_run("hero12_dome", tmp_path / "run")
+    assert "camera_calibration_id" not in recorded
+
+
+def test_a_withdrawn_calibration_takes_its_file_back(store):
+    publish(store, "hero12_dome")
+    materialise_pulled(store)
+    profile = store.camera_profile_by_name("hero12_dome")
+    calibration = store.newest_camera_calibration(profile.id)
+    calibration.deleted_at = "2026-09-01T10:00:00+00:00"
+    store._update("camera_calibration", calibration)
+
+    materialise_pulled(store)
+
+    assert not (camera_profiles_dir() / "hero12_dome.json").exists()
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == ""
+
+
+def test_a_name_this_survey_never_pulled_is_left_alone(store):
+    """The profiles directory is machine-wide; another survey's sync wrote it."""
+    other = SurveyStore(store.path.parent / "other.db")
+    try:
+        publish(other, "hero12_dome")
+        materialise_pulled(other)
+
+        materialise_pulled(store)
+
+        assert (camera_profiles_dir() / "hero12_dome.json").exists()
+    finally:
+        other.close()
