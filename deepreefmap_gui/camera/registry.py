@@ -35,8 +35,23 @@ def materialised_from(directory: Path, name: str) -> str:
         return ""
 
 
+def deployed_calibration(store, profile):
+    """The calibration this laptop should hold for a profile.
+
+    The one the registry deploys, where it deploys one and that measurement is
+    still live here; otherwise the newest, which is what a profile following the
+    newest means and where a deployment withdrawn behind our back falls back to
+    rather than stranding the rig.
+    """
+    if profile.current_calibration_id:
+        pinned = store.camera_calibration(profile.current_calibration_id)
+        if pinned is not None:
+            return pinned
+    return store.newest_camera_calibration(profile.id)
+
+
 def materialise_pulled(store) -> list[str]:
-    """Write the registry's newest calibration per profile, and say what changed.
+    """Write the calibration the registry deploys per profile, and say what changed.
 
     A name held by a local calibration is skipped: this laptop measured that rig
     and the file it wrote is the one its runs were rectified with.
@@ -49,7 +64,7 @@ def materialise_pulled(store) -> list[str]:
     directory = camera_profiles_dir()
     written: list[str] = []
     for profile in profiles:
-        calibration = store.newest_camera_calibration(profile.id)
+        calibration = deployed_calibration(store, profile)
         if calibration is None or not calibration.document:
             continue
         path = directory / f"{profile.name}.json"
@@ -107,4 +122,4 @@ def _withdrawn(store, name: str) -> bool:
         return False
     if row.deleted_at:
         return True
-    return store.newest_camera_calibration(row.id) is None
+    return deployed_calibration(store, row) is None

@@ -887,6 +887,13 @@ _MIGRATIONS: list[Migration] = [
         "a run names the calibration it was rectified with",
         "ALTER TABLE run_record ADD COLUMN camera_calibration_id TEXT;",
     ),
+    # Which calibration the registry deploys for a rig. Null follows the newest,
+    # which is what a profile no curator has deployed has always done.
+    Migration(
+        23,
+        "a camera profile names the calibration it deploys",
+        "ALTER TABLE camera_profile ADD COLUMN current_calibration_id TEXT;",
+    ),
 ]
 
 
@@ -2185,8 +2192,16 @@ class SurveyStore:
         ).fetchone()
         return from_row(CameraProfile, row) if row is not None else None
 
+    def camera_calibration(self, calibration_id: uuid.UUID) -> CameraCalibration | None:
+        """One live measurement by id, whichever version it is."""
+        row = self._conn().execute(
+            "SELECT * FROM camera_calibration WHERE id = ? AND deleted_at IS NULL",
+            (str(calibration_id),),
+        ).fetchone()
+        return from_row(CameraCalibration, row) if row is not None else None
+
     def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
-        """The latest measurement of one profile, which is what a run should use."""
+        """The latest measurement of one profile, deployed where none is named."""
         row = self._conn().execute(
             "SELECT * FROM camera_calibration WHERE camera_profile_id = ? "
             "AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",

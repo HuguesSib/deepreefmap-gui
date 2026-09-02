@@ -71,6 +71,13 @@ def publish(store: SurveyStore, name: str, *, version: int = 1, focal: float = 1
     return calibration.id
 
 
+def deploy(store: SurveyStore, name: str, calibration_id: uuid.UUID | None) -> None:
+    """What a curator's choice looks like once it has been pulled down."""
+    profile = next(p for p in store.list_camera_profiles() if p.name == name)
+    profile.current_calibration_id = calibration_id
+    store._update("camera_profile", profile)
+
+
 def test_a_pulled_calibration_becomes_a_file_a_run_can_resolve(store):
     publish(store, "hero12_dome")
 
@@ -205,3 +212,103 @@ def test_a_name_this_survey_never_pulled_is_left_alone(store):
         assert (camera_profiles_dir() / "hero12_dome.json").exists()
     finally:
         other.close()
+
+
+def test_the_calibration_the_registry_deploys_is_the_one_written(store):
+    """Publishing stages a measurement; only deploying puts it on the laptops."""
+    first = publish(store, "hero12_dome", focal=1243.0)
+    publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", first)
+
+    materialise_pulled(store)
+
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["distorted"]["params"]["fx"] == 1243.0
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(first)
+
+
+def test_deploying_a_newer_calibration_replaces_the_file(store):
+    first = publish(store, "hero12_dome", focal=1243.0)
+    second = publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", first)
+    materialise_pulled(store)
+
+    deploy(store, "hero12_dome", second)
+    written = materialise_pulled(store)
+
+    assert written == ["hero12_dome"]
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["distorted"]["params"]["fx"] == 1301.0
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(second)
+
+
+def test_deploying_an_older_calibration_takes_the_laptop_back(store):
+    """Rolling back is deploying backwards, and a run made after it says so."""
+    first = publish(store, "hero12_dome", focal=1243.0)
+    second = publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", second)
+    materialise_pulled(store)
+
+    deploy(store, "hero12_dome", first)
+    materialise_pulled(store)
+
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["distorted"]["params"]["fx"] == 1243.0
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(first)
+
+
+def test_a_run_names_the_calibration_the_registry_deploys(store, tmp_path):
+    first = publish(store, "hero12_dome", focal=1243.0)
+    publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", first)
+    materialise_pulled(store)
+
+    recorded = copy_profile_into_run("hero12_dome", tmp_path / "run")
+
+    assert recorded["camera_calibration_id"] == str(first)
+
+
+def test_a_profile_that_deploys_nothing_still_takes_the_newest(store):
+    publish(store, "hero12_dome", focal=1243.0)
+    second = publish(store, "hero12_dome", version=2, focal=1301.0)
+
+    materialise_pulled(store)
+
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(second)
+
+
+def test_a_deployment_withdrawn_behind_our_back_falls_back_to_the_newest(store):
+    """A laptop is never stranded by a measurement the registry took away."""
+    first = publish(store, "hero12_dome", focal=1243.0)
+    second = publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", first)
+    withdrawn = store.camera_calibration(first)
+    withdrawn.deleted_at = "2026-09-01T00:00:00Z"
+    store._update("camera_calibration", withdrawn)
+
+    materialise_pulled(store)
+
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(second)
+
+
+def test_a_deployment_this_laptop_has_not_pulled_falls_back_to_the_newest(store):
+    newest = publish(store, "hero12_dome", focal=1243.0)
+    deploy(store, "hero12_dome", uuid.uuid4())
+
+    materialise_pulled(store)
+
+    assert materialised_from(camera_profiles_dir(), "hero12_dome") == str(newest)
+
+
+def test_a_locally_calibrated_profile_is_left_alone_when_a_deployment_moves(store):
+    first = publish(store, "hero12_dome", focal=1243.0)
+    second = publish(store, "hero12_dome", version=2, focal=1301.0)
+    deploy(store, "hero12_dome", first)
+    save_profile(local_profile("hero12_dome"), camera_profiles_dir())
+
+    deploy(store, "hero12_dome", second)
+    written = materialise_pulled(store)
+
+    assert written == []
+    on_disk = json.loads((camera_profiles_dir() / "hero12_dome.json").read_text())
+    assert on_disk["rectified_pinhole"]["image_size"] == [1920, 1440]

@@ -24,6 +24,8 @@ class CameraProfile:
 
     name: str
     description: str = ""
+    # The calibration laptops run this rig under. None follows the newest.
+    current_calibration_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)

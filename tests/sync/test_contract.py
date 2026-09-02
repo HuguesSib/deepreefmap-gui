@@ -171,3 +171,12 @@ def test_a_calibration_row_carries_the_document_a_run_needs() -> None:
     names = {column["name"] for column in table["columns"]}
 
     assert {"camera_profile_id", "version", "document"} <= names
+
+
+def test_a_profile_row_names_the_calibration_it_deploys() -> None:
+    """Which measurement a rig runs under is the registry's to decide, so it has
+    to reach the laptop that resolves the name."""
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "camera_profiles")
+    names = {column["name"] for column in table["columns"]}
+
+    assert "current_calibration_id" in names
