@@ -17,6 +17,7 @@ def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> N
     second attempt at the same clip reuses the frames the first one prepared."""
     from deepreefmap.pipeline import resume as resume_mod
 
+    from deepreefmap_gui.camera.profiles import copy_profile_into_run
     from deepreefmap_gui.io.classes_default import resolve_classes_path
     from deepreefmap_gui.runs.seeding import seed_from_settings
 
@@ -40,6 +41,7 @@ def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> N
         processing_height=window._proc_height_spin.value(),
     )
     resume_mod.write_sidecar(prior, resume_mod.STAGE_PREPROCESS, prep_key)
+    copy_profile_into_run(window._profile_combo.currentText(), prior)
 
     out_dir = tmp_path / "runs" / "20260102-000000"
     out_dir.mkdir()

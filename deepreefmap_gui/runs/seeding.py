@@ -73,7 +73,9 @@ def seed_from_settings(
     """
     try:
         prep_key = preprocess_key_for_settings(settings, video_paths, begin_s, end_s)
-        seeded = seed_run_dir_from_match(output_dir, search_root, prep_key)
+        seeded = seed_run_dir_from_match(
+            output_dir, search_root, prep_key, settings["camera_profile_name"]
+        )
     except Exception:
         logger.warning("Cache seeding failed; running from scratch", exc_info=True)
         return None
@@ -97,6 +99,44 @@ def seeded_stages(output_dir: Path, seeded: Path | None) -> frozenset[str]:
     return frozenset(stages)
 
 
+def _profile_document(name: str) -> dict | None:
+    """The calibration this run will be rectified with, or None where it will not load.
+
+    Read once per seeding rather than per candidate: it is the file the run itself
+    is about to open, and a scan that re-read it could straddle a pull replacing it.
+    """
+    from deepreefmap_gui.camera.profiles import load_profile, profile_payload
+
+    try:
+        return profile_payload(load_profile(name))
+    except Exception:
+        return None
+
+
+def _same_calibration(cand: Path, expected: dict, name: str) -> bool:
+    """Whether a candidate run was rectified with the calibration this run will use.
+
+    Compared as documents rather than digests, because the profile a pull writes
+    and the copy a run keeps are the same measurement serialised by different
+    writers. A candidate that recorded nothing cannot show what it used and is
+    refused: a recompute costs an afternoon, wrong intrinsics cost the survey.
+    """
+    from deepreefmap_gui.camera.profiles import run_profile_document
+
+    held = run_profile_document(cand)
+    if held is None:
+        logger.debug("Not seeding from %s: it recorded no camera profile", cand.name)
+        return False
+    if held != expected:
+        logger.info(
+            "Not seeding from %s: it was rectified with a different %s calibration",
+            cand.name,
+            name,
+        )
+        return False
+    return True
+
+
 def _link_or_copy(src: Path, dst: Path) -> None:
     try:
         os.link(src, dst)
@@ -104,9 +144,22 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def seed_run_dir_from_match(output_dir: Path, search_root: Path, prep_key: str) -> Path | None:
-    """Seed a fresh run dir from the newest sibling with a matching preprocess key."""
+def seed_run_dir_from_match(
+    output_dir: Path, search_root: Path, prep_key: str, camera_profile_name: str
+) -> Path | None:
+    """Seed a fresh run dir from the newest sibling with a matching preprocess key.
+
+    The key names the camera profile but not the calibration behind it, so a
+    sibling that ran before the registry rotated that name matches on the key
+    while holding frames rectified with different intrinsics. Hence the profile
+    document check: it is the difference between reusing frames and reusing the
+    wrong ones under this run's calibration id.
+    """
     if read_sidecar(output_dir, STAGE_PREPROCESS) is not None:
+        return None
+    expected = _profile_document(camera_profile_name)
+    if expected is None:
+        logger.warning("Not seeding: the camera profile %s did not load", camera_profile_name)
         return None
     try:
         candidates = [d for d in search_root.iterdir() if d.is_dir() and d != output_dir]
@@ -118,6 +171,8 @@ def seed_run_dir_from_match(output_dir: Path, search_root: Path, prep_key: str) 
         if sidecar is None or sidecar.get("key") != prep_key:
             continue
         if not (cand / "frames").is_dir():
+            continue
+        if not _same_calibration(cand, expected, camera_profile_name):
             continue
         matches.append((_sidecar_path(cand, STAGE_PREPROCESS).stat().st_mtime, cand))
     if not matches:

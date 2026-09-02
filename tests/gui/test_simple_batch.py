@@ -1546,6 +1546,7 @@ def test_survey_worker_seeds_from_a_matching_run(batch_window, tmp_path, out_roo
     """A pass of a clip another run already preprocessed skips preprocessing."""
     from deepreefmap.pipeline import resume as resume_mod
 
+    from deepreefmap_gui.camera.profiles import copy_profile_into_run
     from deepreefmap_gui.runs.seeding import preprocess_key_for_settings
 
     clip = add_video(batch_window, tmp_path, monkeypatch)
@@ -1555,8 +1556,10 @@ def test_survey_worker_seeds_from_a_matching_run(batch_window, tmp_path, out_roo
     for dirname in ("frames", "labels", "masks"):
         (prior / dirname).mkdir(parents=True)
         (prior / dirname / "000000.png").write_bytes(b"data")
-    key = preprocess_key_for_settings(batch_window._collect_run_settings(), [clip], 0.0, 60.0)
+    settings = batch_window._collect_run_settings()
+    key = preprocess_key_for_settings(settings, [clip], 0.0, 60.0)
     resume_mod.write_sidecar(prior, resume_mod.STAGE_PREPROCESS, key)
+    copy_profile_into_run(settings["camera_profile_name"], prior)
 
     seen = []
     monkeypatch.setattr(

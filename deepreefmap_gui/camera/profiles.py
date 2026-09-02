@@ -136,3 +136,16 @@ def copy_profile_into_run(name: str, run_dir: Path) -> dict[str, str]:
     if calibration_id:
         recorded["camera_calibration_id"] = calibration_id
     return recorded
+
+
+def run_profile_document(run_dir: Path) -> dict | None:
+    """The calibration a finished or abandoned run was rectified with.
+
+    Written at launch by `copy_profile_into_run`, so a run that crashed still
+    says what it used. Returns None where a run recorded nothing, which is every
+    run made before the profile was copied in. Never raises.
+    """
+    try:
+        return json.loads((run_dir / RUN_PROFILE_NAME).read_text(encoding="utf-8"))
+    except Exception:
+        return None
