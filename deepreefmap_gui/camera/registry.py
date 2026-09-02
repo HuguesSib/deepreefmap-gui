@@ -38,10 +38,8 @@ def materialised_from(directory: Path, name: str) -> str:
 def deployed_calibration(store, profile):
     """The calibration this laptop should hold for a profile.
 
-    The one the registry deploys, where it deploys one and that measurement is
-    still live here; otherwise the newest, which is what a profile following the
-    newest means and where a deployment withdrawn behind our back falls back to
-    rather than stranding the rig.
+    The one the registry deploys where that measurement is live here, otherwise
+    the newest. A profile deploying nothing follows the newest.
     """
     if profile.current_calibration_id:
         pinned = store.camera_calibration(profile.current_calibration_id)

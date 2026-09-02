@@ -86,8 +86,8 @@ def test_a_matching_attempt_of_the_same_calibration_is_reused(tmp_path, settings
 
 
 def test_a_rotated_calibration_is_not_reused(tmp_path, settings, video):
-    """The registry replacing a profile behind a stable name is the whole hazard:
-    the key still matches, and those frames were rectified with the old lens."""
+    """A registry rotation behind a stable name leaves the key matching while the
+    frames on disk were rectified with the old lens."""
     save_profile(profile(), camera_profiles_dir())
     root = tmp_path / "runs"
     prior_run(root, video, settings)

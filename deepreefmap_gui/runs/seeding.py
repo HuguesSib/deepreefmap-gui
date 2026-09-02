@@ -102,8 +102,7 @@ def seeded_stages(output_dir: Path, seeded: Path | None) -> frozenset[str]:
 def _profile_document(name: str) -> dict | None:
     """The calibration this run will be rectified with, or None where it will not load.
 
-    Read once per seeding rather than per candidate: it is the file the run itself
-    is about to open, and a scan that re-read it could straddle a pull replacing it.
+    Read once per seeding: a pull may replace the file mid-scan.
     """
     from deepreefmap_gui.camera.profiles import load_profile, profile_payload
 
@@ -116,10 +115,8 @@ def _profile_document(name: str) -> dict | None:
 def _same_calibration(cand: Path, expected: dict, name: str) -> bool:
     """Whether a candidate run was rectified with the calibration this run will use.
 
-    Compared as documents rather than digests, because the profile a pull writes
-    and the copy a run keeps are the same measurement serialised by different
-    writers. A candidate that recorded nothing cannot show what it used and is
-    refused: a recompute costs an afternoon, wrong intrinsics cost the survey.
+    Documents rather than digests: a pull and a run copy serialise the same
+    measurement differently. A candidate that recorded none is refused.
     """
     from deepreefmap_gui.camera.profiles import run_profile_document
 
@@ -149,11 +146,8 @@ def seed_run_dir_from_match(
 ) -> Path | None:
     """Seed a fresh run dir from the newest sibling with a matching preprocess key.
 
-    The key names the camera profile but not the calibration behind it, so a
-    sibling that ran before the registry rotated that name matches on the key
-    while holding frames rectified with different intrinsics. Hence the profile
-    document check: it is the difference between reusing frames and reusing the
-    wrong ones under this run's calibration id.
+    The key names the camera profile but not the calibration behind it, so the
+    profile document is checked too.
     """
     if read_sidecar(output_dir, STAGE_PREPROCESS) is not None:
         return None

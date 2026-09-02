@@ -139,11 +139,9 @@ def copy_profile_into_run(name: str, run_dir: Path) -> dict[str, str]:
 
 
 def run_profile_document(run_dir: Path) -> dict | None:
-    """The calibration a finished or abandoned run was rectified with.
+    """The calibration a run was rectified with, or None where it recorded none.
 
-    Written at launch by `copy_profile_into_run`, so a run that crashed still
-    says what it used. Returns None where a run recorded nothing, which is every
-    run made before the profile was copied in. Never raises.
+    Written at launch, so a run that crashed still says what it used.
     """
     try:
         return json.loads((run_dir / RUN_PROFILE_NAME).read_text(encoding="utf-8"))
