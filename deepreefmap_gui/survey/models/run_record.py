@@ -58,11 +58,27 @@ class RunRecord:
     run_duration_s: float | None = None
     stage_durations: dict[str, Any] | None = None
     stage_peaks: dict[str, Any] | None = None
+    # The scale the cover was measured at: the camera profile, the tape length
+    # and crop width the run used, the metres per pixel that gave, and how the
+    # scale was established.
+    camera_profile: str | None = None
+    # The registry calibration the profile file came from, when it came from
+    # there at all: a profile calibrated on this laptop has no registry id.
+    camera_calibration_id: str | None = None
+    pixel_size_m: float | None = None
+    scale_type: str | None = None
+    transect_length_m: float | None = None
+    crop_width_m: float | None = None
+    preset_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
     device_id: uuid.UUID | None = None
+    # The registry position this row was last seen at, sent back as base_seq.
+    head_seq: int | None = None
+    validated_at: str | None = None
+    validated_by: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in RUN_STATUSES:

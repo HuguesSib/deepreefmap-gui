@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 PASS_VIDEOS = "pass_videos"
 COVER_ROWS = "cover_rows"
 PRESETS = "presets"
+CAMERA_PROFILES = "camera_profiles"
+CAMERA_CALIBRATIONS = "camera_calibrations"
 
 # The only estimator that travels. The pooled figure is a pure function of the
 # per-pass counts, denominators and the latest-run-per-pass rule, so storing it
@@ -46,11 +48,15 @@ WIRE_SECTIONS: tuple[str, ...] = (
     "videos",
     "passes",
     PASS_VIDEOS,
+    # Registry-published run settings, pull-only, ahead of the runs that name
+    # the preset they ran under.
+    PRESETS,
+    # The lenses, pull-only too, and ahead of the runs that name the calibration
+    # they were rectified with. A calibration follows the profile it measures.
+    CAMERA_PROFILES,
+    CAMERA_CALIBRATIONS,
     "runs",
     COVER_ROWS,
-    # Registry-published run settings, pull-only, behind everything else
-    # because nothing here references them.
-    PRESETS,
 )
 
 
@@ -77,13 +83,17 @@ def _assert_sections_match_the_contract() -> None:
 _assert_sections_match_the_contract()
 
 # Fields that stay on the device. A path and an mtime describe this laptop's disk,
-# so sending them would put absolute paths in a shared registry; probed_at and
-# batch_id are local workflow. video_id and extra_video_ids leave as pass_video
-# rows instead.
+# so sending them would put absolute paths in a shared registry; probed_at is
+# local workflow. video_id and extra_video_ids leave as pass_video rows instead.
+#
+# A pass keeps its batch_id here because a pass belongs to many sessions over its
+# life -- the column names only the latest, which would be a fact about this
+# device's queue. A run's batch_id does travel, from contract 3: a run happened
+# once, in one session, and which runs went through together is provenance the
+# console groups by.
 _DEVICE_LOCAL: dict[str, tuple[str, ...]] = {
     "videos": ("path", "mtime", "probed_at"),
     "passes": ("batch_id", "video_id", "extra_video_ids"),
-    "runs": ("batch_id",),
 }
 
 # Every column the registry types as a timestamp. campaign.begin_date and
@@ -95,6 +105,7 @@ _TIMESTAMPS = frozenset({
     "started_at",
     "finished_at",
     "captured_at",
+    "validated_at",
 })
 
 # Fixed namespaces, so a derived id is the same id on every device and across
@@ -122,6 +133,12 @@ _PROVENANCE_FIELDS = (
     "run_duration_s",
     "stage_durations",
     "stage_peaks",
+    "camera_profile",
+    "camera_calibration_id",
+    "pixel_size_m",
+    "scale_type",
+    "transect_length_m",
+    "crop_width_m",
 )
 
 
@@ -192,10 +209,14 @@ def rows_to_wire(section: str, models: Iterable[Any]) -> list[dict[str, Any]]:
     if section not in SYNC_SECTIONS:
         raise KeyError(f"{section!r} is not a section with a table behind it")
     dropped = _DEVICE_LOCAL.get(section, ())
-    return [
-        _restamp({k: v for k, v in to_row(model).items() if k not in dropped}, to_wire_time)
-        for model in models
-    ]
+    return [_outbound(to_row(model), dropped) for model in models]
+
+
+def _outbound(row: dict[str, Any], dropped: tuple[str, ...]) -> dict[str, Any]:
+    """One row as the registry reads it: ``head_seq`` travels as ``base_seq``."""
+    out = {k: v for k, v in row.items() if k not in dropped and k != "head_seq"}
+    out["base_seq"] = row.get("head_seq")
+    return _restamp(out, to_wire_time)
 
 
 def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str, Any]]:
@@ -384,6 +405,15 @@ def provenance_from_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     provenance["run_duration_s"] = _seconds(manifest.get("run_duration_s"))
     provenance["stage_durations"] = _block(manifest, "stage_durations") or None
     provenance["stage_peaks"] = _block(manifest, "stage_peaks") or None
+    # The scale the cover was measured at. The tape length and crop width are the
+    # ones the run used, which may differ from the transect's current reading.
+    provenance["camera_profile"] = _text(manifest.get("camera_profile"))
+    provenance["camera_calibration_id"] = _text(manifest.get("camera_calibration_id"))
+    provenance["pixel_size_m"] = _seconds(manifest.get("pixel_size_m"))
+    provenance["scale_type"] = _text(manifest.get("scale_type"))
+    transect = _block(manifest, "transect")
+    provenance["transect_length_m"] = _seconds(transect.get("length"))
+    provenance["crop_width_m"] = _seconds(transect.get("crop_width"))
     return provenance
 
 
@@ -441,12 +471,53 @@ def rows_from_wire(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     Partial matters: the store writes only the fields a row carried, so a clip's
     path and a run's session survive an update from a registry that holds neither.
-    ``server_seq`` is the registry's own cursor and is not a column here.
+    ``server_seq`` lands as ``head_seq``, the position the row was seen at.
     """
-    return [
-        _restamp({k: v for k, v in row.items() if k != "server_seq"}, from_wire_time)
-        for row in rows
-    ]
+    return [_inbound(row) for row in rows]
+
+
+def _inbound(row: Mapping[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in row.items() if k != "server_seq"}
+    if row.get("server_seq") is not None:
+        out["head_seq"] = int(row["server_seq"])
+    return _restamp(out, from_wire_time)
+
+
+def push_outcomes(response: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each section's answer in one shape, whichever contract the registry spoke.
+
+    Contract 1 answered with an ``applied`` count and bare id lists under
+    ``skipped``, ``refused`` and ``conflicted``. Contract 2 answers with the
+    ledger's buckets: ``applied`` as acknowledgements carrying the row's new
+    position, and ``superseded``, ``proposed`` and ``rejected`` each naming a
+    reason. The keys here are the ledger's; a stale supersession is a skip.
+    """
+    outcomes = {}
+    for name, answer in (response.get("sections") or {}).items():
+        if isinstance(answer.get("applied"), list):
+            acks = {
+                str(ack.get("id")): int(ack.get("seq", 0)) for ack in answer["applied"]
+            }
+            superseded = answer.get("superseded") or ()
+            outcomes[name] = {
+                "received": int(answer.get("received", 0)),
+                "acks": acks,
+                "skipped": [str(r.get("id")) for r in superseded if r.get("reason") == "stale"],
+                "refused": [str(r.get("id")) for r in superseded if r.get("reason") != "stale"],
+                "proposed": [str(r.get("id")) for r in answer.get("proposed") or ()],
+                "rejected": [str(r.get("id")) for r in answer.get("rejected") or ()],
+            }
+            continue
+        outcomes[name] = {
+            "received": int(answer.get("received", 0)),
+            "acks": {},
+            "applied": int(answer.get("applied", 0)),
+            "skipped": [str(v) for v in answer.get("skipped") or ()],
+            "refused": [str(v) for v in answer.get("refused") or ()],
+            "proposed": [],
+            "rejected": [str(v) for v in answer.get("conflicted") or ()],
+        }
+    return outcomes
 
 
 def unknown_sections(sections: Mapping[str, Any]) -> tuple[str, ...]:

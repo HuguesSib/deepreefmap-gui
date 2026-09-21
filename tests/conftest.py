@@ -175,6 +175,12 @@ def _no_blocking_modals(request, monkeypatch):
         raise AssertionError(blocked[0])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_camera_profiles(tmp_path, monkeypatch):
+    """Profiles a test saves or calibrates stay out of the user's data dir."""
+    monkeypatch.setenv("DEEPREEFMAP_CAMERA_PROFILES", str(tmp_path / "camera_profiles"))
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_qsettings():
     """Redirect all QSettings storage to a tempdir for the whole test session.

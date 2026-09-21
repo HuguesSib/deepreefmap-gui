@@ -140,8 +140,14 @@ def seed_pass(
     return transect, video, pass_
 
 
-def make_batch(store: SurveyStore, name: str = "2026-07-01") -> SurveyBatch:
-    batch = SurveyBatch(name=name)
+def make_batch(store: SurveyStore, started: str = "2026-07-01 09:00") -> SurveyBatch:
+    """A session, identified by when it began.
+
+    The stamp is naive on purpose: a session's label is rendered in local time,
+    so a UTC one would move the day either side of midnight and the label a test
+    asserts would depend on the machine's timezone.
+    """
+    batch = SurveyBatch(created_at=started.replace(" ", "T"))
     store.add_batch(batch)
     return batch
 
@@ -657,3 +663,11 @@ def write_run_tree(root: Path, name: str = "20260520-155637", *, frames: int = 3
     (run_dir / "benthic_cover.json").write_text("{}")
     (run_dir / f"{name}.scene.zarr.zip").write_bytes(b"z" * 5 * KB)
     return run_dir
+
+
+def as_pushed(store) -> None:
+    """Every mark cleared, as if the last push had been accepted whole."""
+    from deepreefmap_gui.survey.store import SYNC_SECTIONS
+
+    for section in SYNC_SECTIONS:
+        store.clear_pending_push(section, store.pending_push_ids(section))

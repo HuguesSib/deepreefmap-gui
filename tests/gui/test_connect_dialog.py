@@ -12,11 +12,11 @@ from deepreefmap_gui.server.connect_ui import (
     CONNECTING,
     INTRO,
     NAME_NOTE,
+    SCHEMA_NOTE,
     SERVER_LABEL,
-    UNREADABLE,
     ConnectDialog,
 )
-from deepreefmap_gui.sync.connect_code import CODE_PREFIX
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX, CODE_SCHEMA
 
 
 def make_code(url: str = "https://reef.example.org") -> str:
@@ -54,10 +54,40 @@ def test_the_server_is_named_before_the_button_works(dialog):
 
 
 def test_a_code_that_does_not_decode_never_reaches_the_network(dialog):
-    dialog._code_edit.setPlainText("drm1." + "not a code")
+    dialog._code_edit.setPlainText(CODE_PREFIX + "not a code")
 
-    assert dialog._server.text() == UNREADABLE
+    assert "base64url" in dialog._server.text()
     assert not dialog._connect_btn.isEnabled()
+
+
+def test_the_fault_shown_is_the_one_the_decoder_named(dialog):
+    """Each refusal asks something different of the reader, so one generic line
+    would send an operator looking for the wrong problem."""
+    dialog._code_edit.setPlainText("not a code at all")
+    unprefixed = dialog._server.text()
+
+    dialog._code_edit.setPlainText(CODE_PREFIX + "!!!!")
+    unreadable = dialog._server.text()
+
+    assert CODE_PREFIX in unprefixed
+    assert unprefixed != unreadable
+
+
+def test_a_code_from_a_newer_registry_says_to_update_the_app(dialog):
+    """A field laptop cannot be updated on demand, so it must not blame the paste."""
+    dialog._code_edit.setPlainText("reef99.whatever")
+
+    assert "newer version" in dialog._server.text()
+    assert not dialog._connect_btn.isEnabled()
+
+
+def test_the_format_is_shown_beside_the_box_and_not_only_in_it(dialog):
+    """The placeholder goes away at the first keystroke, which is when a wrong
+    paste needs the shape most."""
+    assert CODE_SCHEMA in SCHEMA_NOTE
+    assert any(
+        w.text() == SCHEMA_NOTE for w in dialog.findChildren(type(dialog._server))
+    )
 
 
 def test_a_plain_http_server_is_refused_rather_than_warned_about(dialog):

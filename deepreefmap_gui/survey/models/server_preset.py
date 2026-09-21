@@ -1,9 +1,8 @@
 """A run-settings preset the registry publishes, pulled whole.
 
-Never authored on a device: the contract keeps the section pull-only, so these
-rows carry the registry's own stamps and last-write-wins does the rest. The
+Never authored on a device: the contract keeps the section pull-only. The
 settings bag is stored as it arrived; which keys this build can use is decided
-where a preset is turned into an organisation preset, not here.
+where a preset is turned into an organisation preset.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ class ServerPreset:
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
     device_id: uuid.UUID | None = None
+    head_seq: int | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():

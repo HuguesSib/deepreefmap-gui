@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from deepreefmap_gui.profiling.eta import STAGES as ETA_STAGES
+
 
 @pytest.fixture(autouse=True)
 def _isolate_run_history(tmp_path, monkeypatch):
@@ -68,13 +70,27 @@ def test_status_ticker_resets_per_stage(make_window, monkeypatch) -> None:
 def test_update_progress_zero_total_is_indeterminate(make_window) -> None:
     window = make_window()
     window._begin_progress(window._recon_model)
-    # A stage outside the continuous-fill set (here an ortho step) keeps the
-    # barber-pole for a zero (indeterminate) total.
+    # A stage outside the continuous-fill set keeps the barber-pole for a zero
+    # (indeterminate) total.
     window._on_viewer_status(
-        "update_progress", stage="outputs", current=0, total=0, message="Computing PCA projection"
+        "update_progress", stage="startup", current=0, total=0, message="Starting reconstruction"
     )
     assert window._run_progress.stage_percent is None
-    assert "Computing PCA projection" in window._status_label.text()
+
+
+def test_ortho_steps_advance_the_bar_without_a_count(make_window) -> None:
+    # Ortho reports by message with no count. Its sub-phases carry weighted spans
+    # so the stage still advances; without them its fraction stays 0 for the whole
+    # stage and the countdown is a frozen constant.
+    window = make_window()
+    window._begin_progress(window._recon_model)
+    seen = []
+    for message in ("Computing PCA projection", "Sorting points into cells", "Aggregating ortho grid"):
+        window._on_viewer_status("update_progress", stage="outputs", current=0, total=0, message=message)
+        seen.append(window._run_progress.stage_percent)
+    assert all(p is not None for p in seen)
+    assert seen == sorted(seen)
+    assert 0 < window._eta._runs["ortho"].frac < 1.0
 
 
 def test_mapping_zero_total_holds_the_continuous_bar(make_window) -> None:
@@ -135,9 +151,14 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
     monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
     window._begin_progress(window._recon_model)
     window._render_eta()
-    assert window._eta_total_label.text() == "estimating…"
-    # Give the estimator history so the whole-run total is shown, not withheld.
-    window._eta.priors = {"mapping": 0.5}
+    # No timings for these models on this machine: say so rather than implying a
+    # figure is moments away.
+    assert "no timings" in window._eta_total_label.text()
+    # Give the estimator history and a frame count so the whole-run total is
+    # shown, not withheld: without a driver the pending stages have no basis.
+    window._eta.priors = {s.key: 0.5 for s in ETA_STAGES}
+    window._eta.frames = 100
+    window._eta.expected_points = 10_000
     window._apply_progress("mapping", "Mapping", current=1, total=100)
     clock[0] = 20.0
     window._apply_progress("mapping", "Mapping", current=25, total=100)
@@ -303,3 +324,58 @@ def test_mapping_detail_bar_never_regresses_across_substeps(window) -> None:
     assert values == sorted(values)      # never snaps back
     assert values[3] == values[2]        # transfer holds at inference's end
     assert values[-1] == 100             # complete fills the whole mapping bar
+
+
+def test_a_machine_with_no_timings_says_so_and_still_counts_the_stage(make_window, monkeypatch, tmp_path) -> None:
+    # Scenario: a model combination this machine has never run. The whole-run
+    # total has no basis and stays withheld, but the stage in flight is measured
+    # from this run and must still show a figure.
+    import deepreefmap_gui.runs.progress as progress_mod
+
+    monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(tmp_path / "none.json"))
+    window = make_window()
+    clock = [0.0]
+    monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
+    window._begin_progress(window._recon_model)
+    window._apply_progress("mapping", "Mapping", current=1, total=100)
+    clock[0] = 30.0
+    window._apply_progress("mapping", "Mapping", current=30, total=100)
+    window._render_status()
+    assert "no timings" in window._eta_total_label.text()
+    assert "left" in _plain(window._status_label.text())
+
+
+def test_a_spent_counter_reads_as_finishing_not_as_done(make_window, monkeypatch) -> None:
+    # A stage can sit at 100% for a while: the last write and the viewer upload
+    # run on past the counter. Neither a countdown nor a blank is honest there.
+    import deepreefmap_gui.runs.progress as progress_mod
+
+    window = make_window()
+    clock = [0.0]
+    monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
+    window._begin_progress(window._recon_model)
+    window._apply_progress("viewer_finalise", "Finalising", current=1, total=1)
+    clock[0] = 60.0
+    window._render_status()
+    assert "finishing" in _plain(window._status_label.text())
+
+
+def test_the_status_stopwatch_is_scoped_to_the_coarse_stage(make_window, monkeypatch) -> None:
+    # The elapsed and the remainder sit on one line and must measure the same
+    # thing: mapping_align is still mapping, so the clock does not restart.
+    import deepreefmap_gui.runs.progress as progress_mod
+
+    window = make_window()
+    clock = [0.0]
+    monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
+    window._begin_progress(window._recon_model)
+    window._apply_progress("mapping", "Mapping", current=1, total=10)
+    clock[0] = 40.0
+    window._apply_progress("mapping_align", "Aligning poses to world frame", current=1, total=10)
+    window._render_status()
+    assert "world frame 40s" in _plain(window._status_label.text())
+    # A different coarse stage does restart it.
+    clock[0] = 41.0
+    window._apply_progress("ortho_pca", "Computing PCA projection", current=0, total=0)
+    window._render_status()
+    assert "projection 0s" in _plain(window._status_label.text())

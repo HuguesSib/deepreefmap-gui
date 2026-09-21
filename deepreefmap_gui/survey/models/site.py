@@ -29,6 +29,11 @@ class Site:
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
     device_id: uuid.UUID | None = None
+    # The registry position this row was last seen at, sent back as base_seq.
+    head_seq: int | None = None
+    # Stamped by the console; from then on a change made here is a proposal.
+    validated_at: str | None = None
+    validated_by: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():

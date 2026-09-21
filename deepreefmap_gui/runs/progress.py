@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCursor
@@ -41,6 +42,9 @@ from deepreefmap_gui.profiling.eta import (
     stage_for_phase,
     stage_plain_label_for_phase,
 )
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.profiling.batch_estimate import PassSpec
 
 
 @dataclass
@@ -165,10 +169,36 @@ def _subphase_spans(keys: tuple[str, ...]) -> dict[str, tuple[float, float]]:
     return spans
 
 
+# Ortho: PCA, the cell lexsort, the grid aggregate, the cover tally. Every one
+# of these reports by message with no count, so without spans the stage never
+# earns a fraction at all and its countdown is a frozen constant.
+_ORTHO_PHASE_KEYS: tuple[str, ...] = ("ortho_pca", "ortho_sort", "ortho_aggregate", "ortho_cover")
+
+# The writes, then the viewer's own setup, in emission order. Several of these
+# report n/n; without spans the first one to do so pins the whole stage at 1.0
+# and the rest of the viewer setup runs with no estimate.
+_VIEWER_PHASE_KEYS: tuple[str, ...] = (
+    "ortho_save",
+    "viewer_index_cloud",
+    "viewer_index_classes",
+    "viewer_actors",
+    "viewer_frustums",
+    "viewer_camera",
+    "viewer_upload",
+    "viewer_finalise",
+)
+
 _MAPPING_SUBPHASE_SPANS = _subphase_spans(_MAPPING_PHASE_KEYS)
 _CLOUD_SUBPHASE_SPANS = _subphase_spans(_CLOUD_PHASE_KEYS)
+_ORTHO_SUBPHASE_SPANS = _subphase_spans(_ORTHO_PHASE_KEYS)
+_VIEWER_SUBPHASE_SPANS = _subphase_spans(_VIEWER_PHASE_KEYS)
 # One lookup over every fine phase shown as part of a continuous stage fill.
-_SUBPHASE_SPANS = {**_MAPPING_SUBPHASE_SPANS, **_CLOUD_SUBPHASE_SPANS}
+_SUBPHASE_SPANS = {
+    **_MAPPING_SUBPHASE_SPANS,
+    **_CLOUD_SUBPHASE_SPANS,
+    **_ORTHO_SUBPHASE_SPANS,
+    **_VIEWER_SUBPHASE_SPANS,
+}
 
 
 # cloud_concat / cloud_replace / cloud_voxel are the silent post-frame steps
@@ -310,8 +340,13 @@ class ProgressBarsMixin(MixinBase):
             if sink is not None
         ]
 
-    def _begin_progress(self, model: ProgressModel) -> None:
-        """Switch the active progress model and start the run from zero."""
+    def _begin_progress(self, model: ProgressModel, spec: PassSpec | None = None) -> None:
+        """Switch the active progress model and start the run from zero.
+
+        `spec` is the PassSpec of the queued pass about to run, when there is
+        one. Without it the estimator reads the form, which a batch has already
+        restored to the session's values.
+        """
         model.reset()
         self._active_progress_model = model
         self._run_progress = RunProgress()
@@ -319,29 +354,55 @@ class ProgressBarsMixin(MixinBase):
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
+        self._status_stage_key = None
         self._status_phase_started = time.monotonic()
         # ETA only applies to a reconstruction; a cached-run load has its own model.
-        self._eta = self._new_run_estimator() if model is self._recon_model else None
+        self._eta = self._new_run_estimator(spec) if model is self._recon_model else None
         self._ensure_status_tick_timer().start()
 
-    def _new_run_estimator(self) -> RunEtaEstimator:
-        """Estimator seeded from this machine's history for the selected backends."""
-        from deepreefmap_gui.profiling.run_history import history_key, load_expected_points, load_priors
+    def _form_pass_spec(self):
+        """A PassSpec for the run the form is currently describing."""
+        from deepreefmap_gui.profiling.batch_estimate import PassSpec
+        from deepreefmap_gui.profiling.run_history import seg_key
+
+        return PassSpec(
+            key="form",
+            frames=0,
+            mapping_backend=self._map_combo.currentText(),
+            seg_model=seg_key(
+                self._seg_combo.currentText(),
+                bool(getattr(self, "_skip_seg_check", None) and self._skip_seg_check.isChecked()),
+            ),
+            width=self._proc_width_spin.value(),
+            height=self._proc_height_spin.value(),
+            fps=self._fps_spin.value(),
+        )
+
+    def _new_run_estimator(self, spec=None) -> RunEtaEstimator:
+        """Estimator seeded from this machine's history for the pass about to run."""
+        from deepreefmap_gui.profiling.batch_estimate import expected_points_for
+        from deepreefmap_gui.profiling.run_history import history_key, load_priors
 
         try:
+            if spec is None:
+                spec = self._form_pass_spec()
             key = history_key(
-                self._map_combo.currentText(),
-                self._seg_combo.currentText(),
-                self._proc_width_spin.value(),
-                self._proc_height_spin.value(),
-                self._fps_spin.value(),
+                spec.mapping_backend, spec.seg_model, spec.width, spec.height, spec.fps
             )
             priors = load_priors(key)
-            expected_points = load_expected_points(key)
+            # Scaled to this pass's length: an unscaled median prices the
+            # point-driven stages of a long pass as a median-length one.
+            expected_points = expected_points_for(key, spec.frames)
+            frames = spec.frames
+            mode = spec.mode
         except Exception:
             priors = {}
             expected_points = None
-        return RunEtaEstimator(frames=0, priors=priors, expected_points=expected_points)
+            frames = 0
+            mode = None
+        return RunEtaEstimator(
+            frames=frames, priors=priors, expected_points=expected_points, mode=mode
+        )
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
         """Progress readouts belong to a run in flight; idle shows none of them."""
@@ -364,6 +425,7 @@ class ProgressBarsMixin(MixinBase):
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
+        self._status_stage_key = None
         for sink in self._progress_sinks():
             sink.set_idle("No run in progress.")
 
@@ -389,6 +451,10 @@ class ProgressBarsMixin(MixinBase):
         stage_left = est.current_stage_remaining(now) if est is not None else None
         if stage_left is not None:
             parts.append(f"{format_remaining(stage_left)} left")
+        elif est is not None and est.is_finishing(now):
+            # The counter is spent but the stage is not: the last write, the
+            # viewer upload and the scene file all run on past 100%.
+            parts.append("finishing")
         metrics = " · ".join(parts)
         # Color the active coarse stage so the left text names it (and the stage
         # name is dropped from the bars). Plain-language here so the diver reads
@@ -416,9 +482,18 @@ class ProgressBarsMixin(MixinBase):
             return
         now = time.monotonic()
         visible = est.visible_remaining(now)
-        # Overall estimate shown plainly rather than buried in the hover. None
-        # means no trustworthy figure yet (a first run still calibrating).
-        eta_text = f"{format_remaining(visible)} left" if visible is not None else "estimating…"
+        # Overall estimate shown plainly rather than buried in the hover. Without
+        # a figure, say which of the three reasons applies: no timings for these
+        # models on this machine, a run past every estimate but not yet over, or
+        # a stage the run has yet to give anything to go on.
+        if visible is not None:
+            eta_text = f"{format_remaining(visible)} left"
+        elif est.learning():
+            eta_text = "no timings for these models yet, learning from this run"
+        elif est.is_finishing(now):
+            eta_text = "finishing…"
+        else:
+            eta_text = "estimating…"
         self._eta_total_label.setText(eta_text)
         for sink in self._progress_sinks():
             sink.set_eta(eta_text)
@@ -474,11 +549,15 @@ class ProgressBarsMixin(MixinBase):
         flush: bool = False,
     ) -> None:
         """Update the per-step bar/label and the unified total bar."""
-        # Reset the stage stopwatch when the phase key changes so elapsed time
-        # is per-stage, not per-run.
+        # Reset the stage stopwatch when the coarse stage changes, so elapsed is
+        # scoped to the same stage as the remainder beside it and the elapsed the
+        # hover breakdown reports. Restarting it per fine phase made one line
+        # carry two different scopes and read as one countdown.
         now = time.monotonic()
-        if getattr(self, "_status_phase_key", None) != phase_key:
-            self._status_phase_key = phase_key
+        self._status_phase_key = phase_key
+        coarse_key = stage_for_phase(phase_key) or phase_key
+        if getattr(self, "_status_stage_key", None) != coarse_key:
+            self._status_stage_key = coarse_key
             self._status_phase_started = now
 
         # Mapping and cloud fold several sub-phases into one monotonic 0-100 fill
@@ -501,8 +580,10 @@ class ProgressBarsMixin(MixinBase):
         if est is not None and stage_for_phase(phase_key) is not None:
             # The preprocess total is the selected frame count, the size the
             # per-frame stages scale with; capture it for pending predictions.
-            if phase_key == "preprocess" and total > 0:
-                est.frames = total
+            # `> 1` and latched: the stage-completed pulse reports 1/1, not the
+            # frame count, and arrives just as mapping is about to be priced.
+            if phase_key == "preprocess" and total > 1:
+                est.frames = max(est.frames, total)
             if stage_combined is not None:
                 # Feed the estimator the same combined fill the detail bar shows
                 # (0-100), not the raw per-sub-phase fraction. Otherwise the hover

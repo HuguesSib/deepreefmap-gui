@@ -1,11 +1,11 @@
-"""Filing a section: which transect it belongs to, and which way it was swum.
+"""Filing a pass: which transect it belongs to, and which way it was swum.
 
 A transect is a place, so it is picked on a map rather than out of a combo box.
 The map is the same widget the Transects page draws, holding the same overlays,
 which is the whole of why this dialog can stay small: everything the small map
 does not do is one click away on the page it borrows from.
 
-A transect stays optional. A section is first a cutout of a video, and it
+A transect stays optional. A pass is first a cutout of a video, and it
 processes perfectly well without ever being filed.
 """
 
@@ -31,13 +31,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon, direction_arrow_icon
+from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon, direction_arrow_icon, pencil_icon
 from deepreefmap_gui.core.theme import ERROR, SPACE_SM, TREE_ROW_PAD_V
-from deepreefmap_gui.core.widgets import muted_label
+from deepreefmap_gui.core.widgets import icon_button, muted_label
 from deepreefmap_gui.map.overlays import OverlayTransect, transect_overlays
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+from deepreefmap_gui.simple.catalogue_dialogs import (
+    EDIT_CAMPAIGN,
+    EDIT_SITE,
+    CampaignDialog,
+    SiteDialog,
+    arm_edit,
+    combo_id,
+    refill_campaigns,
+    refill_sites,
+)
 from deepreefmap_gui.survey.models import (
+    DIRECTION_UNRECORDED,
     PASS_DIRECTIONS,
+    PASS_QUALITIES,
     Transect,
     compass_point,
     initial_bearing_deg,
@@ -48,7 +60,7 @@ from deepreefmap_gui.survey.store import SurveyStore
 TRANSECT_ID_ROLE = Qt.ItemDataRole.UserRole
 
 UNASSIGNED_LABEL = "Unassigned"
-UNASSIGNED_NOTE = "Processes and shows up in Browse, but is not part of any transect."
+UNASSIGNED_NOTE = "Not part of any transect. Processes unscaled."
 
 # The map is a means of choosing here, not a page of its own, so it gets the
 # smaller half of a dialog rather than the larger half of a window.
@@ -57,57 +69,50 @@ LIST_WIDTH = 240
 
 DRAW_HINT = "Click the start of the tape on the map, then its end."
 DRAW_HINT_END = "Now click the end of the tape."
-DRAW_HINT_DONE = "Save transect files it, and this section with it."
+DRAW_HINT_DONE = "Save transect files this pass against it."
 
-# What the map is, said where the map is. Nothing else on this dialog announces
-# that it can be clicked, and a map that only responds once a button has been
-# pressed reads as a picture until then.
-MAP_HINT = "Transects are the lines on this map. Click one to file this section against it."
+# Said where the map is: nothing else on the dialog announces it can be clicked.
+MAP_HINT = "Click a transect on the map to file this pass."
 MAP_HINT_EMPTY = "No transects yet. New transect… draws one on the map."
 
-# A choice made here is not a commitment. Said plainly, because filing a section
-# is the step people hesitate over, and both halves of it are undoable from a
-# page that is one click away.
-EDIT_LATER_NOTE = (
-    "Both can be changed later: a transect's ends, depth and notes on the "
-    "Transects page, and which transect this section belongs to from Videos."
-)
+EDIT_LATER_NOTE = "Both can be changed later, under Transects or Videos."
 
 NEW_TRANSECT_TOOLTIP = (
-    "Draw a transect on the map: click its start, then its end. The tape length "
-    "and the name can be typed beside it."
+    "Draw a transect on the map: click its start, then its end. The tape length and the name can be typed beside it."
 )
 
 OPEN_PAGE_LABEL = "Open in Transects ↗"
-OPEN_PAGE_TOOLTIP = (
-    "Leave this dialog and show the transect on the Transects page, where the "
-    "ends can be dragged and the depth and notes filled in."
-)
+OPEN_PAGE_TOOLTIP = "Show this transect on the Transects page."
 
-# With nothing picked the arrow still goes somewhere, and says so: the page is
-# where transects are imported from a CSV or GPX file, which is how most surveys
-# get theirs. The section is kept unfiled rather than discarded on the way.
+# With nothing picked the arrow still opens the page, where transects are imported.
 OPEN_PAGE_EMPTY_LABEL = "Transects page ↗"
-OPEN_PAGE_EMPTY_TOOLTIP = (
-    "Leave this dialog and open the Transects page, where transects are drawn "
-    "or imported. This section is kept, unfiled, and can be filed afterwards."
-)
+OPEN_PAGE_EMPTY_TOOLTIP = "Open the Transects page. This pass is kept unfiled."
+
+
+QUALITY_LABELS = {
+    "excellent": "Excellent",
+    "very_good": "Very good",
+    "good": "Good",
+    "meh": "Meh",
+    "bad": "Bad",
+    "very_bad": "Very bad",
+}
 
 
 def direction_label(direction: str, transect: Transect | None) -> str:
-    """"Forward", and the heading it means once there is a line to mean it on."""
+    """ "Forward", and the heading it means once there is a line to mean it on."""
     shown = direction.capitalize()
-    if transect is None:
+    ends = None if transect is None else transect.end_points()
+    if ends is None:
         return shown
-    start = (transect.start_lat, transect.start_lon)
-    end = (transect.end_lat, transect.end_lon)
+    start, end = ends
     first, second = (start, end) if direction == "forward" else (end, start)
     bearing = initial_bearing_deg(*first, *second)
     return f"{shown} ({bearing:03.0f}° {compass_point(bearing)})"
 
 
 class TransectPickerDialog(QDialog):
-    """Pick the transect a section belongs to, and the direction it was swum.
+    """Pick the transect a pass belongs to, and the direction it was swum.
 
     Answers through ``choice()``: (transect_id | None, direction), the same
     contract the call sites had before there was a map in here.
@@ -122,18 +127,20 @@ class TransectPickerDialog(QDialog):
         *,
         transect_id: uuid.UUID | None = None,
         direction: str | None = None,
+        quality: str | None = None,
         ok_label: str = "Save",
     ) -> None:
         super().__init__(parent)
         self._store = store
         self._transects: list[Transect] = []
+        self._refiling = transect_id is not None or direction is not None or quality is not None
         self._drawing = False
         self._pending_start: tuple[float, float] | None = None
         # The arrow rejects the dialog on its way out, which is indistinguishable
         # from Cancel to the caller. This is what tells them apart, so a section
         # cut but not yet filed can be kept rather than lost on the trip.
         self.left_for_page = False
-        self.setWindowTitle("File this section")
+        self.setWindowTitle("File this pass")
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -161,31 +168,37 @@ class TransectPickerDialog(QDialog):
         side.addWidget(self.list, 1)
 
         self.direction = QComboBox()
-        self.direction.setToolTip(
-            "Which way the tape was swum. It is what tells two passes of one "
-            "transect apart when their results are compared."
-        )
+        self.direction.setToolTip("Which way the tape was swum.")
         direction_row = QFormLayout()
         direction_row.setContentsMargins(0, 0, 0, 0)
         direction_row.addRow("Direction", self.direction)
-        # Only where the registry has sent expeditions to choose from: a survey
-        # that has never synced has no campaigns, and an empty combo would be a
-        # question with no answers.
+        # The diver's word on the swim. None is not assessed.
+        self.quality = QComboBox()
+        self.quality.setToolTip("How the swim went, on the scale the field sheets use.")
+        self.quality.addItem("Not assessed", None)
+        for code in PASS_QUALITIES:
+            self.quality.addItem(QUALITY_LABELS[code], code)
+        self.quality.setCurrentIndex(max(0, self.quality.findData(quality)))
+        direction_row.addRow("Quality", self.quality)
+        # The trip this pass was recorded on, remembered as the default for the
+        # next. A campaign the registry does not list yet is made here.
         self.campaign = QComboBox()
-        self.campaign.setToolTip(
-            "The expedition this section was recorded on. Remembered as the "
-            "default for the next section."
-        )
-        self._campaigns = self._store.list_campaigns()
-        if self._campaigns:
-            self.campaign.addItem("No campaign", None)
-            for campaign in self._campaigns:
-                self.campaign.addItem(campaign.name, str(campaign.id))
-            default = self._store.default_campaign_id()
-            if default is not None:
-                index = self.campaign.findData(str(default))
-                self.campaign.setCurrentIndex(max(0, index))
-            direction_row.addRow("Campaign", self.campaign)
+        self.campaign.setToolTip("The campaign this pass was recorded on. Remembered as the default for the next pass.")
+        campaign_row = QHBoxLayout()
+        campaign_row.setContentsMargins(0, 0, 0, 0)
+        campaign_row.setSpacing(SPACE_SM)
+        campaign_row.addWidget(self.campaign, 1)
+        self.new_campaign_btn = QPushButton("New…")
+        self.new_campaign_btn.setProperty("quiet", "true")
+        self.new_campaign_btn.setToolTip("Name a campaign the registry does not list yet.")
+        self.new_campaign_btn.clicked.connect(self._on_new_campaign)
+        campaign_row.addWidget(self.new_campaign_btn)
+        self.edit_campaign_btn = icon_button(pencil_icon(), EDIT_CAMPAIGN, EDIT_CAMPAIGN)
+        self.edit_campaign_btn.clicked.connect(self._on_edit_campaign)
+        campaign_row.addWidget(self.edit_campaign_btn)
+        self.campaign.activated.connect(lambda _index: self._refresh_campaign_edit())
+        direction_row.addRow("Campaign", campaign_row)
+        self._fill_campaigns(self._store.default_campaign_id())
         side.addLayout(direction_row)
 
         buttons_row = QHBoxLayout()
@@ -214,17 +227,61 @@ class TransectPickerDialog(QDialog):
         top.addLayout(side)
         layout.addLayout(top)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
         self._fill(selected=transect_id)
-        self._fill_directions(direction or PASS_DIRECTIONS[0])
+        # A pass being cut opens on forward; one being refiled keeps its own answer,
+        # unrecorded included.
+        self._fill_directions(PASS_DIRECTIONS[0] if not self._refiling else direction)
         self.map.fit_transects()
+
+    def _fill_campaigns(self, selected: uuid.UUID | None) -> None:
+        refill_campaigns(self.campaign, self._store, selected)
+        self._refresh_campaign_edit()
+
+    def _on_new_campaign(self) -> None:
+        dialog = CampaignDialog(self, self._store)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.campaign is not None:
+            self._fill_campaigns(dialog.campaign.id)
+
+    def _on_edit_campaign(self) -> None:
+        chosen = combo_id(self.campaign)
+        campaign = self._store.get_campaign(chosen) if chosen is not None else None
+        if campaign is None:
+            return
+        dialog = CampaignDialog(self, self._store, campaign)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.campaign is not None:
+            self._fill_campaigns(dialog.campaign.id)
+
+    def _refresh_campaign_edit(self) -> None:
+        chosen = combo_id(self.campaign)
+        arm_edit(self.edit_campaign_btn, self._store.get_campaign(chosen) if chosen else None, EDIT_CAMPAIGN)
+
+    def _on_new_site(self) -> None:
+        dialog = SiteDialog(self, self._store)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.site is not None:
+            self._fill_sites(dialog.site.id)
+
+    def _on_edit_site(self) -> None:
+        chosen = combo_id(self.site_combo)
+        site = self._store.get_site(chosen) if chosen is not None else None
+        if site is None:
+            return
+        dialog = SiteDialog(self, self._store, site)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.site is not None:
+            self._fill_sites(dialog.site.id)
+
+    def _refresh_site_edit(self) -> None:
+        chosen = combo_id(self.site_combo)
+        arm_edit(self.edit_site_btn, self._store.get_site(chosen) if chosen else None, EDIT_SITE)
+
+    def _fill_sites(self, selected: uuid.UUID | None) -> None:
+        refill_sites(self.site_combo, self._store, selected)
+        self._refresh_site_edit()
 
     # --- the new-transect strip ---------------------------------------------
 
@@ -239,15 +296,23 @@ class TransectPickerDialog(QDialog):
         form.setContentsMargins(0, 0, 0, 0)
         self.name_input = QLineEdit()
         form.addRow("Name", self.name_input)
-        # Only where the registry has sent sites: names are unique per site, so
-        # a T1 on one reef can coexist with a T1 on another.
+        # Names are unique per site, so a T1 on one reef can coexist with a T1
+        # on another. A site the registry does not list yet is made here.
         self.site_combo = QComboBox()
-        self._sites = self._store.list_sites()
-        if self._sites:
-            self.site_combo.addItem("No site", None)
-            for site in self._sites:
-                self.site_combo.addItem(site.name, str(site.id))
-            form.addRow("Site", self.site_combo)
+        site_row = QHBoxLayout()
+        site_row.setContentsMargins(0, 0, 0, 0)
+        site_row.setSpacing(SPACE_SM)
+        site_row.addWidget(self.site_combo, 1)
+        self.new_site_btn = QPushButton("New…")
+        self.new_site_btn.setProperty("quiet", "true")
+        self.new_site_btn.clicked.connect(self._on_new_site)
+        site_row.addWidget(self.new_site_btn)
+        self.edit_site_btn = icon_button(pencil_icon(), EDIT_SITE, EDIT_SITE)
+        self.edit_site_btn.clicked.connect(self._on_edit_site)
+        site_row.addWidget(self.edit_site_btn)
+        self.site_combo.activated.connect(lambda _index: self._refresh_site_edit())
+        form.addRow("Site", site_row)
+        self._fill_sites(None)
         self.start_input = QLineEdit()
         self.start_input.setPlaceholderText("-17.5005, 177.1005")
         form.addRow("Start point", self.start_input)
@@ -262,9 +327,7 @@ class TransectPickerDialog(QDialog):
         self.length_input = QDoubleSpinBox()
         self.length_input.setRange(0.0, 10_000.0)
         self.length_input.setSuffix(" m")
-        self.length_input.setToolTip(
-            "The tape reading. Without it the transect's runs are not scaled."
-        )
+        self.length_input.setToolTip("The tape reading. Without it the transect's runs are not scaled.")
         form.addRow("Tape length", self.length_input)
         self.error = QLabel("")
         self.error.setWordWrap(True)
@@ -329,15 +392,13 @@ class TransectPickerDialog(QDialog):
             self.error.setText(str(exc))
             return
         except sqlite3.IntegrityError:
-            self.error.setText(
-                f"A transect named {self.name_input.text().strip()!r} already "
-                "exists on that site."
-            )
+            self.error.setText(f"A transect named {self.name_input.text().strip()!r} already exists on that site.")
             return
         self._end_new_transect()
         self._fill(selected=transect.id)
-        self.map.focus_on([(transect.start_lat, transect.start_lon),
-                           (transect.end_lat, transect.end_lon)])
+        ends = transect.end_points()
+        if ends is not None:
+            self.map.focus_on(list(ends))
 
     # --- the map -------------------------------------------------------------
 
@@ -370,13 +431,9 @@ class TransectPickerDialog(QDialog):
         self.list.blockSignals(True)
         try:
             self.list.clear()
-            self._add_row(
-                UNASSIGNED_LABEL, "Not filed against any line", "", UNASSIGNED_NOTE
-            )
+            self._add_row(UNASSIGNED_LABEL, "Not filed against any line", "", UNASSIGNED_NOTE)
             for transect in self._transects:
-                self._add_row(
-                    transect.name, self._subtitle(transect), str(transect.id), ""
-                )
+                self._add_row(transect.name, self._subtitle(transect), str(transect.id), "")
         finally:
             self.list.blockSignals(False)
         self._select(str(selected) if selected is not None else "")
@@ -397,12 +454,12 @@ class TransectPickerDialog(QDialog):
         self.list.addItem(item)
 
     def _subtitle(self, transect: Transect) -> str:
-        from deepreefmap_gui.simple.plan import bearing_text, transect_length_text
+        from deepreefmap_gui.simple.plan import NO_ENDS_TEXT, bearing_text, transect_length_text
 
-        return (
-            f"{transect_length_text(transect.length_m, transect.geodesic_length_m())}"
-            f"  ·  {bearing_text(transect.start_lat, transect.start_lon, transect.end_lat, transect.end_lon)}"
-        )
+        length = transect_length_text(transect.length_m, transect.geodesic_length_m())
+        ends = transect.end_points()
+        heading = NO_ENDS_TEXT if ends is None else bearing_text(*ends[0], *ends[1])
+        return f"{length}  ·  {heading}"
 
     def _select(self, transect_id: str) -> None:
         for index in range(self.list.count()):
@@ -414,15 +471,19 @@ class TransectPickerDialog(QDialog):
 
     def _on_selection_changed(self) -> None:
         self._refresh_overlays()
-        self._fill_directions(self.direction.currentData() or PASS_DIRECTIONS[0])
+        self._fill_directions(self._chosen_direction())
         self._refresh_note()
+
+    def _chosen_direction(self) -> str | None:
+        index = self.direction.currentIndex()
+        return None if index < 0 else self.direction.itemData(index)
 
     def _refresh_overlays(self) -> None:
         chosen = self.selected_transect_id()
         overlays: list[OverlayTransect] = transect_overlays(self._store, chosen)
         self.map.set_transects(overlays)
 
-    def _fill_directions(self, keep: str) -> None:
+    def _fill_directions(self, keep: str | None) -> None:
         """Relabel forward and reverse with the headings they mean.
 
         "Forward" on its own says nothing about the water; against a line with
@@ -433,10 +494,11 @@ class TransectPickerDialog(QDialog):
         try:
             self.direction.clear()
             for name in PASS_DIRECTIONS:
-                self.direction.addItem(
-                    direction_arrow_icon(name), direction_label(name, transect), name
-                )
-            index = self.direction.findData(keep)
+                self.direction.addItem(direction_arrow_icon(name), direction_label(name, transect), name)
+            # Last, so a swim nobody noted the direction of can be filed as such
+            # rather than as forward by default.
+            self.direction.addItem(DIRECTION_UNRECORDED, None)
+            index = self.direction.count() - 1 if keep is None else self.direction.findData(keep)
             self.direction.setCurrentIndex(max(0, index))
         finally:
             self.direction.blockSignals(False)
@@ -446,9 +508,7 @@ class TransectPickerDialog(QDialog):
             return
         transect = self.selected_transect()
         self.open_btn.setText(OPEN_PAGE_LABEL if transect else OPEN_PAGE_EMPTY_LABEL)
-        self.open_btn.setToolTip(
-            OPEN_PAGE_TOOLTIP if transect else OPEN_PAGE_EMPTY_TOOLTIP
-        )
+        self.open_btn.setToolTip(OPEN_PAGE_TOOLTIP if transect else OPEN_PAGE_EMPTY_TOOLTIP)
         self.map_hint.setText(MAP_HINT if self._transects else MAP_HINT_EMPTY)
         # The standing note always says the choice is reversible; being
         # unassigned is the extra thing worth saying when nothing is picked.
@@ -481,10 +541,11 @@ class TransectPickerDialog(QDialog):
             return None
         return next((t for t in self._transects if t.id == wanted), None)
 
-    def choice(self) -> tuple[uuid.UUID | None, str]:
-        return self.selected_transect_id(), str(
-            self.direction.currentData() or PASS_DIRECTIONS[0]
-        )
+    def choice(self) -> tuple[uuid.UUID | None, str | None]:
+        return self.selected_transect_id(), self._chosen_direction()
+
+    def quality_choice(self) -> str | None:
+        return self.quality.currentData()
 
     def campaign_choice(self) -> uuid.UUID | None:
         """The expedition picked here, remembered as the survey's new default."""

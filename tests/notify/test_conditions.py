@@ -1,4 +1,4 @@
-"""Section verdicts becoming messages. Driven through the production verdicts."""
+"""Pass verdicts becoming messages. Driven through the production verdicts."""
 
 from __future__ import annotations
 

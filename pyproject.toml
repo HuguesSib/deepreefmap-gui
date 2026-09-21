@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.3.3"
+version = "0.4.0"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -53,11 +53,14 @@ dependencies = [
   #   numpy         io/scene_file.py, viewer/*, runs/loaded_run.py
   #   opencv-python form/video_scrub.py; matches what deepreefmap[gopro] resolves
   #   huggingface-hub  models/manager.py: cache scan, auth and delete are ours
+  #   imageio       camera/calibration.py: frame sampling for COLMAP; the ffmpeg
+  #                 backend arrives through deepreefmap
   "platformdirs>=4.0",
   # Device token at rest. Imported lazily from sync/credentials.py and only
   # reached from the Server page, so a missing backend degrades to a file.
   "keyring>=24",
   "numpy>=1.26",
+  "imageio>=2.37",
   "opencv-python>=4.9",
   "huggingface-hub>=0.30",
   # Function-level imports, but small and universal enough that relying on a

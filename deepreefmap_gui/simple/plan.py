@@ -5,13 +5,15 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -33,7 +35,15 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY
-from deepreefmap_gui.core.icons import ICON_MD, ICON_SM, check_icon, copy_icon, crosshair_icon
+from deepreefmap_gui.core.icons import (
+    ICON_MD,
+    ICON_SM,
+    check_icon,
+    close_icon,
+    copy_icon,
+    crosshair_icon,
+    pencil_icon,
+)
 from deepreefmap_gui.core.theme import (
     BORDER,
     GUTTER,
@@ -49,14 +59,23 @@ from deepreefmap_gui.core.widgets import (
     FilterChips,
     SortableTreeItem,
     enable_sorting,
+    icon_button,
     install_column_sizer,
     muted_label,
     secondary_label,
     section_card,
+    tabular_columns,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+from deepreefmap_gui.simple.catalogue_dialogs import (
+    EDIT_SITE,
+    NO_SITE,
+    SiteDialog,
+    arm_edit,
+    refill_sites,
+)
 from deepreefmap_gui.simple.section_state import transects_state
 from deepreefmap_gui.survey.models import (
     Transect,
@@ -67,31 +86,45 @@ from deepreefmap_gui.survey.models import (
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 from deepreefmap_gui.survey.models.importers import (
     build_transect,
+    csv_site_names,
     import_transects_csv,
     import_transects_gpx,
     parse_latlon,
 )
+from deepreefmap_gui.survey.models.transect import mean_depth_m
 
 logger = logging.getLogger(__name__)
 
 # A trailing spacer column absorbs the slack instead of the name column, so the
 # figures stay beside the transect they belong to however wide the window is.
-PLAN_COLUMNS = ("Transect", "Length", "Depth", "Passes", "Runs", "")
+PLAN_COLUMNS = ("Transect", "Site", "Length", "Depth", "Passes", "Runs", "")
 PLAN_SPACER_COLUMN = len(PLAN_COLUMNS) - 1
+# The first column holding a figure rather than a name, and so the first one
+# right-aligned and set in tabular figures.
+_PLAN_FIGURE_COLUMN = 2
+# The em dash every empty cell of this table already uses, for a line nobody has
+# said a site for. Sites stay optional, so this is a common row, not a fault.
+NO_SITE_TEXT = "—"
 
 # Content-sized columns let one long transect name push Depth, Passes and Runs
 # clean off the viewport, so the figures get their reading width first and the
 # name takes what is left. Length is the one that drops on a narrow pane; its
 # value, like every other, is in `transect_tooltip`.
 _PLAN_COLUMN_SPEC = ColumnSpec(
-    fixed={2: 64, 3: 62, 4: 56},
+    fixed={3: 68, 4: 62, 5: 56},
     weights={0: 3, PLAN_SPACER_COLUMN: 1},
     minimums={0: 140, PLAN_SPACER_COLUMN: 0},
-    optional=((1, 78),),
+    # Site earns its width before Length: which reef a line is on is what a
+    # person scans for, and the length is in `transect_tooltip` either way.
+    # Length is measured against the longest thing it holds: "21875 m GPS" is
+    # 103px with the row padding, and a column short of that elides the figure
+    # it exists to show.
+    optional=((1, 110), (2, 104)),
 )
 # The transect a click on the map is about to draw, and the one being typed into
 # the form, share this row id: neither exists in the store yet.
 DRAFT_ID = "draft"
+SITE_REQUIRED = "Pick a site before saving the transect."
 # How much of the map a transect fills when it is picked from the list. Short of
 # the whole viewport so the reef either side of it stays on screen.
 FOCUS_FILL = 0.6
@@ -99,20 +132,24 @@ FOCUS_FILL = 0.6
 # Wide enough for the cover chart and its six-column table.
 PLAN_ANALYSIS_MIN_WIDTH = 460
 
+# What the details form asks for while it is open. A coordinate field has a copy
+# button inside it, so a pane short of this clips the leading digit of a latitude.
+_PLAN_DETAILS_WIDTH = 440
+
 # How much of the page width the analysis column takes, and how much of the
 # working column's height the transect list takes under the map and the form.
 _PLAN_ANALYSIS_SHARE = 0.34
+# How much of the top row the form takes when it is open.
+_PLAN_DETAILS_SHARE = 0.42
 _PLAN_LIST_SHARE = 0.42
 _PLAN_LIST_MIN_HEIGHT = 220
 
 _PLAN_SCOPE_TOOLTIP = (
-    "In view lists only the transects the map is showing, and follows the map "
-    "as it is panned and zoomed. The transect being edited stays listed either "
-    "way, so the form and the list cannot disagree."
+    "• In view: transects the map shows\n• All transects: every transect\n• The transect being edited stays listed"
 )
 
 
-def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
+def transect_length_text(length_m: float | None, geodesic_m: float | None) -> str:
     """The one length worth showing for a transect.
 
     A typed tape length is the cable actually laid on the reef and is what the
@@ -121,6 +158,8 @@ def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
     """
     if length_m:
         return f"{length_m:g} m tape"
+    if geodesic_m is None:
+        return "no length"
     return f"{geodesic_m:.0f} m GPS"
 
 
@@ -130,22 +169,40 @@ def bearing_text(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     return f"{bearing:03.0f}° {compass_point(bearing)}"
 
 
+NO_ENDS_TEXT = "No GPS ends recorded"
+
+
 def transect_geometry_text(transect: Transect) -> str:
     """The derived line under the coordinate fields: how far, and which way."""
-    return (
-        f"{transect.geodesic_length_m():.0f} m between the GPS ends  ·  heading "
-        f"{bearing_text(transect.start_lat, transect.start_lon, transect.end_lat, transect.end_lon)}"
-    )
+    ends = transect.end_points()
+    if ends is None:
+        return NO_ENDS_TEXT
+    return f"{transect.geodesic_length_m():.0f} m between the GPS ends  ·  heading {bearing_text(*ends[0], *ends[1])}"
 
 
-def transect_row_columns(transect: Transect, passes: int, runs: int) -> list[str]:
+def _site_text(transect: Transect, site_names: Mapping[uuid.UUID, str] | None) -> str:
+    return _site_text_for_id(transect.site_id, site_names)
+
+
+def _site_text_for_id(site_id: uuid.UUID | None, site_names: Mapping[uuid.UUID, str] | None) -> str:
+    """What the Site cell says: the name, or the placeholder every other cell uses."""
+    if site_id is None or not site_names:
+        return NO_SITE_TEXT
+    return site_names.get(site_id, NO_SITE_TEXT)
+
+
+def transect_row_columns(
+    transect: Transect, passes: int, runs: int, site_names: Mapping[uuid.UUID, str] | None = None
+) -> list[str]:
     """One row of the transect table, column by column.
 
-    Derived from the dataclass and two counts with no per-row store query,
-    because the table is rebuilt on every keystroke while a transect is typed.
+    Derived from the dataclass, two counts and a prepared name table with no
+    per-row store query, because the table is rebuilt on every keystroke while
+    a transect is typed.
     """
     return [
         transect.name,
+        _site_text(transect, site_names),
         transect_length_text(transect.length_m, transect.geodesic_length_m()),
         f"{transect.depth_m:g} m" if transect.depth_m else "—",
         str(passes) if passes else "—",
@@ -154,38 +211,46 @@ def transect_row_columns(transect: Transect, passes: int, runs: int) -> list[str
     ]
 
 
-def transect_row_values(transect: Transect, passes: int, runs: int) -> dict[int, object]:
+def transect_row_values(
+    transect: Transect, passes: int, runs: int, site_names: Mapping[uuid.UUID, str] | None = None
+) -> dict[int, object]:
     """The sort value behind each cell of `transect_row_columns`.
 
     "9 m" sorts above "12 m" as text, so the numeric columns carry their raw
     numbers. An absent value is left out entirely, which sinks the cell under
-    SortableTreeItem's contract.
+    SortableTreeItem's contract, which is what gathers the unsited lines at one
+    end when the table is sorted by site.
     """
-    values: dict[int, object] = {
-        0: transect.name.lower(),
-        1: transect.length_m or transect.geodesic_length_m(),
-    }
+    values: dict[int, object] = {0: transect.name.lower()}
+    site = _site_text(transect, site_names)
+    if site != NO_SITE_TEXT:
+        values[1] = site.lower()
+    length = transect.length_m or transect.geodesic_length_m()
+    if length is not None:
+        values[2] = length
     if transect.depth_m:
-        values[2] = transect.depth_m
+        values[3] = transect.depth_m
     if passes:
-        values[3] = passes
+        values[4] = passes
     if runs:
-        values[4] = runs
+        values[5] = runs
     return values
 
 
 def transect_tooltip(transect: Transect, passes: int = 0, runs: int = 0) -> str:
     """Coordinates, heading and notes, which the row itself has no room for."""
-    lines = [
-        f"<b>{transect.name}</b>",
-        f"Start {transect.start_lat:.5f}, {transect.start_lon:.5f}",
-        f"End {transect.end_lat:.5f}, {transect.end_lon:.5f}",
-        transect_geometry_text(transect),
-    ]
+    lines = [f"<b>{transect.name}</b>"]
+    ends = transect.end_points()
+    if ends is not None:
+        lines.append(f"Start {ends[0][0]:.5f}, {ends[0][1]:.5f}")
+        lines.append(f"End {ends[1][0]:.5f}, {ends[1][1]:.5f}")
+    lines.append(transect_geometry_text(transect))
     if transect.length_m:
         lines.append(f"{transect.length_m:g} m tape laid")
     if transect.depth_m:
         lines.append(f"{transect.depth_m:g} m deep")
+    if transect.start_depth_m is not None and transect.end_depth_m is not None:
+        lines.append(f"{transect.start_depth_m:g} m at the start, {transect.end_depth_m:g} m at the end")
     lines.append(f"{passes} pass(es) assigned, {runs} processed")
     if transect.description:
         lines.append(f"<i>{transect.description}</i>")
@@ -208,11 +273,23 @@ def next_transect_name(existing: Iterable[str], stem: str = "Transect") -> str:
 def _field_label(text: str, top: bool = False) -> QLabel:
     """Muted, right-aligned caption, so the column of inputs reads as one edge."""
     label = muted_label(text)
-    align = Qt.AlignmentFlag.AlignRight | (
-        Qt.AlignmentFlag.AlignTop if top else Qt.AlignmentFlag.AlignVCenter
-    )
+    align = Qt.AlignmentFlag.AlignRight | (Qt.AlignmentFlag.AlignTop if top else Qt.AlignmentFlag.AlignVCenter)
     label.setAlignment(align)
     return label
+
+
+def _show_coord(edit: QLineEdit, lat: float, lon: float) -> None:
+    """Write a fix into a field, showing its start rather than its end.
+
+    A field a few pixels short of the pair scrolls to the caret, which parks it
+    on the longitude and cuts the latitude's sign and degrees off the left. The
+    latitude is what says which reef this is, so it is the end kept in view; the
+    whole value is on the tooltip and behind the copy button.
+    """
+    text = f"{lat:.6f}, {lon:.6f}"
+    edit.setText(text)
+    edit.setToolTip(text)
+    edit.setCursorPosition(0)
 
 
 def _coord_edit() -> QLineEdit:
@@ -231,9 +308,7 @@ def _framed(inner: QWidget) -> QWidget:
     content, so the map stops bleeding into the page background."""
     frame = QWidget()
     frame.setObjectName("mapFrame")
-    frame.setStyleSheet(
-        f"QWidget#mapFrame {{ border: 1px solid {BORDER}; border-radius: {RADIUS}px; }}"
-    )
+    frame.setStyleSheet(f"QWidget#mapFrame {{ border: 1px solid {BORDER}; border-radius: {RADIUS}px; }}")
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(1, 1, 1, 1)
     layout.addWidget(inner)
@@ -345,10 +420,14 @@ class SimplePlanMixin(MixinBase):
         # to an ellipsis rather than pushing the counts off the right edge.
         self._transect_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         header_item = self._transect_list.headerItem()
-        header_item.setToolTip(3, "Video segments assigned to this transect")
-        header_item.setToolTip(4, "Reconstructions produced from them")
-        for column in range(1, PLAN_SPACER_COLUMN):
+        header_item.setToolTip(1, "The reef this transect is on")
+        header_item.setToolTip(4, "Video segments assigned to this transect")
+        header_item.setToolTip(5, "Reconstructions produced from them")
+        for column in range(_PLAN_FIGURE_COLUMN, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
+        # Tabular figures on the figures alone: "Vatu-i-Ra North" is a name, and
+        # the feature widens the hyphen it is spelled with. Site is a name too.
+        tabular_columns(self._transect_list, range(_PLAN_FIGURE_COLUMN, PLAN_SPACER_COLUMN))
         enable_sorting(self._transect_list)
         install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
@@ -365,17 +444,14 @@ class SimplePlanMixin(MixinBase):
         group_layout.addWidget(self._transect_stack, 1)
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
-        new_btn = QPushButton("New")
+        new_btn = QPushButton("New transect")
         new_btn.setProperty("cta", "true")
         new_btn.clicked.connect(self._on_transect_new)
         # A saved transect's endpoints are fixed until this is pressed, so a
         # stray drag cannot move a survey position with nothing to undo it.
         self._transect_edit_btn = QPushButton("Edit")
         self._transect_edit_btn.setCheckable(True)
-        self._transect_edit_btn.setToolTip(
-            "Unlock this transect so its ends can be dragged on the map. "
-            "Press again to save and lock it."
-        )
+        self._transect_edit_btn.setToolTip("Unlock the ends for dragging on the map. Press again to save.")
         self._transect_edit_btn.toggled.connect(self._on_transect_edit_toggled)
         delete_btn = QPushButton("Delete")
         delete_btn.clicked.connect(self._on_transect_delete)
@@ -385,6 +461,7 @@ class SimplePlanMixin(MixinBase):
         export_btn.clicked.connect(self._on_transects_export)
         # Creating and deleting a transect is a different kind of act from
         # moving the whole set in and out of a file, so the two groups separate.
+        buttons.addWidget(new_btn)
         buttons.addWidget(self._transect_edit_btn)
         buttons.addWidget(delete_btn)
         buttons.addStretch(1)
@@ -393,14 +470,20 @@ class SimplePlanMixin(MixinBase):
         group_layout.addLayout(buttons)
 
         details, details_layout = section_card("Details")
-        # New sits at the top of the card it fills. At the far corner of the
-        # table card below, the eye had to travel bottom-left to top-right to
-        # follow one action to its effect.
-        new_btn.setText("New transect")
-        new_row = QHBoxLayout()
-        new_row.addStretch(1)
-        new_row.addWidget(new_btn)
-        details_layout.addLayout(new_row)
+        # Shut unless a transect is being read or written. Standing open it took
+        # a third of the page to show empty fields, and the map and the cover
+        # chart either side of it had to give up the width.
+        details.setVisible(False)
+        self._transect_details = details
+        close_row = QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        self._transect_details_close = icon_button(
+            close_icon(), "Close the transect details", "Close these details"
+        )
+        self._transect_details_close.clicked.connect(self._close_transect_details)
+        close_row.addWidget(self._transect_details_close)
+        details_layout.addLayout(close_row)
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(8)
@@ -411,16 +494,26 @@ class SimplePlanMixin(MixinBase):
         grid.setColumnStretch(3, 1)
         grid.addWidget(_field_label("Name"), 0, 0)
         self._tr_name_input = QLineEdit()
-        grid.addWidget(self._tr_name_input, 0, 1)
+        grid.addWidget(self._tr_name_input, 0, 1, 1, 2)
         # Which reef the line is on. Sites come down from the registry, so with
         # none pulled the combo holds only "No site" and changes nothing; names
         # are unique per site, so two reefs can each have a T1.
-        grid.addWidget(_field_label("Site"), 0, 2)
+        grid.addWidget(_field_label("Site"), 1, 0)
+        site_row = QHBoxLayout()
+        site_row.setContentsMargins(0, 0, 0, 0)
+        site_row.setSpacing(4)
         self._tr_site_combo = QComboBox()
-        self._tr_site_combo.setToolTip(
-            "The site this transect belongs to, from the registry's site list."
-        )
-        grid.addWidget(self._tr_site_combo, 0, 3)
+        self._tr_site_combo.setToolTip("The site this transect belongs to.")
+        site_row.addWidget(self._tr_site_combo, 1)
+        self._tr_new_site_btn = QPushButton("New…")
+        self._tr_new_site_btn.setProperty("quiet", "true")
+        self._tr_new_site_btn.setToolTip("Name a site the registry does not list yet.")
+        self._tr_new_site_btn.clicked.connect(self._on_new_site)
+        site_row.addWidget(self._tr_new_site_btn)
+        self._tr_edit_site_btn = icon_button(pencil_icon(), EDIT_SITE, EDIT_SITE)
+        self._tr_edit_site_btn.clicked.connect(self._on_edit_site)
+        site_row.addWidget(self._tr_edit_site_btn)
+        grid.addLayout(site_row, 1, 1, 1, 2)
         self._refresh_site_choices()
 
         # One box per end takes a coordinate straight off a GPS, pasted or
@@ -429,13 +522,11 @@ class SimplePlanMixin(MixinBase):
         # only appears once there is something to copy.
         self._tr_start_coord = _coord_edit()
         self._tr_end_coord = _coord_edit()
-        grid.addWidget(_field_label("Start"), 1, 0)
-        grid.addWidget(self._tr_start_coord, 1, 1, 1, 2)
-        grid.addWidget(_field_label("End"), 2, 0)
-        grid.addWidget(self._tr_end_coord, 2, 1, 1, 2)
-        self._coord_copy_actions = {
-            which: self._add_copy_action(which) for which in ("start", "end")
-        }
+        grid.addWidget(_field_label("Start"), 2, 0)
+        grid.addWidget(self._tr_start_coord, 2, 1, 1, 2)
+        grid.addWidget(_field_label("End"), 3, 0)
+        grid.addWidget(self._tr_end_coord, 3, 1, 1, 2)
+        self._coord_copy_actions = {which: self._add_copy_action(which) for which in ("start", "end")}
         for edit in (self._tr_start_coord, self._tr_end_coord):
             edit.editingFinished.connect(self._on_coords_edited)
 
@@ -446,16 +537,13 @@ class SimplePlanMixin(MixinBase):
         self._pick_both_btn.setAccessibleName("Draw the transect on the map")
         self._pick_both_btn.setCheckable(True)
         self._pick_both_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        self._pick_both_btn.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
-        )
+        self._pick_both_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self._pick_both_btn.setToolTip(
-            "Draw the transect on the map: click its start, then its end. "
-            "Drag either end afterwards to adjust it."
+            "Draw the transect on the map: click its start, then its end. Drag either end afterwards to adjust it."
         )
         self._pick_both_btn.toggled.connect(self._on_pick_both_toggled)
         self._sync_map_pick_mode()
-        grid.addWidget(self._pick_both_btn, 1, 3, 2, 1)
+        grid.addWidget(self._pick_both_btn, 2, 3, 2, 1)
 
         # Length and heading are read off the two endpoints, so they are stated
         # rather than entered: a transect drawn the wrong way round shows it here.
@@ -464,24 +552,49 @@ class SimplePlanMixin(MixinBase):
         self._tr_geometry.setToolTip(
             "Straight-line distance and compass heading from the start point to the end point."
         )
-        grid.addWidget(self._tr_geometry, 3, 1, 1, 3)
+        grid.addWidget(self._tr_geometry, 4, 1, 1, 3)
         self._refresh_geometry_readout()
 
         self._tr_length = OptionalMetresSpinBox(500.0)
-        self._tr_length.setToolTip(
-            "Tape length measured underwater. When set it is what the run is "
-            "scaled to, in place of the distance between the GPS endpoints."
-        )
+        self._tr_length.setToolTip("Tape length measured underwater. Scales the run when set.")
         self._tr_depth = OptionalMetresSpinBox(100.0)
-        self._tr_depth.setToolTip("Depth of the transect. Leave unset if not recorded.")
-        grid.addWidget(_field_label("Length"), 4, 0)
-        grid.addWidget(self._tr_length, 4, 1)
-        grid.addWidget(_field_label("Depth"), 4, 2)
-        grid.addWidget(self._tr_depth, 4, 3)
+        self._tr_depth.setToolTip(
+            "Depth of the transect: the mean of the two end depths, or a single "
+            "reading where the ends were never recorded."
+        )
+        grid.addWidget(_field_label("Length"), 5, 0)
+        grid.addWidget(self._tr_length, 5, 1)
+        grid.addWidget(_field_label("Depth"), 5, 2)
+        grid.addWidget(self._tr_depth, 5, 3)
 
-        grid.addWidget(_field_label("Notes", top=True), 5, 0, Qt.AlignmentFlag.AlignTop)
+        # Depth at each end, as the dive computer reads it where the tape was tied off.
+        self._tr_start_depth = OptionalMetresSpinBox(100.0)
+        self._tr_start_depth.setToolTip("Depth at the start of the tape.")
+        self._tr_end_depth = OptionalMetresSpinBox(100.0)
+        self._tr_end_depth.setToolTip("Depth at the end of the tape.")
+        grid.addWidget(_field_label("Start depth"), 6, 0)
+        grid.addWidget(self._tr_start_depth, 6, 1)
+        grid.addWidget(_field_label("End depth"), 6, 2)
+        grid.addWidget(self._tr_end_depth, 6, 3)
+
+        # The GPS fix's own accuracy, per end, as a field unit exports it.
+        self._tr_start_accuracy = OptionalMetresSpinBox(1000.0)
+        self._tr_start_accuracy.setToolTip("GPS accuracy at the start fix.")
+        self._tr_end_accuracy = OptionalMetresSpinBox(1000.0)
+        self._tr_end_accuracy.setToolTip("GPS accuracy at the end fix.")
+        grid.addWidget(_field_label("Start ±"), 7, 0)
+        grid.addWidget(self._tr_start_accuracy, 7, 1)
+        grid.addWidget(_field_label("End ±"), 7, 2)
+        grid.addWidget(self._tr_end_accuracy, 7, 3)
+
+        # Why the form is read-only, when it is.
+        self._tr_lock_note = secondary_label("")
+        self._tr_lock_note.setWordWrap(True)
+        grid.addWidget(self._tr_lock_note, 8, 1, 1, 3)
+
+        grid.addWidget(_field_label("Notes", top=True), 9, 0, Qt.AlignmentFlag.AlignTop)
         self._tr_description = NotesEdit()
-        grid.addWidget(self._tr_description, 5, 1, 1, 3)
+        grid.addWidget(self._tr_description, 9, 1, 1, 3)
 
         # No Save button: a new transect shows as a live draft row in the list
         # and commits itself the moment name and both endpoints are complete;
@@ -495,6 +608,10 @@ class SimplePlanMixin(MixinBase):
             edit.textChanged.connect(self._on_coords_typed)
         self._tr_length.editingFinished.connect(self._maybe_autosave)
         self._tr_depth.editingFinished.connect(self._maybe_autosave)
+        self._tr_start_depth.editingFinished.connect(self._on_depth_ends_edited)
+        self._tr_end_depth.editingFinished.connect(self._on_depth_ends_edited)
+        self._tr_start_accuracy.editingFinished.connect(self._maybe_autosave)
+        self._tr_end_accuracy.editingFinished.connect(self._maybe_autosave)
         self._tr_description.editing_finished.connect(self._maybe_autosave)
         # activated, not currentIndexChanged: only a person's pick commits, so
         # refilling the combo after a pull cannot save the form by side effect.
@@ -507,7 +624,10 @@ class SimplePlanMixin(MixinBase):
         top.addWidget(details)
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
-        details.setMinimumWidth(360)
+        # Wide enough for a coordinate and the button inside its field. Only
+        # spent while the form is open, which is why the page can afford it.
+        details.setMinimumWidth(_PLAN_DETAILS_WIDTH)
+        self._plan_top_split = top
 
         # Map and form over the list on the left, and what a transect found down
         # the full height of the right. The chart plus its six-column table need
@@ -554,6 +674,17 @@ class SimplePlanMixin(MixinBase):
             analysis = max(PLAN_ANALYSIS_MIN_WIDTH, int(total * _PLAN_ANALYSIS_SHARE))
             self._plan_split.setSizes([max(1, total - analysis), analysis])
 
+            # With the form shut the map takes the whole top row; with it open the
+            # two share, the form on its floor and the map on the rest.
+            top = getattr(self, "_plan_top_split", None)
+            if top is not None:
+                width = top.width() or sum(top.sizes())
+                if self._transect_details.isVisible():
+                    form = max(_PLAN_DETAILS_WIDTH, int(width * _PLAN_DETAILS_SHARE))
+                    top.setSizes([max(1, width - form), form])
+                else:
+                    top.setSizes([max(1, width), 0])
+
             height = self._plan_work_split.height()
             if height < SPLIT_MIN_TOTAL:
                 height = sum(self._plan_work_split.sizes()) or 800
@@ -581,20 +712,73 @@ class SimplePlanMixin(MixinBase):
     def _refresh_site_choices(self) -> None:
         """Refill the site combo, keeping whatever is picked. Sites arrive by
         pull, so the choices can grow between visits to this page."""
-        combo = self._tr_site_combo
-        kept = combo.currentData()
         store = self._try_survey_store()
-        sites = store.list_sites() if store is not None else []
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            combo.addItem("No site", None)
-            for site in sites:
-                combo.addItem(site.name, str(site.id))
-            if kept:
-                combo.setCurrentIndex(max(0, combo.findData(kept)))
-        finally:
-            combo.blockSignals(False)
+        if store is None:
+            self._tr_site_combo.clear()
+            self._tr_site_combo.addItem(NO_SITE, None)
+        else:
+            refill_sites(self._tr_site_combo, store)
+        self._refresh_site_edit()
+
+    def _site_names(self) -> dict[uuid.UUID, str]:
+        store = self._try_survey_store()
+        return {site.id: site.name for site in store.list_sites()} if store is not None else {}
+
+    def _refresh_site_edit(self) -> None:
+        store = self._try_survey_store()
+        chosen = self._form_site_id()
+        site = store.get_site(chosen) if store is not None and chosen is not None else None
+        arm_edit(self._tr_edit_site_btn, site, EDIT_SITE)
+
+    def _on_new_site(self) -> None:
+        store = self._try_survey_store()
+        if store is None:
+            return
+        dialog = SiteDialog(self, store)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.site is None:
+            return
+        self._refresh_site_choices()
+        self._set_form_site(dialog.site.id)
+        self._status_label.setText(f"Added site {dialog.site.name}.")
+        self._maybe_autosave()
+        self._survey_data_changed()
+
+    def _on_edit_site(self) -> None:
+        """Change the site the form is pointing at, from the form.
+
+        Only the name is on show in the transect list, but a site carries a
+        country too, and the pair is what the registry keeps unique.
+        """
+        store = self._try_survey_store()
+        chosen = self._form_site_id()
+        site = store.get_site(chosen) if store is not None and chosen is not None else None
+        if store is None or site is None:
+            return
+        dialog = SiteDialog(self, store, site)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.site is None:
+            return
+        self._refresh_site_choices()
+        self._set_form_site(dialog.site.id)
+        self._status_label.setText(f"Site is now called {dialog.site.name}.")
+        self._refresh_transect_list(self._selected_transect_id())
+        self._survey_data_changed()
+
+    def _locked_transect_note(self, transect_id: uuid.UUID | None) -> str:
+        """Why the transect in the form cannot be changed here, or an empty string."""
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id
+
+        if transect_id is None:
+            return ""
+        transect = self._survey_store().get_transect(transect_id)
+        return "" if transect is None else lock_note(transect, own_device_id())
+
+    def _transect_is_read_only(self, transect_id: uuid.UUID | None) -> bool:
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
+
+        if transect_id is None:
+            return False
+        transect = self._survey_store().get_transect(transect_id)
+        return transect is not None and read_only(transect, own_device_id())
 
     def _form_site_id(self) -> uuid.UUID | None:
         data = self._tr_site_combo.currentData()
@@ -603,6 +787,7 @@ class SimplePlanMixin(MixinBase):
     def _set_form_site(self, site_id: uuid.UUID | None) -> None:
         index = self._tr_site_combo.findData(str(site_id)) if site_id else 0
         self._tr_site_combo.setCurrentIndex(max(0, index))
+        self._refresh_site_edit()
 
     def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None:
         store = self._try_survey_store()
@@ -666,9 +851,7 @@ class SimplePlanMixin(MixinBase):
         kept = str(select_id) if select_id is not None else None
         return [t for t in saved if str(t.id) in visible or str(t.id) == kept]
 
-    def _refresh_plan_scope_chips(
-        self, saved: list[Transect], visible: frozenset[str] | None
-    ) -> None:
+    def _refresh_plan_scope_chips(self, saved: list[Transect], visible: frozenset[str] | None) -> None:
         """Offer the scope only where it filters something.
 
         Below two transects there is nothing to narrow, and a chip pair over a
@@ -690,9 +873,7 @@ class SimplePlanMixin(MixinBase):
                 chips.set_current("all")
             finally:
                 chips.blockSignals(False)
-        in_view = (
-            len(saved) if visible is None else len([t for t in saved if str(t.id) in visible])
-        )
+        in_view = len(saved) if visible is None else len([t for t in saved if str(t.id) in visible])
         chips.set_counts({"in_view": in_view, "all": len(saved)})
 
     def _on_plan_scope_changed(self, key: str) -> None:
@@ -710,18 +891,21 @@ class SimplePlanMixin(MixinBase):
         name what it is showing and carry the count, and a heading repeating
         both cost a row on a card that is short of them.
         """
+        # One lookup table for the whole rebuild rather than a query per row,
+        # for the reason transect_row_columns gives.
+        site_names = self._site_names()
         for transect in transects:
             passes, runs = counts.get(transect.id, (0, 0))
             item = SortableTreeItem(
                 self._transect_list,
-                transect_row_columns(transect, passes, runs),
-                transect_row_values(transect, passes, runs),
+                transect_row_columns(transect, passes, runs, site_names),
+                transect_row_values(transect, passes, runs, site_names),
             )
             item.setData(0, Qt.ItemDataRole.UserRole, str(transect.id))
             tooltip = transect_tooltip(transect, passes, runs)
             for column in range(len(PLAN_COLUMNS)):
                 item.setToolTip(column, tooltip)
-                if 0 < column < PLAN_SPACER_COLUMN:
+                if _PLAN_FIGURE_COLUMN <= column < PLAN_SPACER_COLUMN:
                     item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
 
     def _add_draft_row(self, columns: list[str]) -> QTreeWidgetItem:
@@ -736,7 +920,7 @@ class SimplePlanMixin(MixinBase):
         font.setItalic(True)
         for column in range(len(PLAN_COLUMNS)):
             item.setFont(column, font)
-            if 0 < column < PLAN_SPACER_COLUMN:
+            if _PLAN_FIGURE_COLUMN <= column < PLAN_SPACER_COLUMN:
                 item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         return item
 
@@ -754,12 +938,10 @@ class SimplePlanMixin(MixinBase):
         try:
             lat1, lon1, lat2, lon2 = self._form_coordinates()
         except ValueError:
-            return [label, "incomplete", "", "", "", ""]
-        length = transect_length_text(
-            self._tr_length.value() or None, haversine_m(lat1, lon1, lat2, lon2)
-        )
+            return [label, _site_text_for_id(self._form_site_id(), self._site_names()), "incomplete", "", "", "", ""]
+        length = transect_length_text(self._tr_length.value() or None, haversine_m(lat1, lon1, lat2, lon2))
         depth = f"{self._tr_depth.value():g} m" if self._tr_depth.value() else "—"
-        return [label, length, depth, "—", "—", ""]
+        return [label, _site_text_for_id(self._form_site_id(), self._site_names()), length, depth, "—", "—", ""]
 
     def _select_transect_row(self, id_str: str) -> None:
         """Select the row for ``id_str``, if the active scope is showing it."""
@@ -835,8 +1017,28 @@ class SimplePlanMixin(MixinBase):
         try:
             self._form_coordinates()
         except ValueError:
-            return
+            # A line with no GPS ends at all still saves; a half-typed one waits.
+            if self._tr_start_coord.text().strip() or self._tr_end_coord.text().strip():
+                return
         self._on_transect_save()
+
+    def _open_transect_details(self) -> None:
+        """Show the form, and give it its share of the top row."""
+        if self._transect_details.isVisible():
+            return
+        self._transect_details.setVisible(True)
+        self._apply_plan_split_sizes()
+
+    def _close_transect_details(self) -> None:
+        """Put the form away and hand the width back to the map.
+
+        The selection stays: closing the form is done with reading it, not done
+        with the transect, and the list is still where the eye is.
+        """
+        self._transect_details.setVisible(False)
+        self._set_pick_armed(False)
+        self._set_transect_editing(False)
+        self._apply_plan_split_sizes()
 
     def _selected_transect_id(self) -> uuid.UUID | None:
         item = self._transect_list.currentItem()
@@ -854,27 +1056,37 @@ class SimplePlanMixin(MixinBase):
         transect = self._survey_store().get_transect(transect_id)
         if transect is None:
             return
+        self._open_transect_details()
         self._transect_form_id = transect.id
         self._set_pick_armed(False)
         # A transect opened from the list is being looked at, not moved.
         self._set_transect_editing(False)
         self._tr_name_input.setText(transect.name)
-        self._tr_start_coord.setText(f"{transect.start_lat:.6f}, {transect.start_lon:.6f}")
-        self._tr_end_coord.setText(f"{transect.end_lat:.6f}, {transect.end_lon:.6f}")
+        ends = transect.end_points()
+        if ends is None:
+            self._tr_start_coord.clear()
+            self._tr_end_coord.clear()
+        else:
+            _show_coord(self._tr_start_coord, *ends[0])
+            _show_coord(self._tr_end_coord, *ends[1])
         self._tr_length.setValue(transect.length_m or 0.0)
         self._tr_depth.setValue(transect.depth_m or 0.0)
+        self._tr_start_depth.setValue(transect.start_depth_m or 0.0)
+        self._tr_end_depth.setValue(transect.end_depth_m or 0.0)
+        self._sync_depth_from_ends()
+        self._tr_start_accuracy.setValue(transect.start_accuracy_m or 0.0)
+        self._tr_end_accuracy.setValue(transect.end_accuracy_m or 0.0)
         self._set_form_site(transect.site_id)
         self._tr_description.setPlainText(transect.description)
+        self._tr_lock_note.setText(self._locked_transect_note(transect.id))
+        self._transect_edit_btn.setEnabled(not self._transect_is_read_only(transect.id))
         self._refresh_plan_map()
         # Picking a transect by name is a request to look at it, so the map goes
         # there rather than leaving the selected line off screen. A transect
         # picked by clicking its line is already on screen and the map holds
         # still, or the click would yank the view out from under the pointer.
-        if focus_map:
-            self._plan_map.focus_on(
-                [(transect.start_lat, transect.start_lon), (transect.end_lat, transect.end_lon)],
-                fill=FOCUS_FILL,
-            )
+        if focus_map and ends is not None:
+            self._plan_map.focus_on(list(ends), fill=FOCUS_FILL)
         self._set_scope_transect(transect.id)
 
     # --- Form handling ---
@@ -886,6 +1098,7 @@ class SimplePlanMixin(MixinBase):
         name unique), so it is filled in and left selected for anyone who has a
         better one, and the map tool arms itself for the two clicks that matter.
         """
+        self._open_transect_details()
         self._transect_form_id = None
         self._transect_list.setCurrentIndex(QModelIndex())
         for edit in (
@@ -896,6 +1109,12 @@ class SimplePlanMixin(MixinBase):
             edit.clear()
         self._tr_length.setValue(0.0)
         self._tr_depth.setValue(0.0)
+        self._tr_start_depth.setValue(0.0)
+        self._tr_end_depth.setValue(0.0)
+        self._sync_depth_from_ends()
+        self._tr_start_accuracy.setValue(0.0)
+        self._tr_end_accuracy.setValue(0.0)
+        self._tr_lock_note.setText("")
         existing = [t.name for t in self._survey_store().list_transects()]
         self._tr_name_input.setText(next_transect_name(existing))
         self._tr_name_input.setFocus()
@@ -907,7 +1126,7 @@ class SimplePlanMixin(MixinBase):
         return self._tr_start_coord if which == "start" else self._tr_end_coord
 
     def _set_endpoint(self, which: str, lat: float, lon: float) -> None:
-        self._coord_edit(which).setText(f"{lat:.6f}, {lon:.6f}")
+        _show_coord(self._coord_edit(which), lat, lon)
         self._status_label.setText(f"{which.capitalize()} point set.")
         self._refresh_plan_map()
         self._maybe_autosave()
@@ -948,8 +1167,36 @@ class SimplePlanMixin(MixinBase):
             f"heading {bearing_text(lat1, lon1, lat2, lon2)}"
         )
 
+    def _on_depth_ends_edited(self) -> None:
+        self._sync_depth_from_ends()
+        self._maybe_autosave()
+
+    def _sync_depth_from_ends(self) -> None:
+        """Depth follows the two ends wherever both are recorded.
+
+        A line measured at each end has one depth and it is their mean, so the
+        box states it rather than offering a third number that can disagree.
+        The ends are what the registry derives it from too. Where an end is
+        missing, the box is the only place the depth can come from and stays
+        editable: that is how the historical sheets read.
+        """
+        mean = mean_depth_m(self._tr_start_depth.value() or None, self._tr_end_depth.value() or None)
+        derived = mean is not None
+        if mean is not None:
+            self._tr_depth.setValue(mean)
+        self._tr_depth.setReadOnly(derived)
+        self._tr_depth.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons if derived else QAbstractSpinBox.ButtonSymbols.UpDownArrows
+        )
+
     def _on_transect_save(self) -> None:
         store = self._survey_store()
+        if self._transect_is_read_only(self._transect_form_id):
+            self._status_label.setText(self._locked_transect_note(self._transect_form_id))
+            return
+        if self._form_site_id() is None:
+            self._status_label.setText(SITE_REQUIRED)
+            return
         try:
             transect = build_transect(
                 self._tr_name_input.text(),
@@ -959,6 +1206,10 @@ class SimplePlanMixin(MixinBase):
                 depth_m=self._tr_depth.value(),
                 description=self._tr_description.toPlainText().strip(),
                 site_id=self._form_site_id(),
+                start_accuracy_m=self._tr_start_accuracy.value(),
+                end_accuracy_m=self._tr_end_accuracy.value(),
+                start_depth_m=self._tr_start_depth.value(),
+                end_depth_m=self._tr_end_depth.value(),
             )
         except ValueError as exc:
             self._status_label.setText(str(exc))
@@ -970,9 +1221,7 @@ class SimplePlanMixin(MixinBase):
                 transect.id = self._transect_form_id
                 store.update_transect(transect)
         except sqlite3.IntegrityError:
-            self._status_label.setText(
-                f"A transect named {transect.name!r} already exists on that site."
-            )
+            self._status_label.setText(f"A transect named {transect.name!r} already exists on that site.")
             return
         self._transect_form_id = transect.id
         self._status_label.setText(f"Saved transect {transect.name}.")
@@ -982,6 +1231,9 @@ class SimplePlanMixin(MixinBase):
     def _on_transect_delete(self) -> None:
         transect_id = self._selected_transect_id()
         if transect_id is None:
+            return
+        if self._transect_is_read_only(transect_id):
+            self._status_label.setText(self._locked_transect_note(transect_id))
             return
         try:
             self._survey_store().delete_transect(transect_id)
@@ -1013,8 +1265,13 @@ class SimplePlanMixin(MixinBase):
             self._status_label.setText(f"Import failed: {exc}")
             return
         store = self._survey_store()
+        sites = {site.name.casefold(): site.id for site in store.list_sites()}
+        named = csv_site_names(path) if path.suffix.lower() == ".csv" else {}
         added, skipped = 0, 0
         for transect in transects:
+            site_name = named.get(transect.name, "")
+            if site_name and transect.site_id is None:
+                transect.site_id = sites.get(site_name.casefold())
             try:
                 store.add_transect(transect)
                 added += 1
@@ -1037,7 +1294,8 @@ class SimplePlanMixin(MixinBase):
         if not path_str:
             return
         transects = self._survey_store().list_transects()
-        save_transects_csv(Path(path_str), transects)
+        store = self._survey_store()
+        save_transects_csv(Path(path_str), transects, {site.id: site.name for site in store.list_sites()})
         self._status_label.setText(f"Exported {len(transects)} transect(s).")
 
     # --- Map ---
@@ -1051,33 +1309,39 @@ class SimplePlanMixin(MixinBase):
         except ValueError:
             typed = None
         overlays = []
-        for transect in (store.list_transects() if store is not None else []):
+        for transect in store.list_transects() if store is not None else []:
             passes, runs = counts.get(transect.id, (0, 0))
             # The selected transect follows the fields as they are typed, so a
             # pasted coordinate lands on the map before it is committed.
-            start = (transect.start_lat, transect.start_lon)
-            end = (transect.end_lat, transect.end_lon)
+            ends = transect.end_points()
             if transect.id == selected and typed is not None:
-                start, end = (typed[0], typed[1]), (typed[2], typed[3])
-            overlays.append(OverlayTransect(
-                id=str(transect.id),
-                start=start,
-                end=end,
-                color=QColor(PRIMARY),
-                selected=transect.id == selected,
-                label=transect.name,
-                tooltip=transect_tooltip(transect, passes, runs),
-            ))
+                ends = ((typed[0], typed[1]), (typed[2], typed[3]))
+            if ends is None:
+                continue
+            start, end = ends
+            overlays.append(
+                OverlayTransect(
+                    id=str(transect.id),
+                    start=start,
+                    end=end,
+                    color=QColor(PRIMARY),
+                    selected=transect.id == selected,
+                    label=transect.name,
+                    tooltip=transect_tooltip(transect, passes, runs),
+                )
+            )
         # An unsaved transect previews as soon as both endpoints are filled.
         if selected is None and typed is not None:
-            overlays.append(OverlayTransect(
-                id=DRAFT_ID,
-                start=(typed[0], typed[1]),
-                end=(typed[2], typed[3]),
-                color=QColor(PRIMARY),
-                selected=True,
-                label=self._tr_name_input.text().strip(),
-            ))
+            overlays.append(
+                OverlayTransect(
+                    id=DRAFT_ID,
+                    start=(typed[0], typed[1]),
+                    end=(typed[2], typed[3]),
+                    color=QColor(PRIMARY),
+                    selected=True,
+                    label=self._tr_name_input.text().strip(),
+                )
+            )
         self._plan_map.set_transects(overlays)
         # Only the transect being edited offers its endpoints to the pointer; the
         # rest are there to be read, hovered and clicked without moving.
@@ -1117,9 +1381,7 @@ class SimplePlanMixin(MixinBase):
         # The status bar is at the far corner of the window from the field that
         # was clicked, so the confirmation is also shown at the field itself and
         # the button briefly becomes a tick.
-        QToolTip.showText(
-            edit.mapToGlobal(edit.rect().topRight()), "Copied to clipboard", edit
-        )
+        QToolTip.showText(edit.mapToGlobal(edit.rect().topRight()), "Copied to clipboard", edit)
         action = self._coord_copy_actions[which]
         action.setIcon(check_icon(ICON_SM))
         QTimer.singleShot(1200, lambda a=action: a.setIcon(copy_icon(16)))
@@ -1148,9 +1410,7 @@ class SimplePlanMixin(MixinBase):
 
     def _sync_transect_edit_enabled(self) -> None:
         """The button has nothing to unlock until there is a transect in the form."""
-        has_form = self._transect_form_id is not None or bool(
-            self._tr_name_input.text().strip()
-        )
+        has_form = self._transect_form_id is not None or bool(self._tr_name_input.text().strip())
         self._transect_edit_btn.setEnabled(has_form)
 
     def _set_pick_armed(self, on: bool) -> None:
@@ -1174,9 +1434,7 @@ class SimplePlanMixin(MixinBase):
         land somewhere."""
         armed = self._pick_stage is not None
         self._plan_map.set_pick_mode(armed)
-        self._pick_both_btn.setText(
-            {"start": "Click start", "end": "Click end", None: "Draw"}[self._pick_stage]
-        )
+        self._pick_both_btn.setText({"start": "Click start", "end": "Click end", None: "Draw"}[self._pick_stage])
 
     def _on_plan_map_clicked(self, lat: float, lon: float) -> None:
         if self._pick_stage == "start":

@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
+from deepreefmap_gui.survey.jobs import pass_state
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -73,19 +74,9 @@ class Span:
     run_count: int
 
 
-def pass_status(runs: Sequence[RunRecord]) -> str:
-    """The status shown for a pass: its latest run's, or ``queued`` with none.
-
-    The single rule for "what became of this section". ``runs/video_detail.py``
-    derives the same thing for its pass list and must call this rather than
-    repeat it, or a section reads one way in the detail pane and another on the
-    timeline beside it. Latest is by ``created_at``, ties keeping the given
-    order, which is what a plain ``runs[-1]`` gives on rows read back in
-    insertion order.
-    """
-    if not runs:
-        return "queued"
-    return sorted(runs, key=lambda run: run.created_at or "")[-1].status
+def pass_status(runs: Sequence[RunRecord], *, queued: bool = False) -> str:
+    """Return the pass's current processing presentation state."""
+    return pass_state(runs, queued=queued)
 
 
 def capture_moment(video: VideoAsset) -> datetime | None:
@@ -243,7 +234,8 @@ def timeline_spans(entry: VideoLibraryEntry) -> list[Span]:
     spans = []
     for pass_ in sorted(entry.passes, key=_pass_order):
         runs = runs_by_pass.get(pass_.id, [])
-        span = span_for_pass(pass_, duration, pass_status(runs), len(runs))
+        state = pass_status(runs, queued=str(pass_.id) in entry.queued_pass_ids)
+        span = span_for_pass(pass_, duration, state, len(runs))
         if span is not None:
             spans.append(span)
     return spans

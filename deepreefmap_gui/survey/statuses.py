@@ -55,8 +55,9 @@ STATUSES: tuple[StatusSpec, ...] = (
     # A crash or a quit mid-run. The startup sweep reconciles rows stuck
     # non-terminal to this.
     StatusSpec("interrupted", "Interrupted", TONE_BUSY, OUTCOME_UNFINISHED),
-    # A pass with no run yet. The absence of a RunRecord is what says it.
-    StatusSpec("queued", "Queued", TONE_IDLE, OUTCOME_UNFINISHED, persisted=False),
+    # Presentation states do not add persisted run statuses.
+    StatusSpec("ready", "Ready", TONE_IDLE, OUTCOME_UNFINISHED, persisted=False),
+    StatusSpec("queued", "In queue", TONE_IDLE, OUTCOME_UNFINISHED, persisted=False),
     # A run directory the database has no row for: the same event as interrupted
     # from the diver's side, so the same tone.
     StatusSpec("incomplete", "Incomplete", TONE_BUSY, OUTCOME_UNFINISHED, persisted=False),
@@ -112,10 +113,10 @@ class ClipSpec:
 
 
 CLIP_OUTCOMES: tuple[ClipSpec, ...] = (
-    ClipSpec(CLIP_UNPROCESSED, "Not processed", TONE_IDLE),
-    ClipSpec(CLIP_PENDING, "Part processed", TONE_BUSY),
-    ClipSpec(CLIP_FAILED, "Failed", TONE_BAD),
-    ClipSpec(CLIP_PROCESSED, "Processed", TONE_GOOD),
+    ClipSpec(CLIP_UNPROCESSED, "To organise", TONE_IDLE),
+    ClipSpec(CLIP_PENDING, "To process", TONE_IDLE),
+    ClipSpec(CLIP_FAILED, "Needs attention", TONE_BAD),
+    ClipSpec(CLIP_PROCESSED, "Complete", TONE_GOOD),
 )
 
 _CLIP_BY_KEY = {spec_.key: spec_ for spec_ in CLIP_OUTCOMES}

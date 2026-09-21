@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QTableWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     SortableItem,
@@ -24,6 +26,7 @@ from deepreefmap_gui.core.widgets import (
     enable_sorting,
     fitted_column_widths,
     install_column_sizer,
+    tabular_columns,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
@@ -58,33 +61,44 @@ _HEADERS = (
 # Columns whose width is a property of what they hold rather than of the window:
 # a status pill, a fixed-width timestamp, a formatted number. Sizing these to
 # content instead let them take the viewport and squeeze Name to an ellipsis,
-# and sizing them to the window would only pad digits with air.
+# and sizing them to the window would only pad digits with air. Measured against
+# the widest value each holds, not guessed: a timestamp column short of its
+# timestamp elides every row it has. The measurement carries a few pixels of
+# slack, because the item delegate reserves a focus margin beyond the padding
+# and a column sized to the exact advance still elides.
 _FIXED_WIDTHS = {
-    COL_STATUS: 88,
-    COL_CREATED: 112,
-    COL_FRAMES: 64,
-    COL_POINTS: 64,
-    COL_RUNTIME: 72,
-    COL_SIZE: 72,
+    COL_STATUS: 92,
+    COL_CREATED: 152,
+    COL_SIZE: 76,
 }
 
-# Secondary identifiers, shown in the order they earn their width and hidden
-# when it is not there. Browse leaves the table around 830px with the rail open,
-# which is what the columns above plus the flexing ones already spend; adding
-# these unconditionally would put a scrollbar under the page's one table. The
-# row's tooltip carries both whether or not a column does.
-_OPTIONAL_WIDTHS = ((COL_DIRECTION, 76), (COL_RECORDED, 112))
+# Secondary identifiers and figures, shown in the order they earn their width and
+# hidden when it is not there. With the rail open Browse leaves this table around
+# 700px, which the columns above and the flexing ones below already spend, so
+# everything else has to earn its place. Figures come before identifiers: a
+# number is read off the row, a repeat of the group heading is not. The row's
+# tooltip carries all of them whether or not a column does.
+_OPTIONAL_WIDTHS = (
+    (COL_POINTS, 64),
+    (COL_RUNTIME, 80),
+    (COL_FRAMES, 64),
+    (COL_TRANSECT, 140),
+    (COL_DIRECTION, 96),
+    (COL_RECORDED, 152),
+)
 
 # What is left over, shared out by weight. Qt's Stretch mode splits slack
-# equally, which would hand Transect as much room as Name; the name is what
-# identifies a row, so it takes the larger share and the two weaker identifiers
-# follow it.
-_FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
+# equally, which would hand the clip as much room as the run; the name is what
+# identifies a row, so it takes the larger share and the clip follows it.
+# Transect is not here: on the grouped facets it repeats the heading above the
+# table, so it earns its width with the other secondary columns rather than
+# taking a share of the slack from the two that always say something.
+_FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2}
 
 # Below these a column has stopped saying which run, which clip or which line,
 # so it holds its floor and the table scrolls instead. That only happens on a
 # window too narrow to hold the columns by any arrangement.
-_FLEX_MINIMUMS = {COL_NAME: 140, COL_VIDEO: 100, COL_TRANSECT: 80}
+_FLEX_MINIMUMS = {COL_NAME: 180, COL_VIDEO: 120}
 
 # Numbers read right-aligned, which also lines up their digits down the column.
 # Their headers follow them, so label and value share an edge.
@@ -188,6 +202,10 @@ class RunTable(QTableWidget):
         # apart by their two ends, so dropping the tail of GX_VIDEO_1_OF_2.MP4
         # loses exactly the character that identifies it.
         self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        # Tabular figures on the figures alone: a column of counts, sizes and
+        # timestamps lines its digits up, while the names keep the proportional
+        # hyphen the feature would otherwise widen.
+        tabular_columns(self, (*_NUMERIC_COLUMNS, COL_CREATED, COL_RECORDED))
 
         for column in _NUMERIC_COLUMNS:
             item = self.horizontalHeaderItem(column)
@@ -196,7 +214,23 @@ class RunTable(QTableWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
         enable_sorting(self, COL_CREATED, Qt.SortOrder.DescendingOrder)
-        install_column_sizer(self, _COLUMN_SPEC, settings_key="runs")
+        self.column_sizer = install_column_sizer(self, _COLUMN_SPEC, settings_key="runs")
+        self.set_technical_columns(False)
+
+    def set_technical_columns(self, visible: bool) -> None:
+        """Show the full result inventory or the field review columns."""
+        if visible:
+            self.column_sizer.set_spec(_COLUMN_SPEC)
+            return
+        metrics = self.fontMetrics()
+        figures = QFontMetrics(tabular(self.font()))
+        self.column_sizer.set_spec(ColumnSpec(
+            fixed={COL_STATUS: metrics.horizontalAdvance("Succeeded") + 32,
+                   COL_CREATED: figures.horizontalAdvance("2026-09-21 10:38") + 32},
+            weights={COL_NAME: 3, COL_TRANSECT: 2},
+            minimums={COL_NAME: 160, COL_TRANSECT: 100},
+            optional=((COL_POINTS, 90),),
+        ))
 
     def current_run_dir(self) -> str | None:
         row = self.currentRow()

@@ -2,8 +2,8 @@ import pytest
 from _factories import make_transect
 
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
-from deepreefmap_gui.simple.plan import DRAFT_ID
-from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
+from deepreefmap_gui.simple.plan import DRAFT_ID, SITE_REQUIRED
+from deepreefmap_gui.survey.models import RunRecord, Site, TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
 
@@ -16,7 +16,7 @@ def type_coord(window, which, text):
 
 def row_texts(window):
     """Every transect row as a tuple of columns. The list is flat: the scope
-    chips above it name what it is showing, so there are no section headings."""
+    chips above it name what it is showing, so there are no pass headings."""
     tree = window._transect_list
     return [
         # The last column is a spacer that absorbs the leftover width.
@@ -35,8 +35,30 @@ def select_row(window, index):
     tree.setCurrentItem(tree.topLevelItem(index))
 
 
+def pick_site(window, name="Japanese Garden"):
+    """Add a site to the survey and choose it in the transect form."""
+    site = Site(name=name)
+    window._survey_store().add_site(site)
+    window._refresh_site_choices()
+    window._set_form_site(site.id)
+    return site
+
+
+def test_a_transect_is_refused_without_a_site(window):
+    w = window
+    w._tr_name_input.setText("T1")
+    type_coord(w, "start", "-17.5 177.1")
+    type_coord(w, "end", "-17.5005, 177.1005")
+    assert w._survey_store().list_transects() == []
+    assert w._status_label.text() == SITE_REQUIRED
+    pick_site(w)
+    w._maybe_autosave()
+    assert len(w._survey_store().list_transects()) == 1
+
+
 def test_transect_autosaves_once_complete(window):
     w = window
+    pick_site(w)
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5 177.1")
     assert w._survey_store().list_transects() == []
@@ -53,7 +75,8 @@ def test_transect_autosaves_once_complete(window):
     assert len(rows) == 1
     # A typed tape length is the cable actually laid, so it stands in the row in
     # place of the straight-line distance between the GPS endpoints.
-    assert rows[0][:2] == ("T1", "50 m tape")
+    assert rows[0][0] == "T1"
+    assert rows[0][2] == "50 m tape"
 
 
 def test_draft_row_tracks_typing_before_save(window):
@@ -97,7 +120,8 @@ def test_new_transect_arrives_named_and_ready_to_draw(window):
     Expected behaviour: nothing to name and nothing to arm in between.
     """
     w = window
-    w._survey_store().add_transect(make_transect("Transect 1"))
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect("Transect 1", site_id=site.id))
     w._refresh_transect_list()
     w._on_transect_new()
     assert w._tr_name_input.text() == "Transect 2"
@@ -152,6 +176,7 @@ def test_draft_line_appears_once_both_endpoints_set(window):
     assert not any(t.id == "draft" for t in w._plan_map._transects)
     w._plan_map.map_clicked.emit(-17.5005, 177.1005)
     assert any(t.id == "draft" for t in w._plan_map._transects)
+    pick_site(w)
     w._tr_name_input.setText("T1")
     w._on_transect_save()
     assert not any(t.id == "draft" for t in w._plan_map._transects)
@@ -160,7 +185,8 @@ def test_draft_line_appears_once_both_endpoints_set(window):
 
 def test_duplicate_name_reports_and_keeps_one(window):
     w = window
-    w._survey_store().add_transect(make_transect())
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect(site_id=site.id))
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.6 177.2")
     type_coord(w, "end", "-17.6005 177.2005")
@@ -171,7 +197,8 @@ def test_duplicate_name_reports_and_keeps_one(window):
 
 def test_edit_selected_transect_updates_row(window):
     w = window
-    w._survey_store().add_transect(make_transect())
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect(site_id=site.id))
     w._refresh_transect_list()
     select_row(w, 0)
     assert w._tr_name_input.text() == "T1"
@@ -189,9 +216,7 @@ def test_delete_with_passes_is_blocked(window):
     video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
     store.add_transect(transect)
     store.upsert_video(video)
-    store.add_pass(
-        TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0)
-    )
+    store.add_pass(TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0))
     w._refresh_transect_list()
     select_row(w, 0)
     w._on_transect_delete()
@@ -247,6 +272,7 @@ def test_pick_both_walks_start_then_end(window):
 
 def test_notes_round_trip_through_the_store(window):
     w = window
+    pick_site(w)
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "-17.5005, 177.1005")
@@ -290,7 +316,7 @@ def test_a_selected_transect_is_locked_against_dragging(window):
 
 def test_leaving_edit_mode_saves_and_locks(window):
     w = window
-    transect = make_transect()
+    transect = make_transect(site_id=pick_site(w).id)
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
     select_row(w, 0)
@@ -341,15 +367,13 @@ def test_columns_count_the_passes_and_runs_on_each_transect(window):
     store.add_pass(pass_)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="run_001", status="succeeded"))
     w._refresh_transect_list()
-    assert row_texts(w)[0][3:] == ("1", "1")
+    assert row_texts(w)[0][4:] == ("1", "1")
 
 
 def two_transects(w):
     w._plan_map.resize(400, 300)
     w._survey_store().add_transect(make_transect("Near"))
-    w._survey_store().add_transect(
-        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
-    )
+    w._survey_store().add_transect(make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001))
     w._refresh_transect_list()
 
 
@@ -357,7 +381,7 @@ def test_in_view_narrows_the_list_to_what_the_map_shows(window):
     """Scenario: two transects far apart, the map on one of them.
 
     Expected behaviour: In view leaves the one on screen, All transects brings
-    the other back. One list either way -- the two used to be separate sections
+    the other back. One list either way -- the two used to be separate passes
     and every on-screen transect appeared in both.
     """
     w = window
@@ -421,9 +445,7 @@ def test_the_scope_is_offered_only_where_it_filters_something(window):
     chips = w._plan_scope_chips
     assert not chips.isVisibleTo(chips.parentWidget())
 
-    w._survey_store().add_transect(
-        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
-    )
+    w._survey_store().add_transect(make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001))
     w._refresh_transect_list()
     assert chips.isVisibleTo(chips.parentWidget())
 
@@ -568,9 +590,7 @@ def test_a_long_transect_name_never_pushes_the_figures_off_the_table(window, qap
     """
     from deepreefmap_gui.simple.plan import PLAN_COLUMNS
 
-    window._survey_store().add_transect(
-        make_transect("Vatu-i-Ra North Wall repeat 2024-03 deep")
-    )
+    window._survey_store().add_transect(make_transect("Vatu-i-Ra North Wall repeat 2024-03 deep"))
     window.resize(width, 800)
     window.show()
     window._go_to_section("transects")
@@ -675,9 +695,9 @@ def test_transect_list_sorts_lengths_as_numbers(window):
     assert tree.header().property("sortable") == "true"
     assert tree.header().isSortIndicatorShown()
 
-    tree.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    tree.sortByColumn(2, Qt.SortOrder.AscendingOrder)
     assert row_names(w) == ["Short", "Long"]
-    tree.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+    tree.sortByColumn(2, Qt.SortOrder.DescendingOrder)
     assert row_names(w) == ["Long", "Short"]
 
 
@@ -734,3 +754,163 @@ def test_selecting_a_transect_shows_its_site(window):
     select_row(w, 0)
 
     assert w._tr_site_combo.currentData() == str(site.id)
+
+
+def test_the_details_form_is_shut_until_a_transect_is_picked(window) -> None:
+    """Expected behaviour: nothing selected, no form.
+
+    Standing open it took a third of the page to show empty fields, and the map
+    and the cover chart either side of it had to give up the width for them.
+    """
+    window._set_simple_section("transects")
+
+    assert not window._transect_details.isVisibleTo(window)
+
+
+def test_picking_a_transect_opens_the_form_on_it(window, out_root) -> None:
+    from deepreefmap_gui.survey.models import Transect
+
+    store = window._survey_store()
+    store.add_transect(Transect(name="Namena Reef East", length_m=30.0))
+    window._refresh_transect_list()
+    window._set_simple_section("transects")
+    window._transect_list.setCurrentItem(window._transect_list.topLevelItem(0))
+
+    assert window._transect_details.isVisibleTo(window)
+    assert window._tr_name_input.text() == "Namena Reef East"
+
+
+def test_new_transect_opens_the_form(window) -> None:
+    window._set_simple_section("transects")
+    window._on_transect_new()
+
+    assert window._transect_details.isVisibleTo(window)
+
+
+def test_closing_the_form_keeps_the_transect_selected(window, out_root) -> None:
+    """Done with the form is not done with the transect: the list is still where
+    the eye is, and the cover chart beside it is still about the same line."""
+    from deepreefmap_gui.survey.models import Transect
+
+    store = window._survey_store()
+    store.add_transect(Transect(name="Namena Reef East", length_m=30.0))
+    window._refresh_transect_list()
+    window._set_simple_section("transects")
+    window._transect_list.setCurrentItem(window._transect_list.topLevelItem(0))
+    window._close_transect_details()
+
+    assert not window._transect_details.isVisibleTo(window)
+    assert window._transect_list.currentItem() is not None
+
+
+def test_a_coordinate_field_shows_its_latitude_rather_than_its_longitude(window) -> None:
+    """A field a few pixels short scrolls to the caret, which parked it on the
+    longitude and cut the latitude's sign and degrees off the left."""
+    window._set_simple_section("transects")
+    window._set_endpoint("start", -17.110200, 179.092100)
+
+    assert window._tr_start_coord.cursorPosition() == 0
+    assert window._tr_start_coord.toolTip() == "-17.110200, 179.092100"
+
+
+def test_the_site_column_names_the_reef_and_sorts_by_it(window):
+    """Scenario: lines on two reefs, and one nobody has said a site for.
+
+    Expected behaviour: the column names each, and a sort orders by the name
+    while the unsited line sinks, which is SortableTreeItem's contract for a
+    cell with no value behind it.
+    """
+    from PySide6.QtCore import Qt
+
+    w = window
+    store = w._survey_store()
+    aqaba = Site(name="Aqaba")
+    garden = Site(name="Japanese Garden")
+    store.add_site(aqaba)
+    store.add_site(garden)
+    store.add_transect(make_transect("T1", site_id=garden.id))
+    store.add_transect(make_transect("T2", site_id=aqaba.id))
+    store.add_transect(make_transect("T3"))
+    w._refresh_transect_list()
+
+    assert {row[0]: row[1] for row in row_texts(w)} == {
+        "T1": "Japanese Garden",
+        "T2": "Aqaba",
+        "T3": "—",
+    }
+
+    w._transect_list.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    assert row_names(w) == ["T2", "T1", "T3"]
+
+
+def test_editing_a_site_renames_it_everywhere_it_is_shown(window, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from deepreefmap_gui.simple.catalogue_dialogs import SiteDialog
+
+    w = window
+    site = pick_site(w)
+    w._survey_store().add_transect(make_transect("T1", site_id=site.id))
+    w._refresh_transect_list()
+
+    def rename(self):
+        self.name_input.setText("Japanese Garden North")
+        self._save()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SiteDialog, "exec", rename)
+    w._on_edit_site()
+
+    assert w._survey_store().get_site(site.id).name == "Japanese Garden North"
+    assert row_texts(w)[0][1] == "Japanese Garden North"
+    assert w._tr_site_combo.currentText() == "Japanese Garden North"
+
+
+def test_the_site_edit_is_offered_only_once_one_is_picked(window):
+    w = window
+    w._refresh_site_choices()
+    assert not w._tr_edit_site_btn.isEnabled()
+
+    pick_site(w)
+
+    assert w._tr_edit_site_btn.isEnabled()
+
+
+def test_a_site_another_laptop_made_is_not_editable_here(window):
+    import uuid
+
+    from deepreefmap_gui.survey.ownership import READ_ONLY_NOTE
+
+    w = window
+    site = Site(name="Japanese Garden", device_id=uuid.uuid4())
+    w._survey_store().add_site(site)
+    w._refresh_site_choices()
+    w._set_form_site(site.id)
+
+    assert not w._tr_edit_site_btn.isEnabled()
+    assert w._tr_edit_site_btn.toolTip() == READ_ONLY_NOTE
+
+
+def test_a_validated_site_is_still_editable_from_the_form(window):
+    """The edit stands, and the button says a curator decides what becomes of it."""
+    from deepreefmap_gui.survey.ownership import VALIDATED_NOTE
+
+    w = window
+    site = Site(name="Japanese Garden", validated_at="2026-08-20T00:00:00+00:00")
+    w._survey_store().add_site(site)
+    w._refresh_site_choices()
+    w._set_form_site(site.id)
+
+    assert w._tr_edit_site_btn.isEnabled()
+    assert w._tr_edit_site_btn.toolTip() == VALIDATED_NOTE
+
+
+def test_a_validated_transect_is_still_editable_here(window):
+    w = window
+    site = pick_site(w)
+    transect = make_transect("T1", site_id=site.id)
+    transect.validated_at = "2026-08-20T00:00:00+00:00"
+    w._survey_store().add_transect(transect)
+    w._refresh_transect_list()
+
+    assert not w._transect_is_read_only(transect.id)

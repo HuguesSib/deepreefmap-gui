@@ -26,7 +26,7 @@ from deepreefmap_gui.survey.models import (
     VideoAsset,
 )
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
-from deepreefmap_gui.sync import contract, wire
+from deepreefmap_gui.sync import connect_code, contract, wire
 from deepreefmap_gui.sync.client import CONTRACT_VERSION
 
 
@@ -66,6 +66,15 @@ def test_every_constant_is_read_out_of_the_artefact(artefact) -> None:
     assert range_ == contract.CONTRACT_RANGE
 
 
+def test_the_connect_code_prefix_comes_out_of_the_artefact(artefact) -> None:
+    """The prefix is repeated in the registry and the console, so nothing here may
+    hand-type it: a bump lands in one file and this catches a stale copy."""
+    published = artefact["connect_code"]
+    assert published["prefix"] == contract.CONNECT_CODE_PREFIX
+    assert published["prefix"] == f"{contract.CONNECT_CODE_FAMILY}{contract.CONNECT_CODE_VERSION}."
+    assert connect_code.CODE_PREFIX == contract.CONNECT_CODE_PREFIX
+
+
 def test_the_client_re_exports_the_derived_version() -> None:
     """No version integer is typed by hand anywhere in this repo."""
     assert CONTRACT_VERSION == contract.CONTRACT_VERSION
@@ -90,9 +99,12 @@ def test_the_pull_sections_are_a_subset_of_the_whole() -> None:
     assert set(contract.PULL_SECTIONS) <= set(contract.SECTIONS)
 
 
-# Presets are pull-only and never enter a push document, so there is no pushed
-# row to hold to the requirement.
-@pytest.mark.parametrize("section", sorted(set(SYNC_SECTIONS) - {"presets"}))
+# The pull-only sections never enter a push document, so there is no pushed row to
+# hold to the requirement: presets and the lenses are the registry's to publish.
+_PULL_ONLY = {"presets", "camera_profiles", "camera_calibrations"}
+
+
+@pytest.mark.parametrize("section", sorted(set(SYNC_SECTIONS) - _PULL_ONLY))
 def test_a_pushed_row_carries_every_column_the_registry_requires(section) -> None:
     """A required column added server-side shows up here, not as a rejected push."""
     row = wire.rows_to_wire(section, [one_of_each()[section]])[0]
@@ -130,3 +142,41 @@ def test_a_run_row_fills_the_configuration_columns_the_registry_holds(tmp_path, 
 def test_an_unnamed_section_is_an_error_and_not_an_empty_list() -> None:
     with pytest.raises(KeyError):
         contract.required_columns("moorings")
+
+
+def test_a_transect_row_carries_the_depth_at_each_end() -> None:
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
+    names = {column["name"] for column in table["columns"]}
+    assert {"depth_m", "start_depth_m", "end_depth_m"} <= names
+
+
+def test_the_registry_derives_the_depth_from_the_two_ends() -> None:
+    """So a laptop holding a stale mean is not in conflict with one that has both
+    ends, and the figure this app shows is the one the registry will hold."""
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "transects")
+    derived = {column["name"] for column in table["columns"] if column.get("derived")}
+    assert derived == {"depth_m"}
+
+
+def test_the_lenses_are_pulled_and_never_pushed() -> None:
+    """A calibration is published through the registry's upload endpoint, which
+    returns a row that comes back down like any other. Authoring one here would
+    make two laptops' measurements of one rig fight over a name."""
+    assert {"camera_profiles", "camera_calibrations"} <= set(contract.PULL_SECTIONS)
+    assert {"camera_profiles", "camera_calibrations"}.isdisjoint(contract.PUSH_SECTIONS)
+
+
+def test_a_calibration_row_carries_the_document_a_run_needs() -> None:
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "camera_calibrations")
+    names = {column["name"] for column in table["columns"]}
+
+    assert {"camera_profile_id", "version", "document"} <= names
+
+
+def test_a_profile_row_names_the_calibration_it_deploys() -> None:
+    """Which measurement a rig runs under is the registry's to decide, so it has
+    to reach the laptop that resolves the name."""
+    table = next(t for t in contract.DOCUMENT["tables"] if t["section"] == "camera_profiles")
+    names = {column["name"] for column in table["columns"]}
+
+    assert "current_calibration_id" in names

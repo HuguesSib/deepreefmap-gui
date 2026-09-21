@@ -223,7 +223,7 @@ def test_a_populated_v10_survives_the_sync_columns(tmp_path):
         assert (pass_.notes, pass_.label) == ("surge", "first swim")
         assert pass_.batch_id == uuid.UUID(ids["batch"])
         # Nothing assessed a pass that predates the scale.
-        assert (pass_.quality, pass_.campaign_id, pass_.upside_down) == (None, None, False)
+        assert (pass_.quality, pass_.campaign_id, pass_.surveyed_on) == (None, None, None)
         assert store.list_batch_items(uuid.UUID(ids["batch"]))[0].overrides == {"fps": 4}
         assert len(store.list_notifications()) == 1
     finally:
@@ -233,9 +233,14 @@ def test_a_populated_v10_survives_the_sync_columns(tmp_path):
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     conn.close()
     after = _rows(path)
+    # survey_batch.name is gone on purpose: a session is identified by when it
+    # began. Every other column of every other row has to arrive untouched.
+    dropped = {"survey_batch": {"name"}}
     for table, rows in before.items():
         assert rows, f"{table} is empty, so it proves nothing"
-        assert [{c: row[c] for c in rows[0]} for row in after[table]] == rows, table
+        gone = dropped.get(table, set())
+        kept = [{c: v for c, v in row.items() if c not in gone} for row in rows]
+        assert [{c: row[c] for c in kept[0]} for row in after[table]] == kept, table
 
 
 def test_two_transect_names_differing_only_in_case_both_survive(tmp_path):

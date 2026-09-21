@@ -43,6 +43,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW_TEXT,
 )
 from deepreefmap_gui.core.widgets import (
+    STATUS_COLORS,
     ColumnSpec,
     SortableTreeItem,
     fitted_column_widths,
@@ -59,6 +60,7 @@ from deepreefmap_gui.storage.tiers import (
     TIER_UNKNOWN,
     TIER_WORKING,
 )
+from deepreefmap_gui.survey import statuses
 
 # What each tier is called, and what deleting it costs. Ordered cheapest loss
 # first, which is also the order ticking one ticks the ones above it.
@@ -95,7 +97,7 @@ BAR_TIERS = (*DELETABLE_TIERS, TIER_KEEP, TIER_UNKNOWN)
 
 ABORTED_DETAIL = "Stopped before it finished. Nothing to open, nothing to resume."
 OPEN_IN_VIEWER_DETAIL = "Open in the viewer. Close it with the + button."
-WHOLE_RUN_DETAIL = "The whole folder. The record stays, so the run still shows in Browse."
+WHOLE_RUN_DETAIL = "The whole folder. The record stays, so the run still shows in Results."
 OTHERS_TITLE = "Other files in the output folder"
 COUNTING = "counting"
 
@@ -113,9 +115,21 @@ CLIP_MISSING_DETAIL = "The file is not where the survey last saw it, therefore i
 
 REVEAL_TIP = "Show this in the file manager."
 
+# The one word each row's Status column carries. The sentence behind it is the
+# row's tooltip: what a row is comes first, why it may or may not go second.
+OPEN_IN_VIEWER_STATUS = "open"
+CLIP_DELETABLE_STATUS = "free to delete"
+CLIP_NO_RUN_STATUS = "only copy"
+CLIP_MISSING_STATUS = "missing"
+CLIP_PARTLY_RUN_STATUS = "still needed"
+
+# The fourth column says how a row stands, in one word. What deleting it costs is
+# the same sentence on every run, so it is carried on the row's tooltip and said
+# once in the bar above the list, at the point of pressing Delete; a page-wide
+# column repeating it took more width than the run names it sat beside.
 COL_NAME, COL_SIZE, COL_BAR, COL_DETAIL, COL_OPEN = range(5)
-RUN_COLUMNS = ("Run", "On disk", "Make-up", "What it costs", "")
-CLIP_COLUMNS = ("Clip", "Size", "", "What it costs", "")
+RUN_COLUMNS = ("Run", "On disk", "Make-up", "Status", "")
+CLIP_COLUMNS = ("Clip", "Size", "", "Status", "")
 
 # Roles the page reads back off a ticked row, so nothing has to be looked up by
 # its label. A row carrying none of them is not something that can be deleted.
@@ -164,6 +178,29 @@ class MakeUpDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+# The bar is a fixed reading width: proportional segments are only comparable
+# between rows when every row's track is the same length. Status is measured
+# against its longest word ("free to delete", 98px with the row padding), and the
+# name takes everything left, which is the column a person actually reads.
+_RUN_COLUMN_SPEC = ColumnSpec(
+    fixed={COL_SIZE: 92, COL_BAR: 180, COL_DETAIL: 100, COL_OPEN: 32},
+    weights={COL_NAME: 1},
+    minimums={COL_NAME: 200},
+)
+
+# The clips tree paints no make-up bar, so it reserves no width for one: sharing
+# the runs spec left it with 180px of permanently blank column.
+_CLIP_COLUMN_SPEC = ColumnSpec(
+    fixed={COL_SIZE: 92, COL_DETAIL: 100, COL_OPEN: 32},
+    weights={COL_NAME: 1},
+    minimums={COL_NAME: 200},
+)
+
+# Kept as the runs spec under its old name: the module's own width helper and its
+# tests describe the five-column tree.
+_COLUMN_SPEC = _RUN_COLUMN_SPEC
+
+
 class StorageTree(QTreeWidget):
     """A list that spends the width it is given rather than compacting.
 
@@ -173,27 +210,23 @@ class StorageTree(QTreeWidget):
     rest, recomputed whenever the viewport changes.
     """
 
-    # The bar is a fixed reading width: proportional segments are only
-    # comparable between rows when every row's track is the same length.
-    _FIXED = {COL_SIZE: 92, COL_BAR: 180, COL_OPEN: 32}
-    _WEIGHTS = {COL_NAME: 2, COL_DETAIL: 5}
-    _MINIMUMS = {COL_NAME: 180, COL_DETAIL: 220}
-
-    def __init__(self, columns: tuple[str, ...], parent=None) -> None:
+    def __init__(
+        self,
+        columns: tuple[str, ...],
+        spec: ColumnSpec | None = None,
+        parent=None,
+        *,
+        settings_key: str = "storage",
+    ) -> None:
         super().__init__(parent)
         self.setColumnCount(len(columns))
         self.setHeaderLabels(list(columns))
         self.setUniformRowHeights(True)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setWordWrap(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setItemDelegateForColumn(COL_BAR, MakeUpDelegate(self))
-        install_column_sizer(self, _COLUMN_SPEC, settings_key="storage")
-
-
-_COLUMN_SPEC = ColumnSpec(
-    fixed=StorageTree._FIXED,
-    weights=StorageTree._WEIGHTS,
-    minimums=StorageTree._MINIMUMS,
-)
+        install_column_sizer(self, spec or _RUN_COLUMN_SPEC, settings_key=settings_key)
 
 
 def column_widths(available: int) -> dict[int, int]:
@@ -269,14 +302,13 @@ def fill_runs(
         parent.setToolTip(COL_BAR, _make_up_tooltip(run))
 
         if run.dir_name == open_run:
-            parent.setText(COL_DETAIL, OPEN_IN_VIEWER_DETAIL)
+            parent.setText(COL_DETAIL, OPEN_IN_VIEWER_STATUS)
+            parent.setToolTip(COL_DETAIL, OPEN_IN_VIEWER_DETAIL)
             _muted(parent, COL_DETAIL)
             continue
-        if run.aborted:
-            parent.setText(COL_DETAIL, ABORTED_DETAIL)
-        else:
-            parent.setText(COL_DETAIL, WHOLE_RUN_DETAIL)
-        _muted(parent, COL_DETAIL)
+        parent.setText(COL_DETAIL, statuses.status_label(run.status))
+        parent.setToolTip(COL_DETAIL, ABORTED_DETAIL if run.aborted else WHOLE_RUN_DETAIL)
+        parent.setForeground(COL_DETAIL, QColor(STATUS_COLORS.get(run.status, TEXT_MUTED)))
         # The parent's own tick is the whole folder, so a run can go without
         # anybody expanding it. Auto-tristate makes it read part-ticked the
         # moment one tier below it is chosen.
@@ -292,13 +324,13 @@ def fill_runs(
         _muted(group, COL_NAME)
         for other in others:
             row = QTreeWidgetItem(
-                group, (other.label, format_bytes(other.size_bytes), "", other.detail, "")
+                group, (other.label, format_bytes(other.size_bytes), "", "", "")
             )
+            row.setToolTip(COL_NAME, other.detail)
             row.setData(0, ROLE_ITEM, other.label)
             _reveal(row, other.path)
             row.setData(0, ROLE_BYTES, other.size_bytes)
             _muted(row, COL_SIZE)
-            _muted(row, COL_DETAIL)
             # Never pre-ticked, whatever it looks like: this is the group that
             # holds anything nobody here recognises.
             _tickable(row)
@@ -312,18 +344,15 @@ def _add_tiers(parent: QTreeWidgetItem, run: MountRun, scale: int) -> None:
         return
     for tier in DELETABLE_TIERS:
         size = breakdown.tier_bytes(tier)
-        row = QTreeWidgetItem(
-            parent, (TIER_LABELS[tier], format_bytes(size), "", TIER_DETAILS[tier], "")
-        )
+        row = QTreeWidgetItem(parent, (TIER_LABELS[tier], format_bytes(size), "", "", ""))
+        row.setToolTip(COL_NAME, TIER_DETAILS[tier])
         row.setData(0, ROLE_RUN, run.dir_name)
         row.setData(0, ROLE_TIER, tier)
         row.setData(0, ROLE_BYTES, size)
         row.setData(COL_BAR, ROLE_MAKEUP, [(TIER_COLOURS[tier], _tier_offset(run, tier), size)])
         row.setData(COL_BAR, ROLE_SCALE, scale)
         _muted(row, COL_SIZE)
-        row.setForeground(
-            COL_DETAIL, QColor(WARNING if tier == TIER_WORKING else TEXT_MUTED)
-        )
+        row.setForeground(COL_NAME, QColor(WARNING if tier == TIER_WORKING else TEXT_MUTED))
         _tickable(row)
 
 
@@ -379,7 +408,7 @@ def fill_clips(tree: QTreeWidget, clips: tuple[MountClip, ...]) -> None:
     for clip in clips:
         size = clip.size_bytes or 0
         row = SortableTreeItem(
-            tree, (clip.file_name, format_bytes(size), "", clip_detail(clip), ""), {COL_SIZE: size}
+            tree, (clip.file_name, format_bytes(size), "", clip_status(clip), ""), {COL_SIZE: size}
         )
         row.setData(0, ROLE_CLIP, str(clip.video_id))
         row.setData(0, ROLE_BYTES, size)
@@ -394,6 +423,17 @@ def fill_clips(tree: QTreeWidget, clips: tuple[MountClip, ...]) -> None:
             _tickable(row)
         else:
             row.setForeground(COL_NAME, QColor(TEXT_MUTED))
+
+
+def clip_status(clip: MountClip) -> str:
+    """How a clip stands, in one word, with `clip_detail` behind it as the reason."""
+    if clip.link_state != "linked":
+        return CLIP_MISSING_STATUS
+    if clip.succeeded_passes == 0:
+        return CLIP_NO_RUN_STATUS
+    if clip.succeeded_passes < clip.pass_count:
+        return CLIP_PARTLY_RUN_STATUS
+    return CLIP_DELETABLE_STATUS
 
 
 def clip_detail(clip: MountClip) -> str:

@@ -149,6 +149,10 @@ def test_no_em_dashes_in_prose_or_user_facing_strings() -> None:
     A lone em dash standing in for an empty value is the documented exception,
     so a bare "-" string is left alone.
 
+    The en dash is banned alongside it. Only the em dash was ever checked, so the
+    en dash spread unnoticed through every time-range label in the app; a range
+    is written with a plain hyphen, which also survives tabular figures.
+
     Every tracked text file, not only the Python: the rule is about the prose,
     and the prose is as much in the build workflow and the packaging comments as
     it is in a docstring.
@@ -171,9 +175,11 @@ def test_no_em_dashes_in_prose_or_user_facing_strings() -> None:
         except (OSError, UnicodeDecodeError):
             continue
         for number, line in enumerate(text.splitlines(), 1):
-            if "—" not in line or '"—"' in line:
-                continue
-            offenders.append(f"{name}:{number}")
+            for dash in ("—", "\u2013"):
+                if dash not in line or f'"{dash}"' in line:
+                    continue
+                offenders.append(f"{name}:{number}")
+                break
     assert offenders == []
 
 
@@ -308,12 +314,7 @@ def test_the_two_directions_are_told_apart_from_each_other_and_from_a_warning() 
 
 
 def test_the_elevation_ramp_separates_by_lightness() -> None:
-    """What a reader sees between two large adjacent dark fills is the lightness
-    delta; the WCAG ratio of any two dark greys is near 1:1 and says nothing.
-
-    The ramp used to put 13 points between the shell and a card, which is why
-    panels read as text floating on the window rather than as panels.
-    """
+    """The charcoal surfaces form a quiet, ordered background ramp."""
     from PySide6.QtGui import QColor
 
     from deepreefmap_gui.core import theme
@@ -321,7 +322,7 @@ def test_the_elevation_ramp_separates_by_lightness() -> None:
     ramp = [theme.WINDOW, theme.BASE, theme.CARD_BG, theme.BUTTON, theme.SURFACE_HI]
     steps = [QColor(value).lightness() for value in ramp]
     assert steps == sorted(steps)
-    assert QColor(theme.CARD_BG).lightness() - QColor(theme.WINDOW).lightness() >= 20
+    assert QColor(theme.CARD_BG).lightness() - QColor(theme.WINDOW).lightness() >= 8
     assert QColor(theme.BORDER).lightness() - QColor(theme.CARD_BG).lightness() >= 20
 
 

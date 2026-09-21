@@ -222,10 +222,11 @@ def command_prefix() -> list[str]:
     """How to invoke the CLI: through uv in a checkout, bare when installed.
 
     --project rather than a `cd … &&` prefix: it is one command instead of a
-    shell chain, it does not move the pasting shell, and nothing else about the
-    run depends on the working directory (camera profiles and the classes YAML
-    both resolve from package resources when no ./camera_profiles or ./configs
-    exists beside the caller, and the app ships neither).
+    shell chain and it does not move the pasting shell. The classes YAML resolves
+    from package resources wherever it is run. The camera profile does not: the
+    library resolves a name against a CWD-relative `./camera_profiles` and then
+    its own package resources, and only `gopro_hero_10` is packaged, so the
+    script writes the run's own copy of the profile beside itself first.
     """
     project = project_directory()
     if project is None:
@@ -339,14 +340,43 @@ def command_from_manifest(
     return command_for_kwargs(kwargs_from_manifest(manifest, run_dir), multiline=multiline)
 
 
-def write_run_command_script(output_dir: Path, args: Sequence[str]) -> Path:
+def write_run_command_script(
+    output_dir: Path, args: Sequence[str], *, camera_profile_name: str | None = None
+) -> Path:
     """Drop a runnable `run_command.sh` beside the run's outputs.
 
     Written before the pipeline starts, so a run that crashes or is cancelled,
     the one most worth auditing, still says what it was asked to do.
+
+    A field-calibrated profile exists on the laptop that made it and nowhere
+    else, so the script stages the run's own copy into the `./camera_profiles`
+    the library looks in. Without that preamble the CLI refuses the name and
+    exits before the pipeline starts, which made every such script unrunnable.
     """
     path = output_dir / "run_command.sh"
     body = format_command(args, multiline=True)
-    path.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n\n{body}\n", encoding="utf-8")
+    preamble = _profile_preamble(camera_profile_name)
+    path.write_text(
+        f"#!/usr/bin/env bash\nset -euo pipefail\n\n{preamble}{body}\n", encoding="utf-8"
+    )
     path.chmod(0o755)
     return path
+
+
+def _profile_preamble(camera_profile_name: str | None) -> str:
+    """Stage the run's copy of the camera profile where the library resolves names.
+
+    Emitted for a bundled profile too: the copy is the calibration this run
+    actually used, and a library installed elsewhere may package a different one
+    under the same name. `cp -n` so a second run of the script leaves alone
+    whatever the first put there. Empty when the run recorded no copy.
+    """
+    from deepreefmap_gui.camera.profiles import RUN_PROFILE_NAME
+
+    if not camera_profile_name:
+        return ""
+    return (
+        f'cd "$(dirname "$0")"\n'
+        f"mkdir -p camera_profiles\n"
+        f'cp -n "{RUN_PROFILE_NAME}" "camera_profiles/{camera_profile_name}.json"\n\n'
+    )

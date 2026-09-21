@@ -40,38 +40,28 @@ class VersionCheckMixin(MixinBase):
         self._sig_update_check_done.emit(current, releases, pyapp_bin)
 
     def _set_updates_tab_alert(self, latest: str | None) -> None:
-        """Say a release is waiting, wherever the running interface can show it.
-
-        The Setup button carries a slot for it, so a release waiting is
-        visible without opening anything. Passing None clears it.
-        """
+        """Show a waiting release on the Setup button and the Updates view. None clears it."""
         self._update_available = latest or ""
         self._refresh_machine_button()
-        # The badge says one is waiting from outside Setup; this says it inside,
-        # on the view that opens first.
         self._refresh_update_notice()
 
     def _apply_update_check(self, current: str, releases: list[dict] | None, pyapp_bin: str | None) -> None:
         self._current_version_str = current
         self._update_version_label.setText(f"Version: <b>{current}</b>")
+        self._update_status_label.setToolTip("")
         self._set_updates_tab_alert(None)
         self._update_show_all.setVisible(False)
         self._update_version_combo.setVisible(False)
         self._update_btn.setVisible(False)
         self._available_releases = list(releases or [])
 
-        # Surface a newer release in the tab regardless of mode, as a nudge.
         newer = newer_releases(self._available_releases, current)
         if newer:
             self._set_updates_tab_alert(release_version(newer[0]))
 
-        # Dev mode: running from source, not the installed binary. In-app
-        # install/rollback swap the binary in place, which only makes sense for
-        # the installed application, so the controls stay hidden here.
+        # Install and rollback swap the binary in place; hidden when running from source.
         if pyapp_bin is None:
-            self._update_status_label.setText(
-                "Running development mode. Launch from a binary to manage versions."
-            )
+            self._update_status_label.setText("Development mode. Launch the installed binary to manage versions.")
             return
 
         if releases is None:
@@ -80,11 +70,8 @@ class VersionCheckMixin(MixinBase):
         if not releases:
             self._update_status_label.setText("No releases found.")
             return
-        # Installed binary: a rollback is only meaningful if there is any version
-        # other than the current one.
-        self._update_show_all.setVisible(
-            any(release_version(r) != current for r in releases)
-        )
+        # Rollback needs a version other than the current one.
+        self._update_show_all.setVisible(any(release_version(r) != current for r in releases))
         self._populate_update_versions()
 
     def _locally_kept_versions(self) -> set[str]:
@@ -118,13 +105,12 @@ class VersionCheckMixin(MixinBase):
         has_items = self._update_version_combo.count() > 0
         self._update_version_combo.setVisible(has_items)
         self._update_btn.setVisible(has_items)
+        self._update_status_label.setToolTip("")
         if not has_items:
             self._update_status_label.setText("Up to date.")
         elif include_older:
-            self._update_status_label.setText(
-                "Pick a version to install or roll back to. Rolling back may make "
-                "surveys created by this version unreadable until you upgrade again:"
-            )
+            self._update_status_label.setText("Pick a version to install or roll back to:")
+            self._update_status_label.setToolTip("An older version may not open surveys created by this one.")
         else:
             self._update_status_label.setText(
                 f"Latest: <b>{release_version(selectable[0])}</b>. Pick a version to install:"
@@ -135,10 +121,7 @@ class VersionCheckMixin(MixinBase):
             self._populate_update_versions()
 
     # --- Installed environments ----------------------------------------------
-    # Each version keeps its own PyApp environment and none of them are pruned
-    # automatically, so this is where a version's real footprint is shown and
-    # where one is deleted. Models are sized here too, but managed on Setup's
-    # Models view.
+    # Each version keeps its own PyApp environment; none are pruned automatically.
 
     @staticmethod
     def _format_size(num_bytes: int) -> str:
@@ -201,10 +184,7 @@ class VersionCheckMixin(MixinBase):
             real = self._format_size(env["reclaimable"])
             shared = self._format_size(max(env["apparent"] - env["reclaimable"], 0))
             running = " (running)" if env["current"] else ""
-            label = QLabel(
-                f"<b>{env['version']}</b>{running}: {real} on disk, "
-                f"{shared} shared with the cache"
-            )
+            label = QLabel(f"<b>{env['version']}</b>{running}: {real} on disk, {shared} shared with the cache")
             label.setWordWrap(True)
             row_layout.addWidget(label, 1)
             if not env["current"]:
@@ -219,9 +199,7 @@ class VersionCheckMixin(MixinBase):
         if model_bytes is None:
             self._model_cache_label.setText("Downloaded models: size unavailable.")
         else:
-            self._model_cache_label.setText(
-                f"Downloaded models: <b>{self._format_size(model_bytes)}</b>"
-            )
+            self._model_cache_label.setText(f"Downloaded models: <b>{self._format_size(model_bytes)}</b>")
 
     def _on_delete_environment(self, path: str, version: str) -> None:
         from deepreefmap_gui.packaging.environments import delete_environment
@@ -230,9 +208,7 @@ class VersionCheckMixin(MixinBase):
             self,
             "Delete environment",
             f"Delete the environment for version {version}?\n\n"
-            "Its unique files are freed now. If you install or roll back to this "
-            "version later, it is rebuilt from the package cache (no large download "
-            "when the cache is warm).",
+            "Installing this version again rebuilds it from the package cache.",
         ):
             return
         try:
@@ -242,20 +218,10 @@ class VersionCheckMixin(MixinBase):
         self._refresh_envs()
 
     def _confirm_downgrade(self, target: str) -> bool:
-        """Say what rolling back does to this survey, and make it reversible.
+        """Back up the survey database, then confirm a rollback with its outlook.
 
-        Going back is not symmetric with going forward. Migrations only run one
-        way, so an older build refuses a survey database a newer one has already
-        migrated. Two separate things follow from that, and both happen here:
-
-        The backup is written *before* anything is swapped, so the trip back
-        exists. It is stamped with the format the survey is in now, which is
-        what a later upgrade restores to undo whatever the older build does.
-
-        The warning states the actual outcome rather than a maybe. Whether the
-        target can open this survey is knowable in advance -- a rollback target
-        is older than the build asking, so its format range is already in this
-        build's table -- and rollback_outlook works it out.
+        The backup is stamped with the survey's current format and written
+        before anything is swapped. Returns True when no rollback is involved.
         """
         current_v = parse_version(self._current_version_str)
         target_v = parse_version(target)
@@ -275,8 +241,7 @@ class VersionCheckMixin(MixinBase):
         return confirm(
             self,
             "Roll back to an older version",
-            f"Version {target} is older than the version running now "
-            f"({self._current_version_str}).\n\n"
+            f"Version {target} is older than the running {self._current_version_str}.\n\n"
             f"{outlook.summary()}\n\n"
             f"Roll back to {target}?",
         )
@@ -298,8 +263,7 @@ class VersionCheckMixin(MixinBase):
         version = release_version(release)
         if not self._confirm_downgrade(version):
             return
-        # A kept binary rolls back offline; anything else downloads. The backup
-        # _confirm_downgrade just took is what makes either direction reversible.
+        # A kept binary rolls back offline; anything else downloads.
         rollback = version in self._locally_kept_versions()
         self._update_btn.setEnabled(False)
         try:

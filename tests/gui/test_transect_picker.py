@@ -1,4 +1,4 @@
-"""Filing a section: the map, the list, the direction, and a new transect."""
+"""Filing a pass: the map, the list, the direction, and a new transect."""
 
 import pytest
 from _factories import make_transect
@@ -26,7 +26,7 @@ def store(tmp_path):
 
 
 def test_a_section_can_be_filed_nowhere(store):
-    """Unassigned stays a valid answer: a section is a cutout of a video first."""
+    """Unassigned stays a valid answer: a pass is a cutout of a video first."""
     store.add_transect(make_transect("T1"))
     dialog = TransectPickerDialog(None, store)
 
@@ -56,9 +56,8 @@ def test_clicking_the_line_on_the_map_picks_it(store):
 
 
 def test_direction_reads_as_the_heading_it_means(store):
-    """"Forward" says nothing about the water until there is a line to swim."""
-    store.add_transect(make_transect("T1", start_lat=-17.5, start_lon=177.1,
-                                    end_lat=-17.5, end_lon=177.2))
+    """ "Forward" says nothing about the water until there is a line to swim."""
+    store.add_transect(make_transect("T1", start_lat=-17.5, start_lon=177.1, end_lat=-17.5, end_lon=177.2))
     dialog = TransectPickerDialog(None, store)
     dialog.list.setCurrentRow(1)
 
@@ -158,12 +157,12 @@ def test_the_arrow_names_where_it_goes(store):
     dialog = TransectPickerDialog(None, store)
 
     assert dialog.open_btn.text() == OPEN_PAGE_EMPTY_LABEL
-    assert "kept, unfiled" in dialog.open_btn.toolTip()
+    assert "kept unfiled" in dialog.open_btn.toolTip()
 
     dialog.list.setCurrentRow(1)
 
     assert dialog.open_btn.text() == OPEN_PAGE_LABEL
-    assert "ends can be dragged" in dialog.open_btn.toolTip()
+    assert "Show this transect" in dialog.open_btn.toolTip()
 
 
 def test_the_map_says_it_can_be_clicked_before_anything_is_armed(store):
@@ -178,7 +177,7 @@ def test_the_map_says_it_can_be_clicked_before_anything_is_armed(store):
     store.add_transect(make_transect("T1"))
     dialog = TransectPickerDialog(None, store)
     assert dialog.map_hint.text() == MAP_HINT
-    assert "Click one" in dialog.map_hint.text()
+    assert "Click a transect" in dialog.map_hint.text()
 
 
 def test_drawing_says_which_click_comes_next(store):
@@ -211,11 +210,14 @@ def test_filing_a_section_says_it_can_be_undone(store):
     assert UNASSIGNED_NOTE not in dialog.note.text()
 
 
-def test_the_campaign_combo_only_exists_once_campaigns_have_been_pulled(store):
+def test_the_campaign_combo_lists_what_is_known_and_can_add_to_it(store):
     from deepreefmap_gui.survey.models import Campaign
 
     without = TransectPickerDialog(None, store)
-    assert without.campaign.count() == 0
+    assert [without.campaign.itemText(i) for i in range(without.campaign.count())] == [
+        "No campaign",
+    ]
+    assert without.new_campaign_btn.isEnabled()
 
     store.add_campaign(Campaign(name="2026_08_fiji"))
     with_campaigns = TransectPickerDialog(None, store)
@@ -224,6 +226,16 @@ def test_the_campaign_combo_only_exists_once_campaigns_have_been_pulled(store):
         "No campaign",
         "2026_08_fiji",
     ]
+
+
+def test_a_direction_nobody_noted_can_be_filed_as_such(store):
+    store.add_transect(make_transect("T1"))
+    dialog = TransectPickerDialog(None, store)
+
+    dialog.direction.setCurrentIndex(dialog.direction.count() - 1)
+
+    assert dialog.choice() == (None, None)
+    assert dialog.quality_choice() is None
 
 
 def test_the_campaign_picked_is_remembered_as_the_default(store):

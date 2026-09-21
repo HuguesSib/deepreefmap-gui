@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -50,6 +51,7 @@ from deepreefmap_gui.models.cache_ui import MODELS_SECTION
 from deepreefmap_gui.notify.widgets import relative_age
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.server import enrolment as enrolment_mod
+from deepreefmap_gui.server import reachability
 from deepreefmap_gui.server.connect_ui import ConnectDialog
 from deepreefmap_gui.server.state import (
     DEVICE_NAME_KEY,
@@ -60,6 +62,7 @@ from deepreefmap_gui.server.state import (
     SECTION_LABELS,
     SERVER_SECTION,
     SYNC_ERROR_KEY,
+    SYNC_ERROR_KIND_KEY,
     Failure,
     ServerState,
     SyncOutcome,
@@ -81,7 +84,7 @@ from deepreefmap_gui.survey.preset import (
 )
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport, TransferProgress
-from deepreefmap_gui.sync.contract import PULL_SECTIONS
+from deepreefmap_gui.sync.contract import READ_SECTIONS
 from deepreefmap_gui.sync.engine import PullReport, PushReport, SyncEngine
 
 logger = logging.getLogger(__name__)
@@ -96,14 +99,13 @@ DEVICE_CARD = "This device"
 ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web interface."
 
 REFERENCE_NOTE = (
-    "Sites and campaigns are edited in the web interface. Here they are chosen: "
-    "a transect names its site on the Transects page, and a section names its "
-    "campaign when it is filed."
+    "Sites and campaigns are shared with the registry. One made here is sent up; "
+    "a change to one the console owns is sent as a proposal."
 )
 ONBOARDED_BY = "Onboarded by"
-# Records the registry holds that could not be taken, listed on the page because
-# the notification that announced them has long since scrolled away and the two
-# copies go on differing until somebody renames one of them.
+# Whether the registry is answering at all, asked apart from any sync.
+SERVER_STATUS = "Server status"
+# Records the registry holds that could not be taken, by name.
 SET_ASIDE = "Not taken"
 
 CONNECT = "Connect to server"
@@ -111,12 +113,8 @@ RECONNECT = "Connect again"
 SYNC_NOW = "Sync now"
 DISCONNECT = "Disconnect"
 
-# Said beside the button as well as on it: the two things confused here are
-# forgetting a token and revoking a device.
-DISCONNECT_NOTE = (
-    "Disconnect only forgets the token on this laptop. It does not revoke the device: "
-    "that is done in the registry's web interface."
-)
+# Said beside the button as well as on it.
+DISCONNECT_NOTE = "Forgets the token on this laptop. Revoke the device in the web interface."
 
 SESSION_RUNNING = "Wait for the current session to finish, then sync."
 
@@ -124,10 +122,7 @@ PULLING = "Pulling changes (page {page})…"
 SENDING = "Sending {rows} row(s)…"
 
 ARCHIVE_NOW = "Archive to server"
-ARCHIVE_TOOLTIP = (
-    "Send the original clips and every finished run's outputs to the registry's "
-    "archive. Nothing is sent until this is pressed."
-)
+ARCHIVE_TOOLTIP = "Send original clips and finished run outputs to the registry's archive."
 PLANNING_ARCHIVE = "Working out what to archive…"
 CANCEL_ARCHIVE = "Cancel archive"
 CANCELLING_ARCHIVE = "Finishing the file in flight…"
@@ -135,13 +130,10 @@ CANCELLING_ARCHIVE = "Finishing the file in flight…"
 # same fingerprint updating in place is the right shape for a retry.
 ARCHIVE_FAILED = "archive.upload_failed"
 
-# Said when an archive is asked for on a laptop that never enrolled. The sync
-# button hides then, but the Browse cards still offer their Archive actions.
+# Said when an archive is asked for on a laptop that never enrolled.
 ARCHIVE_NOT_CONNECTED = "Connect this laptop to a registry before archiving."
 
-# The upload gauge. Permille steps because a whole-survey queue is tens of
-# gigabytes, and a percent of that moves once a minute at best. The width is
-# the model library's download bar, so the app's two gauges are one size.
+# The upload gauge: permille steps, and the width of the model download bar.
 GAUGE_STEPS = 1000
 GAUGE_WIDTH = 150
 
@@ -155,7 +147,7 @@ class ConflictNotifier:
 
     The engine posts from the worker thread and the notification centre belongs to
     the GUI one, so everything goes through `_sig_notify`, the one route a worker
-    has to the bell. The section is stamped here: a conflict is read on the Server
+    has to the bell. The pass is stamped here: a conflict is read on the Server
     page, so pressing the notification has to land there.
     """
 
@@ -206,7 +198,7 @@ class ProgressTransport:
 
 
 class ServerPageMixin(MixinBase):
-    """DeepReefMapWindow methods for the Server section and the sync it runs."""
+    """DeepReefMapWindow methods for the Server pass and the sync it runs."""
 
     _server_syncing: bool = False
     _server_archiving: bool = False
@@ -216,6 +208,10 @@ class ServerPageMixin(MixinBase):
     # The archive flow between its two workers: the client the plan was built
     # for, and the plan awaiting confirmation or upload.
     _archive_client: Any | None = None
+    # The run a row-level press is archiving, and how its row is dressed until
+    # the registry is asked again: run id to (state, tooltip note).
+    _archive_focus_run: str | None = None
+    _archive_run_faces: dict[str, tuple[str, str | None]] = {}
     _archive_plan_pending: ArchivePlan | None = None
     # What the last sync found the resolved server preset still missing, kept
     # for the notice strip's Download now press.
@@ -260,9 +256,7 @@ class ServerPageMixin(MixinBase):
 
         self._server_device_card, device_layout = section_card(DEVICE_CARD)
         self._server_device_label = QLabel("")
-        self._server_device_label.setStyleSheet(
-            f"font-size: {FONT_LG}; font-weight: {WEIGHT_SEMIBOLD};"
-        )
+        self._server_device_label.setStyleSheet(f"font-size: {FONT_LG}; font-weight: {WEIGHT_SEMIBOLD};")
         self._server_device_label.setWordWrap(True)
         device_layout.addWidget(self._server_device_label)
         attribution = muted_label(ATTRIBUTION_NOTE)
@@ -282,9 +276,9 @@ class ServerPageMixin(MixinBase):
         waiting_layout.addWidget(self._server_waiting)
         body.addWidget(self._server_waiting_card)
 
-        # What the registry has sent down, read-only: sites and campaigns are
-        # authored in the web interface and only chosen here: on the Transects
-        # page and when a section is filed.
+        # The shared catalogue, whichever end authored it: sites and campaigns
+        # travel both ways, and are chosen on the Transects page and wherever a
+        # pass is filed.
         self._server_reference_card, reference_layout = section_card("From the registry")
         reference_note = muted_label(REFERENCE_NOTE)
         reference_note.setWordWrap(True)
@@ -347,8 +341,7 @@ class ServerPageMixin(MixinBase):
 
         self._server_sync_btn = QPushButton(SYNC_NOW)
         self._server_sync_btn.setToolTip(
-            "Take everything the registry has for this survey, then offer everything "
-            "edited here."
+            "Take everything the registry has for this survey, then offer everything edited here."
         )
         self._server_sync_btn.clicked.connect(self._on_sync_now)
         row.addWidget(self._server_sync_btn)
@@ -370,9 +363,7 @@ class ServerPageMixin(MixinBase):
         """Re-read the credential and the sync position, and paint them."""
         if not hasattr(self, "_server_facts"):
             return
-        state = read_state(
-            self._try_survey_store(), self._server_device_name(), self._server_enrolled_by()
-        )
+        state = read_state(self._try_survey_store(), self._server_device_name(), self._server_enrolled_by())
         connected = state.connected
         self._server_empty.setVisible(not connected)
         # Before enrolment and up to the first sync, whichever comes first for
@@ -405,13 +396,13 @@ class ServerPageMixin(MixinBase):
         if connected:
             self._server_device_label.setText(state.device_name or default_device_name())
             self._server_device_facts.set_rows(_device_rows(state))
-            self._server_facts.set_rows(_fact_rows(state))
+            self._server_facts.set_rows(_fact_rows(state, self._server_reachability()))
             self._server_waiting.set_rows(
-                [
-                    (SECTION_LABELS.get(section, section), str(count))
-                    for section, count in state.pending.items()
-                ]
+                [(SECTION_LABELS.get(section, section), str(count)) for section, count in state.pending.items()]
             )
+        # Asked here as well as on the badge's cadence, so a page opened to find
+        # out what is wrong is not reading a minute-old answer.
+        self._probe_server()
         reference = _reference_rows(self._try_survey_store()) if connected else []
         self._server_reference_card.setVisible(bool(reference))
         if reference:
@@ -586,7 +577,7 @@ class ServerPageMixin(MixinBase):
             notifications=ConflictNotifier(self._sig_notify.emit),
             # The artefact this build vendored is what the client declared, so
             # the two cannot disagree about which sections were asked for.
-            pull_sections=PULL_SECTIONS,
+            pull_sections=READ_SECTIONS,
         )
 
     def _remember_agreed_contract(self) -> None:
@@ -616,27 +607,22 @@ class ServerPageMixin(MixinBase):
         """Offer one clip, from its own card. Same worker, a plan of one."""
         from deepreefmap_gui.sync import archive
 
-        self._archive_with_plan(
-            lambda store, _out_root: archive.archive_plan_for_video(store, video_id)
-        )
+        self._archive_with_plan(lambda store, _out_root: archive.archive_plan_for_video(store, video_id))
 
     def _archive_run(self, run_id: object) -> None:
         """Offer one run's outputs, from its own card."""
         from deepreefmap_gui.sync import archive
 
-        if run_id is None:
+        if run_id is None or self._server_archiving:
             return
-        # The planning, progress and summary widgets live on the Server page,
-        # so a press from Browse lands there first rather than reporting to a
-        # page nobody is looking at.
-        self._set_simple_section(SERVER_SECTION)
-        self._archive_with_plan(
-            lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id))
-        )
+        self._archive_with_plan(lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id)))
+        if not self._server_archiving:
+            return
+        # Progress is shown on the run's own row, where the press was made.
+        self._archive_focus_run = str(run_id)
+        self._set_archive_run_face(str(run_id), "uploading")
 
-    def _archive_with_plan(
-        self, plan_builder: Callable[..., object], *, confirm_first: bool = False
-    ) -> None:
+    def _archive_with_plan(self, plan_builder: Callable[..., object], *, confirm_first: bool = False) -> None:
         """Plan on a worker, then upload on another, with a confirm in between.
 
         Planning hashes files, so it stays off the GUI thread; but what it found
@@ -662,9 +648,10 @@ class ServerPageMixin(MixinBase):
             self._on_archive_done(describe_failure(exc))
             return
         if held is None:
-            # Reachable from the Browse cards, whose Archive actions do not
-            # hide with the Server page's buttons, so silence here read as a
-            # button that does nothing.
+            # Reachable from the run and clip cards, whose Archive actions do
+            # not hide with the Server page's buttons. The Connect offer lives
+            # on the Server page, so the press lands there.
+            self._set_simple_section(SERVER_SECTION)
             self._refresh_server_page()
             self._server_blocker.show_blocker(ARCHIVE_NOT_CONNECTED, CONNECT)
             return
@@ -836,9 +823,7 @@ class ServerPageMixin(MixinBase):
             from deepreefmap_gui.sync import archive
 
             try:
-                states: object = archive.probe_archive_states(
-                    client, store.list_videos(), store.list_runs()
-                )
+                states: object = archive.probe_archive_states(client, store.list_videos(), store.list_runs())
             except Exception as exc:
                 logger.info("Archive badges not refreshed: %s", exc)
                 states = None
@@ -855,6 +840,10 @@ class ServerPageMixin(MixinBase):
         from deepreefmap_gui.sync.archive import ArchiveStates
 
         self._archive_states = states if isinstance(states, ArchiveStates) else None
+        # The registry's account replaces this device's own; offline, the local
+        # answer stands until it can be checked.
+        if self._archive_states is not None:
+            self._archive_run_faces = {}
         self._paint_archive_badges()
 
     def _archive_state_for_video(self, video_id: object) -> str | None:
@@ -862,8 +851,52 @@ class ServerPageMixin(MixinBase):
         return None if states is None else states.videos.get(str(video_id))
 
     def _archive_state_for_run(self, run_id: object) -> str | None:
+        face = self._archive_run_faces.get(str(run_id))
+        if face is not None:
+            return face[0]
         states = getattr(self, "_archive_states", None)
         return None if states is None else states.runs.get(str(run_id))
+
+    def _archive_note_for_run(self, run_id: object) -> str | None:
+        face = self._archive_run_faces.get(str(run_id))
+        return None if face is None else face[1]
+
+    def _set_archive_run_face(self, run_id: str, state: str | None, note: str | None = None) -> None:
+        """Dress one run's row and card from this device's own archive attempt.
+
+        The face holds until the registry answers a probe, which is the account
+        that outranks it.
+        """
+        faces = dict(self._archive_run_faces)
+        if state is None:
+            faces.pop(run_id, None)
+        else:
+            faces[run_id] = (state, note)
+        self._archive_run_faces = faces
+        self._paint_archive_badges()
+
+    def _settle_archive_run_face(self, result: object, plan: ArchivePlan | None) -> None:
+        run_id = self._archive_focus_run
+        self._archive_focus_run = None
+        if run_id is None:
+            return
+        if isinstance(result, Failure):
+            self._set_archive_run_face(run_id, "failed", f"{result.title}. {result.detail}")
+            return
+        if not isinstance(result, ArchiveReport) or result.cancelled:
+            self._set_archive_run_face(run_id, None)
+            return
+        if result.failed:
+            label, reason = result.failed[0]
+            self._set_archive_run_face(run_id, "failed", f"{label}: {reason}")
+            return
+        # A plan with nothing to send and a reason why is a run that could not
+        # be archived, not one that was.
+        if plan is not None and not plan.jobs and plan.skipped:
+            label, reason = plan.skipped[0]
+            self._set_archive_run_face(run_id, "failed", f"{label}: {reason}")
+            return
+        self._set_archive_run_face(run_id, "archived")
 
     def _on_archive_done(self, result: object) -> None:
         self._server_archiving = False
@@ -873,6 +906,7 @@ class ServerPageMixin(MixinBase):
         plan = getattr(self, "_archive_plan_pending", None)
         self._archive_plan_pending = None
         self._archive_client = None
+        self._settle_archive_run_face(result, plan)
         if isinstance(result, ArchiveReport) and plan is not None:
             result.skipped = list(plan.skipped)
         if isinstance(result, Failure):
@@ -907,7 +941,7 @@ class ServerPageMixin(MixinBase):
     def _refresh_sync_badge(self) -> None:
         """Re-read the registry state for the badge, off the thread painting it.
 
-        The read is a credential file plus one COUNT per authored section, but
+        The read is a credential file plus one COUNT per authored pass, but
         it still leaves the GUI thread: a store can sit on a mount that has
         gone away, and the badge refreshes on a timer.
         """
@@ -920,9 +954,7 @@ class ServerPageMixin(MixinBase):
             return
         store = self._try_survey_store()
         self._sync_badge_scan_running = True
-        threading.Thread(
-            target=self._read_sync_badge, args=(store,), name="sync-badge", daemon=True
-        ).start()
+        threading.Thread(target=self._read_sync_badge, args=(store,), name="sync-badge", daemon=True).start()
 
     def _read_sync_badge(self, store: SurveyStore | None) -> None:
         try:
@@ -954,6 +986,58 @@ class ServerPageMixin(MixinBase):
         if getattr(self, "_sync_badge_rerun", False):
             self._sync_badge_rerun = False
             self._refresh_sync_badge()
+        # Every archive control in the app hangs off the same credential this
+        # badge does, so they are offered and withdrawn together, and enrolling
+        # or disconnecting reaches them without leaving the page.
+        self._refresh_archive_affordances(
+            self._sync_badge_state is not None and self._sync_badge_state.connected
+        )
+        # The badge state is read from disk and says nothing about the network,
+        # so the address it just produced is what the probe is aimed at.
+        self._probe_server()
+
+    # --- is the registry answering -------------------------------------------
+
+    def _server_reachability(self) -> reachability.Reachability:
+        """The last answer from the registry probe, unasked until one lands."""
+        return getattr(self, "_server_reach", reachability.UNCHECKED)
+
+    def _probe_server(self, force: bool = False) -> None:
+        """Ask whether the registry knows this device, off the thread painting the badge.
+
+        Only for an enrolled laptop: the probe carries this installation's own
+        token, and one that never joined a registry has nothing to be refused
+        or unavailable. Not while an exchange is in flight either, since a sync
+        is the better evidence and reports on the same fields when it lands.
+        """
+        state = getattr(self, "_sync_badge_state", None)
+        if not isinstance(state, ServerState) or not state.connected:
+            return
+        if self._server_syncing or self._server_archiving:
+            return
+        if getattr(self, "_server_probe_running", False):
+            return
+        if not force and not self._server_reachability().stale(time.monotonic()):
+            return
+        self._server_probe_running = True
+        threading.Thread(target=self._read_server_reachability, name="server-probe", daemon=True).start()
+
+    def _read_server_reachability(self) -> None:
+        reading = reachability.probe()
+        try:
+            self._sig_server_reach.emit(reading)
+        except (RuntimeError, TypeError):
+            logger.debug("The window closed before the registry answered")
+
+    def _apply_server_reachability(self, reading: object) -> None:
+        self._server_probe_running = False
+        if not isinstance(reading, reachability.Reachability):
+            return
+        self._server_reach = reading
+        badge = getattr(self, "_sync_badge", None)
+        if badge is not None:
+            badge.show_face(self._badge_face(getattr(self, "_sync_badge_state", None)))
+        self._refresh_server_page()
 
     def _badge_face(self, state: ServerState | None) -> sync_badge.SyncBadgeFace:
         if self._server_syncing:
@@ -962,14 +1046,31 @@ class ServerPageMixin(MixinBase):
             return sync_badge.FAULT if state is not None else sync_badge.NOT_CONNECTED
         if not state.connected:
             return sync_badge.NOT_CONNECTED
+        # Ahead of the stored sync fault, which is what happened last time: a
+        # registry that is not answering now explains the fault as well as the
+        # rows, and a laptop carried out of wifi is owed that answer and not a
+        # failure it can do nothing about.
+        reach = self._server_reachability()
+        if reach.unavailable:
+            return sync_badge.unavailable_face(reach.detail)
+        # The registry answered and will not have this laptop. Read now rather
+        # than at the next sync, because nothing waiting here is going anywhere
+        # until somebody issues a fresh connect code.
+        if reach.denied:
+            return sync_badge.rejected_face(reach.detail)
+        # Before the probe has answered, the last sync is the only evidence there
+        # is, and a sync that got no answer already said the server was down.
+        # Wording that as a fault would tell a diver something is wrong with
+        # their laptop over what is almost always a boat out of range.
+        if state.sync_fault and state.sync_fault_unreachable and not reach.answered:
+            return sync_badge.unavailable_face(state.sync_fault)
         # Ahead of the pending count: rows waiting behind a failed sync are not
         # going anywhere until whatever it said is read.
         if state.sync_fault:
             return sync_badge.fault_face(state.sync_fault)
         if state.waiting:
             breakdown = ", ".join(
-                f"{count} {SECTION_LABELS.get(name, name).lower()}"
-                for name, count in sorted(state.pending.items())
+                f"{count} {SECTION_LABELS.get(name, name).lower()}" for name, count in sorted(state.pending.items())
             )
             return sync_badge.waiting_face(state.waiting, breakdown)
         # No survey open means nothing was counted, which is not the same
@@ -1026,19 +1127,28 @@ class ServerPageMixin(MixinBase):
                 SYNC_ERROR_KEY,
                 f"{blocker.title}. {blocker.detail}" if isinstance(blocker, Failure) else None,
             )
+            # Beside the words, so the badge can pick a face from it on a launch
+            # that happens before the first probe has answered.
+            store.set_sync_state(
+                SYNC_ERROR_KIND_KEY,
+                blocker.kind or None if isinstance(blocker, Failure) else None,
+            )
             # Only a sync that ran both halves dates the survey: the badge's
             # "synced N minutes ago" must not stand for half an exchange.
             if outcome is not None and outcome.complete:
                 store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
         if isinstance(blocker, Failure):
+            # A sync that failed is the moment the link is most in question, so
+            # the probe is re-asked rather than left to its interval: it decides
+            # whether the badge says the registry is unreachable or that it
+            # answered and refused.
+            self._probe_server(force=True)
             self._server_notice.clear()
             # The page refresh first: it paints the persisted message without an
             # action, and this blocker carries the reconnect offer over it.
             self._refresh_server_page()
             self._server_blocker.show_blocker(
-                " ".join(
-                    filter(None, [f"{blocker.title}. {blocker.detail}", half_note(outcome)])
-                ),
+                " ".join(filter(None, [f"{blocker.title}. {blocker.detail}", half_note(outcome)])),
                 RECONNECT if blocker.reconnect else "",
             )
         else:
@@ -1055,7 +1165,13 @@ class ServerPageMixin(MixinBase):
         # After the pull has landed, so it sees the preset row and the
         # assignment in whichever order the registry delivered them.
         self._offer_preset_model_downloads(store)
-        # A pull rewrites the survey underneath every list drawn from it.
+        # After the pull for the same reason: a preset naming a profile that
+        # arrived in this same exchange must find the file on disk.
+        if store is not None:
+            self._write_registry_camera_profiles(store)
+        # A pull rewrites the survey underneath every list drawn from it, and
+        # every box that offers a choice out of it.
+        self._refresh_site_choices()
         self._refresh_transect_list()
         self._refresh_data_manager()
         self._refresh_survey_analysis()
@@ -1089,10 +1205,7 @@ class ServerPageMixin(MixinBase):
                 {
                     "fingerprint": f"{PRESET_MODELS_MISSING}.{name}.{version}",
                     "title": f"{name} (v{version}) names models that are not downloaded",
-                    "body": (
-                        f"Missing: {', '.join(missing)}. "
-                        "Download them before running a session."
-                    ),
+                    "body": (f"Missing: {', '.join(missing)}. Download them before running a session."),
                     "severity": WARNING,
                     "scope": MACHINE,
                     "section": MODELS_SECTION,
@@ -1100,9 +1213,7 @@ class ServerPageMixin(MixinBase):
             )
         self._refresh_models_segment()
 
-    def _preset_models_needed(
-        self, store: SurveyStore | None
-    ) -> tuple[str, int, tuple[str, ...]] | None:
+    def _preset_models_needed(self, store: SurveyStore | None) -> tuple[str, int, tuple[str, ...]] | None:
         """The resolved server preset, and the weights it names that are not here.
 
         Answered from what _refresh_model_status verified on its worker thread,
@@ -1161,21 +1272,36 @@ class ServerPageMixin(MixinBase):
 
 
 def _reference_rows(store: SurveyStore | None) -> list[tuple[str, str]]:
-    """The pulled sites and campaigns, one row each, or nothing to hide the card.
+    """The shared sites and campaigns, one row each, or nothing to hide the card.
 
-    Names, not counts: a diver checking this page wants to see that the reef
-    they are about to file against actually came down.
+    Named rather than counted: a diver checking this page wants to see that the
+    reef they are about to file against actually came down. The usage on the end
+    of each line answers the next question, which is whether anything is filed
+    against it yet.
     """
     if store is None:
         return []
+    transects = store.list_transects()
+    passes = store.list_passes()
     rows: list[tuple[str, str]] = []
     for site in store.list_sites():
         where = ", ".join(part for part in (site.region, site.country) if part)
-        rows.append((site.name, where or "Site"))
+        lines = sum(1 for transect in transects if transect.site_id == site.id)
+        rows.append((site.name, _detail(where or "Site", _counted(lines, "transect"))))
     for campaign in store.list_campaigns():
         span = " to ".join(part for part in (campaign.begin_date, campaign.end_date) if part)
-        rows.append((campaign.name, span or "Campaign"))
+        filed = sum(1 for pass_ in passes if pass_.campaign_id == campaign.id)
+        rows.append((campaign.name, _detail(span or "Campaign", _counted(filed, "pass"))))
     return rows
+
+
+def _counted(count: int, noun: str) -> str:
+    plural = f"{noun}es" if noun.endswith("s") else f"{noun}s"
+    return f"{count} {noun if count == 1 else plural}"
+
+
+def _detail(*parts: str) -> str:
+    return ", ".join(part for part in parts if part)
 
 
 def _device_rows(state: ServerState) -> list[tuple[str, str]]:
@@ -1186,7 +1312,7 @@ def _device_rows(state: ServerState) -> list[tuple[str, str]]:
     return rows
 
 
-def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
+def _fact_rows(state: ServerState, reach: reachability.Reachability) -> list[tuple[str, str]]:
     """The connection and the position, as the page lists them."""
     age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
     if not state.last_sync:
@@ -1197,6 +1323,7 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
         last = f"{age} ago ({state.last_sync})"
     rows = [
         ("Server", state.base_url),
+        (SERVER_STATUS, _status_value(reach)),
         ("Last sync", last),
         ("Pulled up to", "Nothing yet" if state.cursor is None else str(state.cursor)),
         ("Waiting to send", f"{state.waiting} row(s)"),
@@ -1204,6 +1331,21 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
     if state.set_aside:
         rows.append((SET_ASIDE, _set_aside_value(state.set_aside)))
     return rows
+
+
+def _status_value(reach: reachability.Reachability) -> str:
+    """What the registry said last time it was asked, and how long ago.
+
+    Both halves are shown because either alone misleads: a verdict with no age
+    reads as current when the laptop has been asleep, and an age with no verdict
+    says nothing about what came back.
+    """
+    label = reachability.STATE_LABELS.get(reach.state, reach.state)
+    if not reach.asked:
+        return f"{label}. {reach.detail}"
+    age = relative_age(reach.checked_at, utc_now_iso())
+    when = "just now" if age in ("", "just now") else f"checked {age} ago"
+    return f"{label}. {reach.detail} ({when})"
 
 
 def _set_aside_value(names: Sequence[str], shown: int = 4) -> str:

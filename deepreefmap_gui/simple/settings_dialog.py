@@ -1,14 +1,8 @@
 """The run settings dialog, and the live form it edits.
 
-Rather than keep a second copy of the run form, the dialog borrows the real one
-out of the hidden holder that owns it and hands it back when it closes. The form
-is never on screen otherwise, so this is the only place its settings are edited,
-and every setting stays a single widget with a single value.
-
-Borrowing the live form means the widgets are edited in place, so Cancel cannot
-simply drop a pending copy. The caller snapshots the settings before opening and
-puts them back when the dialog is rejected, which is why the dialog only reports
-its result and never persists anything itself.
+The dialog borrows the run form out of its hidden holder and hands it back on
+close. Edits land in the live widgets; the caller snapshots the settings before
+opening and restores them on reject. The dialog persists nothing itself.
 """
 
 from __future__ import annotations
@@ -61,31 +55,20 @@ class RunSettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Reset
         )
-        # Named for what they do to the settings. "OK" and "Cancel" say nothing
-        # about whether the edit is kept, which is the only question here.
         ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setText("Save settings")
         ok.setProperty("cta", "true")
         ok.setDefault(True)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Discard")
         reset = buttons.button(QDialogButtonBox.StandardButton.Reset)
-        # For the session, the standard is the organisation preset, not the
-        # values a fresh window happens to construct: those two drifted apart
-        # the moment a preset shipped, and only one of them is the configuration
-        # anybody blessed. For one pass's settings it is the session's own,
-        # which is what the caller passes instead.
+        # The session's standard is the organisation preset; a pass's is the session's own.
         reset.setText(reset_label)
-        reset.setToolTip(f"Put every setting back: {reset_label.lower()}.")
-        # Restore writes into the live form like every other edit here, so Cancel
-        # still undoes it, and only OK persists the machine override.
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip(
-            "Close without keeping any of these changes."
-        )
+        reset.setToolTip("Applies to every setting.")
+        # Restore edits the live form too, so Cancel undoes it.
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip("Close without saving.")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        reset.clicked.connect(
-            self._window._load_standard_into_form if on_reset is None else on_reset
-        )
+        reset.clicked.connect(self._window._load_standard_into_form if on_reset is None else on_reset)
         layout.addWidget(buttons)
 
         # Per-run values come from the pass table on the Run step, so showing
@@ -94,9 +77,7 @@ class RunSettingsDialog(QDialog):
             widget.setVisible(False)
         self._size_to_form(layout, scroll, buttons)
 
-    def _size_to_form(
-        self, layout: QVBoxLayout, scroll: QScrollArea, buttons: QDialogButtonBox
-    ) -> None:
+    def _size_to_form(self, layout: QVBoxLayout, scroll: QScrollArea, buttons: QDialogButtonBox) -> None:
         """Open at the size the form asks for, up to what the screen allows.
 
         The scroll area is the fallback for a form taller than the display, not
@@ -107,11 +88,7 @@ class RunSettingsDialog(QDialog):
         form.adjustSize()
         margins = layout.contentsMargins()
         chrome = (
-            margins.top()
-            + margins.bottom()
-            + layout.spacing()
-            + buttons.sizeHint().height()
-            + 2 * scroll.frameWidth()
+            margins.top() + margins.bottom() + layout.spacing() + buttons.sizeHint().height() + 2 * scroll.frameWidth()
         )
         hint = form.sizeHint()
         # Between the width the form was designed at and the width its longest

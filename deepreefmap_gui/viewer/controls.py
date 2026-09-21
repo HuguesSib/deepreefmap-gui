@@ -275,7 +275,7 @@ class ViewerControlsMixin(MixinBase):
         overlay.reposition()
         overlay.setVisible(True)
 
-    # Direction a column sorts in when first clicked: visible-on-top, A–Z,
+    # Direction a column sorts in when first clicked: visible-on-top, A-Z,
     # largest-first respectively.
     _LEGEND_SORT_DEFAULT_ASC = {"selected": False, "name": True, "size": False}
 
@@ -295,7 +295,7 @@ class ViewerControlsMixin(MixinBase):
         elif mode == "size":
             sign = 1 if asc else -1
             ids.sort(key=lambda c: (sign * int(counts.get(c, 0)), name(c)))
-        else:  # "selected": one group on top (A–Z), the other below (A–Z)
+        else:  # "selected": one group on top (A-Z), the other below (A-Z)
             ids.sort(key=lambda c: ((c in enabled) == asc, name(c)))
         return ids
 

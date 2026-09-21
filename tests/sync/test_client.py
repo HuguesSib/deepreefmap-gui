@@ -19,7 +19,7 @@ from deepreefmap_gui.sync.client import (
     CONTRACT_HEADER,
     CONTRACT_RANGE,
     CONTRACT_VERSION,
-    PULL_SECTIONS,
+    READ_SECTIONS,
     SECTIONS_HEADER,
     AccessDeniedError,
     ConflictError,
@@ -240,7 +240,7 @@ def test_every_call_declares_the_contract_and_the_sections(registry) -> None:
 
     for _method, _path, _body, headers in registry.requests:
         assert headers[CONTRACT_HEADER] == CONTRACT_RANGE
-        assert headers[SECTIONS_HEADER] == ",".join(PULL_SECTIONS)
+        assert headers[SECTIONS_HEADER] == ",".join(READ_SECTIONS)
 
 
 def test_enrolment_declares_the_contract_and_no_sections(registry, make_code) -> None:
@@ -457,6 +457,34 @@ def test_archive_download_passes_an_absolute_url_through(registry) -> None:
     registry.reply("/api/archive/o-1/download", 200, {"url": link})
 
     assert make_client(registry).archive_download("o-1") == link
+
+
+def test_ping_asks_who_the_registry_thinks_this_device_is(registry) -> None:
+    """Expected behaviour: authenticated, so the answer separates a server that
+    is down from one that is up and no longer accepts this installation."""
+    identity = {"is_device": True, "device_id": "d-1", "device_name": "Reef 3"}
+    registry.reply("/api/me", 200, identity, {CONTRACT_HEADER: f"1-{CONTRACT_VERSION + 2}"})
+
+    client = make_client(registry)
+    assert client.ping() == identity
+
+    method, path, _body, headers = registry.requests[-1]
+    assert (method, path) == ("GET", "/api/me")
+    assert headers["Authorization"] == f"Bearer {TOKEN}"
+    # The range travels on every answer, so a probe keeps the client current.
+    assert client.server_max == CONTRACT_VERSION + 2
+
+
+def test_ping_reports_a_revoked_device(registry) -> None:
+    registry.reply("/api/me", 401, {"detail": "unknown device"})
+
+    with pytest.raises(DeviceRevokedError, match="revoked"):
+        make_client(registry).ping()
+
+
+def test_ping_reports_a_registry_that_is_not_listening() -> None:
+    with pytest.raises(ServerUnreachableError, match="Cannot reach"):
+        SyncClient("http://127.0.0.1:1", token=TOKEN, timeout=2.0).ping()
 
 
 def test_offline_server_raises_unreachable() -> None:

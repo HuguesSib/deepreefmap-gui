@@ -99,7 +99,10 @@ def seed_survey(out_root: Path) -> None:
     store = SurveyStore(out_root / SURVEY_DB_NAME)
     # Two sessions, so By session has something to be a grouping of rather than
     # one node holding everything.
-    sessions = [SurveyBatch(name="2026-08-04"), SurveyBatch(name="2026-08-02")]
+    sessions = [
+        SurveyBatch(created_at="2026-08-04T09:12:00"),
+        SurveyBatch(created_at="2026-08-02T14:35:00"),
+    ]
     for session in sessions:
         store.add_batch(session)
     transects = []
@@ -277,6 +280,7 @@ def build_window():
 
 
 def capture_all(out_dir: Path) -> None:
+    from deepreefmap_gui.runs.browse import _GROUPED_FACETS
     from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 
     out_root = _isolate_config()
@@ -311,7 +315,7 @@ def capture_all(out_dir: Path) -> None:
     window._data_run_table.selectRow(0)
     capture.shot("browse-selected")
 
-    for facet in ("sessions", "transects", "videos"):
+    for facet in _GROUPED_FACETS:
         window._data_facet_buttons[facet].click()
         capture.settle()
         capture.shot(f"browse-by-{facet}")

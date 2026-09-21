@@ -19,6 +19,7 @@ could not tell" are different facts and the interface shows them differently.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import struct
 from dataclasses import dataclass
@@ -37,6 +38,15 @@ SOURCE_MTIME = "mtime"
 
 # QuickTime counts seconds from 1904, not 1970.
 _QT_EPOCH = datetime(1904, 1, 1, tzinfo=timezone.utc)
+
+
+def gravity_telemetry_available() -> bool:
+    """Whether GoPro gravity telemetry can be read here.
+
+    A spec lookup, never an import. py-gpmf-parser publishes Linux x86_64 wheels
+    only, so this is False on macOS and Windows unless a wheel was built for them.
+    """
+    return importlib.util.find_spec("py_gpmf_parser") is not None
 
 # Cameras that do not set a creation time write zero, and files that mistake the
 # epoch land decades out. Anything outside this window is not a shooting date.

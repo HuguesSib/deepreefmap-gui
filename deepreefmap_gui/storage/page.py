@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -58,6 +58,7 @@ from deepreefmap_gui.core.widgets import (
     SectionHeader,
     enable_sorting,
     muted_label,
+    page_scroll_area,
     secondary_label,
     section_card,
 )
@@ -126,29 +127,31 @@ class StorageMixin(MixinBase):
         layout.addWidget(self._build_storage_free_bar())
 
         self._storage_runs_stack = QStackedWidget()
-        self._storage_runs = self._make_tree(rows_mod.RUN_COLUMNS)
+        self._storage_runs = self._make_tree(
+            rows_mod.RUN_COLUMNS, rows_mod._RUN_COLUMN_SPEC, settings_key="storage_runs"
+        )
         self._storage_runs.itemChanged.connect(self._on_storage_item_changed)
         self._storage_runs.itemClicked.connect(self._on_storage_row_clicked)
         self._storage_runs_stack.addWidget(self._storage_runs)
         self._storage_runs_stack.addWidget(EmptyState(NO_RUNS, NO_RUNS_HINT))
         # Runs take the larger share of what is left: there are more of them,
         # each can expand into four rows, and the clip list is one row a clip.
-        layout.addWidget(self._card_around(RUNS_TITLE, self._storage_runs_stack), 3)
+        self._storage_runs_card = self._card_around(RUNS_TITLE, self._storage_runs_stack)
+        layout.addWidget(self._storage_runs_card, 3)
 
         self._storage_clips_stack = QStackedWidget()
-        self._storage_clips = self._make_tree(rows_mod.CLIP_COLUMNS)
+        self._storage_clips = self._make_tree(
+            rows_mod.CLIP_COLUMNS, rows_mod._CLIP_COLUMN_SPEC, settings_key="storage_clips"
+        )
         self._storage_clips.itemChanged.connect(self._on_storage_item_changed)
         self._storage_clips.itemClicked.connect(self._on_storage_row_clicked)
         self._storage_clips_stack.addWidget(self._storage_clips)
         self._storage_clips_stack.addWidget(EmptyState(NO_CLIPS, NO_CLIPS_HINT))
-        layout.addWidget(self._card_around(CLIPS_TITLE, self._storage_clips_stack), 2)
+        self._storage_clips_card = self._card_around(CLIPS_TITLE, self._storage_clips_stack)
+        layout.addWidget(self._storage_clips_card, 2)
+        self._storage_lists_layout = layout
 
-        page = QScrollArea()
-        page.setWidgetResizable(True)
-        page.setWidget(column)
-        page.setFrameShape(QScrollArea.Shape.NoFrame)
-        page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        return page
+        return page_scroll_area(column)
 
     @staticmethod
     def _card_around(title: str, inner: QWidget) -> QWidget:
@@ -157,8 +160,8 @@ class StorageMixin(MixinBase):
         return card
 
     @staticmethod
-    def _make_tree(columns: tuple[str, ...]) -> QTreeWidget:
-        tree = rows_mod.StorageTree(columns)
+    def _make_tree(columns, spec, *, settings_key: str) -> QTreeWidget:
+        tree = rows_mod.StorageTree(columns, spec, settings_key=settings_key)
         tree.setMinimumHeight(180)
         enable_sorting(tree, None)
         return tree
@@ -200,19 +203,33 @@ class StorageMixin(MixinBase):
             f"QWidget#storageFreeBar {{ border: 1px solid {BORDER};"
             f" border-radius: {RADIUS_SM}px; }}"
         )
-        row = QHBoxLayout(bar)
+        row = QHBoxLayout()
         row.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_SM)
         row.setSpacing(SPACE_MD)
 
         self._storage_finding = QLabel(NOTHING_TO_FREE)
+        self._storage_finding.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         row.addWidget(self._storage_finding, 1)
-        self._storage_warning = muted_label()
-        row.addWidget(self._storage_warning)
 
         self._storage_delete_btn = QPushButton(FREE_SELECTED)
         self._storage_delete_btn.setEnabled(False)
         self._storage_delete_btn.clicked.connect(self._on_storage_delete_clicked)
         row.addWidget(self._storage_delete_btn)
+
+        # Under the row, wrapped: it is the longest sentence on the page and it
+        # only appears once the button is armed, so a line of its own costs
+        # nothing and keeps the bar off the width of two sentences plus a button.
+        self._storage_warning = muted_label()
+        self._storage_warning.setWordWrap(True)
+        self._storage_warning.setVisible(False)
+        stack = QVBoxLayout()
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(SPACE_XS)
+        stack.addLayout(row)
+        stack.addWidget(self._storage_warning)
+        bar.setLayout(stack)
 
         # Owned by the window rather than the button, so it can be stopped from
         # anywhere the selection changes underneath it.
@@ -225,7 +242,7 @@ class StorageMixin(MixinBase):
     # --- navigation ---------------------------------------------------------
 
     def _open_storage_page(self, root: str) -> None:
-        """Go to this drive's page, or back to Browse if it is already showing."""
+        """Go to this drive's page, or back to Results if it is already showing."""
         if self._storage_root == root and self._current_section() == "storage":
             self._set_simple_section("browse")
             return
@@ -312,9 +329,25 @@ class StorageMixin(MixinBase):
         for tree in (self._storage_runs, self._storage_clips):
             tree.blockSignals(False)
 
-        self._storage_runs_stack.setCurrentIndex(0 if found.runs or found.others else 1)
-        self._storage_clips_stack.setCurrentIndex(0 if found.clips else 1)
+        has_runs = bool(found.runs or found.others)
+        has_clips = bool(found.clips)
+        self._storage_runs_stack.setCurrentIndex(0 if has_runs else 1)
+        self._storage_clips_stack.setCurrentIndex(0 if has_clips else 1)
+        # An empty list keeps its heading and its message, but stops reserving a
+        # share of the page: a stacked layout takes its minimum from its tallest
+        # page, so the empty one inherited the tree's own 180px floor and half
+        # the window went to saying there was nothing on the drive.
+        self._set_list_share(self._storage_runs_card, 3 if has_runs else 0)
+        self._set_list_share(self._storage_clips_card, 2 if has_clips else 0)
         self._refresh_storage_selection()
+
+    def _set_list_share(self, card: QWidget, share: int) -> None:
+        """How much of the page's height one list card claims."""
+        self._storage_lists_layout.setStretchFactor(card, share)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding if share else QSizePolicy.Policy.Maximum,
+        )
 
     # --- the header ---------------------------------------------------------
 
@@ -423,10 +456,14 @@ class StorageMixin(MixinBase):
             self._storage_finding.setText(
                 f"{lead}{format_bytes(total)} can be freed. Selected: {count} items"
             )
-        self._storage_warning.setText(GRAVE_WARNING if grave else "")
+        warning = GRAVE_WARNING if grave else ""
         self._storage_delete_btn.setEnabled(bool(count) and not self._run_in_flight())
         if self._run_in_flight():
-            self._storage_warning.setText(RUN_IN_FLIGHT)
+            warning = RUN_IN_FLIGHT
+        self._storage_warning.setText(warning)
+        # Hidden when it says nothing, or its wrapped line reserves height on
+        # every drive that has nothing to warn about.
+        self._storage_warning.setVisible(bool(warning))
 
     def _disarm_storage(self) -> None:
         if self._storage_arm.isActive():

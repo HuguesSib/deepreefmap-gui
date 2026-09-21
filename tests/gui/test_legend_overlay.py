@@ -122,7 +122,7 @@ def test_legend_sort_header_click_toggles_direction(window) -> None:
     window._build_legend()
     assert (window._legend_sort_mode, window._legend_sort_ascending) == ("selected", False)
 
-    window._on_legend_sort_clicked("name")  # new column adopts its default (A–Z)
+    window._on_legend_sort_clicked("name")  # new column adopts its default (A-Z)
     assert (window._legend_sort_mode, window._legend_sort_ascending) == ("name", True)
     window._on_legend_sort_clicked("name")  # same column flips direction
     assert window._legend_sort_ascending is False

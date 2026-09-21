@@ -41,6 +41,17 @@ def history_key(mapping_backend: str, seg_model: str, proc_w: int, proc_h: int, 
     return f"{mapping_backend}|{seg_model}|{proc_w}x{proc_h}|{fps}fps"
 
 
+def seg_key(segmentation_name: str | None, skip_segmentation: bool) -> str:
+    """How a run's segmentation model is spelled in the history key.
+
+    Skipping segmentation is its own identity, not a missing model, and is what
+    a finished run is recorded under (instrumentation.py). Predicting under the
+    combo's model name instead prices a geometry-only pass with priors that
+    include segmentation, and files its own runs under a key nothing reads.
+    """
+    return "__skip__" if skip_segmentation else str(segmentation_name or "")
+
+
 def load_expected_points(key: str, path: Path | None = None) -> int | None:
     """Median final point count over stored runs for `key`, or None if unseen."""
     points = [int(r["points"]) for r in _load_all(path or timings_path()).get(key, []) if r.get("points")]
@@ -428,9 +439,18 @@ def record_run(
     _LOADED.clear()
 
 
-def record_run_from_manifest(manifest: dict) -> None:
-    """Fold a finished run's manifest timings into the local timing profile."""
+def record_run_from_manifest(
+    manifest: dict, cached_stages: "frozenset[str] | None" = None
+) -> None:
+    """Fold a finished run's manifest timings into the local timing profile.
+
+    Stages named in `cached_stages` are dropped: their span measured a seeded
+    hard-link rather than the work, and folding that in makes every fresh run
+    predicted from this key too fast.
+    """
     durations = manifest.get("stage_durations") or {}
+    if cached_stages:
+        durations = {k: v for k, v in durations.items() if k not in cached_stages}
     if not durations:
         return
     try:
@@ -453,6 +473,11 @@ def record_run_from_manifest(manifest: dict) -> None:
                 # Recorded so a VRAM peak can be matched to the batch size it was
                 # measured at; the segmentation term scales with it.
                 "preprocess_batch_size",
+                # `semantic` or `geometry_only`. A geometry-only run executes no
+                # ortho at all, and without knowing that, a stage absent from
+                # every stored run falls to the weight fallback and manufactures
+                # minutes for work that never happens.
+                "mode",
             )
             if manifest.get(k) is not None
         }

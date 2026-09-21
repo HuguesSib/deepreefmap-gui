@@ -1,4 +1,4 @@
-"""The Server section in the shell: what it says, and what a sync does to it.
+"""The Server pass in the shell: what it says, and what a sync does to it.
 
 No test here reaches the network. The registry is a fake object standing in for
 `SyncClient`, so the real engine, the real store and the real signals run.
@@ -13,10 +13,12 @@ import uuid
 import pytest
 from _factories import make_transect
 
+from deepreefmap_gui.server import reachability
 from deepreefmap_gui.server.page_ui import (
     GAUGE_STEPS,
     NOT_CONNECTED,
     ONBOARDED_BY,
+    SERVER_STATUS,
     SESSION_RUNNING,
     SET_ASIDE,
     _set_aside_value,
@@ -30,11 +32,14 @@ from deepreefmap_gui.server.state import (
     PUSH_LANDED,
     SERVER_SECTION,
     SYNC_ERROR_KEY,
+    SYNC_ERROR_KIND_KEY,
+    UNREACHABLE_KIND,
 )
 from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.sync import client as client_mod
 from deepreefmap_gui.sync import contract, credentials
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX
 from deepreefmap_gui.sync.engine import (
     CONFLICT_DISCARDED,
     CONTRACT_VERSION_KEY,
@@ -50,9 +55,7 @@ AGREED = contract.CONTRACT_VERSION
 class FakeRegistry:
     """Answers like the registry, and records the order it was asked in."""
 
-    def __init__(
-        self, base_url="", token="", fail=None, push_fail=None, skipped=None, omitted=()
-    ):
+    def __init__(self, base_url="", token="", fail=None, push_fail=None, skipped=None, omitted=()):
         self.base_url = base_url
         self.token = token
         # What the real client learns from the stamp on a response.
@@ -85,9 +88,7 @@ class FakeRegistry:
         self.pushed.append(dict(sections))
         return {
             "cursor": CURSOR,
-            "sections": {
-                name: self._outcome(name, rows) for name, rows in sections.items()
-            },
+            "sections": {name: self._outcome(name, rows) for name, rows in sections.items()},
         }
 
     def _outcome(self, name, rows):
@@ -132,8 +133,12 @@ def registry(monkeypatch):
     def build(*, fail=None, push_fail=None, skipped=None, omitted=()):
         def factory(base_url, token=None, timeout=None, agreed=None):
             fake = FakeRegistry(
-                base_url, token or "", fail=fail, push_fail=push_fail,
-                skipped=skipped, omitted=omitted,
+                base_url,
+                token or "",
+                fail=fail,
+                push_fail=push_fail,
+                skipped=skipped,
+                omitted=omitted,
             )
             fake.agreed = agreed
             made.append(fake)
@@ -195,8 +200,8 @@ def one_note(window, fingerprint: str):
 def test_the_server_page_is_a_setup_view_not_a_section(window):
     """Scenario: the Server page lives on Setup's segmented control.
 
-    Expected behaviour: no section, pill or header button of its own; the old
-    section name still routes there because persisted notifications carry it.
+    Expected behaviour: no pass, pill or header button of its own; the old
+    pass name still routes there because persisted notifications carry it.
     """
     assert SERVER_SECTION in MACHINE_VIEWS
     assert SERVER_SECTION not in SIMPLE_SECTIONS
@@ -295,9 +300,9 @@ def test_a_record_this_laptop_would_not_take_stays_readable_on_the_page(window):
     somebody renames one of them.
     """
     enrol_this_device()
-    window._survey_store().set_sync_state(QUARANTINE_KEY, json.dumps([
-        {"section": "transects", "id": str(uuid.uuid4()), "name": "Reef Wall", "row": {}}
-    ]))
+    window._survey_store().set_sync_state(
+        QUARANTINE_KEY, json.dumps([{"section": "transects", "id": str(uuid.uuid4()), "name": "Reef Wall", "row": {}}])
+    )
 
     window._set_simple_section(SERVER_SECTION)
 
@@ -329,7 +334,7 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
     secret = "ab" * 32
-    pasted = f"drm1.{secret}"
+    pasted = f"{CODE_PREFIX}{secret}"
 
     def fake_connect(code):
         assert code == pasted
@@ -357,9 +362,7 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     assert device_facts(window)[ONBOARDED_BY] == "Kim Nguyen"
 
 
-def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
-    window, qapp, monkeypatch
-):
+def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(window, qapp, monkeypatch):
     """The dialog can be cancelled mid-enrolment, and the answer still arrives."""
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
@@ -368,7 +371,7 @@ def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
-    window._start_enrolment("drm1.whatever")
+    window._start_enrolment(f"{CODE_PREFIX}whatever")
 
     assert settle(qapp, lambda: window._server_blocker.isVisibleTo(window))
     assert "already been used" in window._server_blocker._reason.text()
@@ -489,11 +492,7 @@ def test_a_revoked_device_is_asked_to_connect_again(window, qapp, registry):
 
 def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
     enrol_this_device()
-    registry(
-        fail=client_mod.ContractMismatchError(
-            "This app speaks metadata contract 1 and the registry speaks 2."
-        )
-    )
+    registry(fail=client_mod.ContractMismatchError("This app speaks metadata contract 1 and the registry speaks 2."))
     window._set_simple_section(SERVER_SECTION)
 
     window._on_sync_now()
@@ -505,9 +504,7 @@ def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
     assert window._server_blocker._action.text() == ""
 
 
-def test_a_registry_that_stops_saying_which_contract_it_speaks_is_refused(
-    window, qapp, registry
-):
+def test_a_registry_that_stops_saying_which_contract_it_speaks_is_refused(window, qapp, registry):
     """Once a registry has stamped, silence from it is a registry gone backwards."""
     enrol_this_device()
     registry(
@@ -594,7 +591,7 @@ def test_disconnecting_forgets_the_token_and_says_only_that(window, monkeypatch)
 
     assert credentials.load() is None
     assert window._server_empty.isVisibleTo(window)
-    assert "does not revoke the device" in window._server_disconnect_btn.toolTip()
+    assert "Revoke the device in the web interface" in window._server_disconnect_btn.toolTip()
 
 
 def test_disconnecting_is_refusable(window, monkeypatch):
@@ -617,14 +614,13 @@ def test_an_unconnected_install_offers_no_archive_button(window):
     assert not window._server_archive_btn.isEnabled()
 
 
-def test_the_archive_button_says_it_only_sends_on_request(window):
+def test_the_archive_button_says_what_it_sends(window):
     enrol_this_device()
     window._set_simple_section(SERVER_SECTION)
 
     assert window._server_archive_btn.isVisibleTo(window)
     tooltip = window._server_archive_btn.toolTip()
     assert "original clips" in tooltip and "finished run" in tooltip
-    assert "until this is pressed" in tooltip
 
 
 @pytest.fixture
@@ -642,9 +638,7 @@ def accept_confirms(monkeypatch):
     return asked
 
 
-def test_archiving_sends_the_queue_and_reports_what_landed(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registry, tmp_path, accept_confirms):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -688,9 +682,7 @@ def test_declining_the_size_question_sends_nothing(window, qapp, registry, tmp_p
     assert window._server_archive_btn.isEnabled()
 
 
-def test_what_the_plan_left_out_is_said_with_what_landed(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_what_the_plan_left_out_is_said_with_what_landed(window, qapp, registry, tmp_path, accept_confirms):
     """A clip whose file has moved must not vanish from the summary: "archived
     the rest" and "archived everything" read the same without it."""
     from deepreefmap_gui.survey.models import VideoAsset
@@ -726,8 +718,7 @@ def test_a_cancelled_archive_says_it_stopped(window, qapp, registry, tmp_path, a
     window._server_archive_btn.click()
     # The moment the upload worker starts, stopping it is offered; pressing it
     # marks the queue cancelled before the next job is taken.
-    assert settle(qapp, lambda: window._server_archive_cancel_btn.isVisibleTo(window)
-                  or not window._server_archiving)
+    assert settle(qapp, lambda: window._server_archive_cancel_btn.isVisibleTo(window) or not window._server_archiving)
     if window._server_archiving:
         assert window._server_archive_cancel_btn.text() == CANCEL_ARCHIVE
         window._on_archive_cancel()
@@ -788,9 +779,7 @@ def test_a_session_in_flight_holds_the_archive_back(window, registry):
     assert window._server_blocker._reason.text() == SESSION_RUNNING
 
 
-def test_an_archive_that_cannot_reach_the_registry_is_a_retry(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_an_archive_that_cannot_reach_the_registry_is_a_retry(window, qapp, registry, tmp_path, accept_confirms):
     from deepreefmap_gui.survey.models import VideoAsset
 
     enrol_this_device()
@@ -861,9 +850,7 @@ def test_a_reading_that_arrives_after_the_pass_paints_nothing(window):
     assert window._server_archive_bar.value() == 0
 
 
-def test_an_archive_fills_the_gauge_and_clears_it(
-    window, qapp, registry, tmp_path, accept_confirms
-):
+def test_an_archive_fills_the_gauge_and_clears_it(window, qapp, registry, tmp_path, accept_confirms):
     """Scenario: the whole route from the upload thread to the widget.
 
     Expected behaviour: readings reach the gauge over the window's own signal,
@@ -893,10 +880,9 @@ def test_an_archive_fills_the_gauge_and_clears_it(
     assert window._server_archive_bar.value() == 0
 
 
-def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp, registry):
-    """The planning, progress and summary widgets all live on the Server page,
-    so an archive pressed from a Browse card must not report to a page nobody
-    is looking at."""
+def test_a_card_archive_stays_where_it_was_pressed(window, qapp, registry):
+    """The run's own row and card carry the answer, so the press does not move
+    the reader to the Server page. Its summary is still written there."""
     enrol_this_device()
     registry()
     window._set_simple_section("videos")
@@ -904,11 +890,14 @@ def test_a_browse_archive_lands_on_the_server_page_with_its_answer(window, qapp,
     window._archive_run("no-such-run")
     assert settle(qapp, lambda: not window._server_archiving)
 
-    assert on_server_page(window)
+    assert not on_server_page(window)
+    assert window._current_section() == "videos"
     assert "Archived 0 file(s)" in window._server_notice._message.text()
 
 
 def test_an_unenrolled_archive_says_to_connect_first(window):
+    """The Connect offer lives on the Server page, so an archive pressed
+    without a registry lands there."""
     from deepreefmap_gui.server.page_ui import ARCHIVE_NOT_CONNECTED, CONNECT
 
     window._set_simple_section("videos")
@@ -950,9 +939,7 @@ def assign_preset(window, name="Expedition standard", version=2, settings=None):
     return store
 
 
-def test_a_sync_offers_to_download_what_the_assigned_preset_needs(
-    window, qapp, registry, monkeypatch
-):
+def test_a_sync_offers_to_download_what_the_assigned_preset_needs(window, qapp, registry, monkeypatch):
     enrol_this_device()
     assign_preset(window, settings=PRESET_SETTINGS)
     window._last_model_states = model_states()
@@ -1080,8 +1067,7 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
     window._refresh_sync_badge()
     assert settle(
         qapp,
-        lambda: getattr(window, "_sync_badge_state", None) is not None
-        and window._sync_badge_state.connected,
+        lambda: getattr(window, "_sync_badge_state", None) is not None and window._sync_badge_state.connected,
     )
 
     window._on_sync_badge_clicked()
@@ -1089,6 +1075,130 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
 
     assert made[0].calls == ["pull", "push"]
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_the_badge_says_the_server_is_unavailable_when_nothing_answers(window, qapp, server_probe):
+    """Scenario: the laptop is enrolled and carried out of wifi.
+
+    Expected behaviour: the badge names the server rather than counting rows.
+    Nothing here is lost and nothing the diver did is wrong, so the fault the
+    last sync recorded is not the answer to lead with.
+    """
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+    window._survey_store().set_sync_state(SYNC_ERROR_KEY, "The registry did not answer. Cannot reach it.")
+    server_probe(reachability.OFFLINE, "Cannot reach https://reef.example.org: no route.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Server unavailable" in window._sync_badge._label.text())
+    assert "no route" in window._sync_badge.toolTip()
+
+
+def test_the_badge_reads_a_refusal_the_registry_has_not_been_asked_for_yet(window, qapp, server_probe):
+    """Scenario: the device was revoked in the console between syncs.
+
+    Expected behaviour: the probe carries the device token, so this is known
+    before the next sync runs, and it is not called unavailable: the registry
+    is up, and only a fresh connect code fixes it.
+    """
+    enrol_this_device()
+    server_probe(reachability.DENIED, "Answered in 12 ms and would not have this device. Access revoked.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Reconnect needed" in window._sync_badge._label.text())
+    assert "revoked" in window._sync_badge.toolTip()
+    # Neither of the other two faces: the server is up, and no sync is at fault.
+    assert "Server unavailable" not in window._sync_badge._label.text()
+    assert "Sync fault" not in window._sync_badge._label.text()
+
+
+def test_a_sync_that_got_no_answer_is_not_worded_as_a_fault(window, qapp):
+    """Scenario: the app is reopened after a sync that never reached the server,
+    before the first probe of this session has answered.
+
+    Expected behaviour: the stored failure already said nothing answered, so the
+    badge says the server is unavailable rather than that a sync is at fault.
+    """
+    enrol_this_device()
+    store = window._survey_store()
+    store.set_sync_state(SYNC_ERROR_KEY, "The registry did not answer. Cannot reach it.")
+    store.set_sync_state(SYNC_ERROR_KIND_KEY, UNREACHABLE_KIND)
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Server unavailable" in window._sync_badge._label.text())
+    assert "Sync fault" not in window._sync_badge._label.text()
+
+
+def test_a_sync_the_registry_refused_is_still_a_fault(window, qapp):
+    """The other half: a registry that answered and rejected the document is a
+    fault, and must not be softened into a server being unavailable."""
+    enrol_this_device()
+    window._survey_store().set_sync_state(SYNC_ERROR_KEY, "The registry would not take this document.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Sync fault" in window._sync_badge._label.text())
+
+
+def test_the_recorded_failure_kind_survives_the_sync(window, qapp, registry):
+    """What the badge reads next launch is written by the sync that failed."""
+    from deepreefmap_gui.sync import client as client_module
+
+    enrol_this_device()
+    registry(fail=client_module.ServerUnreachableError("Cannot reach the registry."))
+    window._survey_store().add_transect(make_transect())
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._survey_store().sync_state(SYNC_ERROR_KIND_KEY) == UNREACHABLE_KIND
+
+
+def test_a_registry_answering_leaves_the_badge_counting_rows(window, qapp, server_probe):
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+    server_probe(reachability.ONLINE, "Answered in 12 ms.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "1 to send" in window._sync_badge._label.text())
+
+
+def test_a_registry_without_an_identity_route_is_not_called_unavailable(window, qapp, server_probe):
+    """Expected behaviour: a 404 proves something is there, so an older registry
+    must not read as a server that has gone away."""
+    enrol_this_device()
+    server_probe(reachability.DEGRADED, "Answered in 12 ms, but has no identity route.")
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: getattr(window, "_sync_badge_state", None) is not None)
+    assert "Server unavailable" not in window._sync_badge._label.text()
+
+
+def test_the_connection_card_reports_what_the_server_said(window, qapp, server_probe):
+    enrol_this_device()
+    server_probe(reachability.OFFLINE, "Cannot reach https://reef.example.org: no route.")
+    window._set_simple_section(SERVER_SECTION)
+
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: "Unavailable" in facts(window).get(SERVER_STATUS, ""))
+
+    status = facts(window)[SERVER_STATUS]
+    assert "no route" in status
+    assert "just now" in status
+
+
+def test_the_connection_card_says_when_the_server_has_not_been_asked(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._refresh_server_page()
+
+    assert facts(window)[SERVER_STATUS].startswith("Unknown")
 
 
 def test_pulled_sites_and_campaigns_are_listed_by_name(window):
@@ -1105,8 +1215,8 @@ def test_pulled_sites_and_campaigns_are_listed_by_name(window):
 
     assert window._server_reference_card.isVisibleTo(window)
     rows = _rows(window._server_reference)
-    assert rows["Japanese Garden"] == "Djibouti"
-    assert rows["2026_08_fiji"] == "2026-08-01"
+    assert rows["Japanese Garden"] == "Djibouti, 0 transects"
+    assert rows["2026_08_fiji"] == "2026-08-01, 0 passes"
 
 
 def test_the_reference_card_hides_until_something_has_been_pulled(window):
@@ -1217,9 +1327,7 @@ def test_a_single_clip_is_archived_from_its_id(window, qapp, registry, tmp_path)
     other_file.write_bytes(b"wall " * 100)
     store = window._survey_store()
     wanted = store.upsert_video(make_video("ab" * 16, path=str(clip_file)))
-    store.upsert_video(
-        make_video("cd" * 16, file_name="GX020001.MP4", path=str(other_file))
-    )
+    store.upsert_video(make_video("cd" * 16, file_name="GX020001.MP4", path=str(other_file)))
     made = registry()
 
     window._archive_video(str(wanted.id))

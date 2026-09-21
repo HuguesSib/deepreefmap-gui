@@ -23,6 +23,7 @@ from deepreefmap_gui.profiling.eta import FRAMES, STAGES, RunEtaEstimator
 from deepreefmap_gui.profiling.run_history import (
     ProfileEntry,
     history_key,
+    load_expected_frames,
     load_expected_points,
     load_priors,
     load_profile_entries,
@@ -62,6 +63,11 @@ class PassSpec:
     def pixels(self) -> int:
         return max(1, self.width * self.height)
 
+    @property
+    def mode(self) -> str:
+        """What this pass will and will not run, in the manifest's own spelling."""
+        return "geometry_only" if self.seg_model == "__skip__" else "semantic"
+
 
 @dataclass(frozen=True)
 class PassPrediction:
@@ -80,13 +86,46 @@ class BatchPrediction:
     def seconds_for(self, key: str) -> float | None:
         return next((p.seconds for p in self.passes if p.key == key), None)
 
+    def coverage_clause(self) -> str | None:
+        """How much of the queue the total actually covers, or None if all of it.
+
+        Carried beside every figure derived from `total_s`: a partial sum shown
+        as the whole answer reads as a shorter evening than the one ahead.
+        """
+        if not self.unknown_count:
+            return None
+        return f"covering {self.predicted_count} of {len(self.passes)} passes"
+
+
+def coverage_clause(predicted: int, total: int) -> str | None:
+    """The same clause for a live remainder, which counts only pending passes."""
+    if predicted >= total:
+        return None
+    return f"covering {predicted} of {total} passes"
+
+
+def expected_points_for(key: str, frames: int, *, path: Path | None = None) -> int | None:
+    """The stored point count, scaled to a pass of `frames`.
+
+    The median is taken over runs of whatever length, so feeding it in unscaled
+    prices the four point-driven stages of a long pass as a median-length one.
+    Scaled the way the donor branch already scales (`_scaled_points`).
+    """
+    points = load_expected_points(key, path)
+    if points is None:
+        return None
+    recorded = load_expected_frames(key, path)
+    if not recorded or frames <= 0:
+        return points
+    return int(points * frames / recorded)
+
 
 def _predict_from(
     spec: PassSpec, priors: dict[str, float], expected_points: int | None
 ) -> float | None:
     """A whole run from priors alone: every stage's estimate, nothing measured yet."""
     estimator = RunEtaEstimator(
-        frames=spec.frames, priors=priors, expected_points=expected_points
+        frames=spec.frames, priors=priors, expected_points=expected_points, mode=spec.mode
     )
     return estimator.total_remaining_s(0.0)
 
@@ -149,7 +188,13 @@ def _per_frame_seconds(spec: PassSpec, path: Path | None) -> float | None:
         if (r.get("params") or {}).get("mapping_backend") == spec.mapping_backend
         and (r.get("params") or {}).get("segmentation_model") == spec.seg_model
     ]
-    return statistics.median(float(r["seconds_per_frame"]) for r in (same or rows))
+    # Same models only. A per-frame rate borrowed from another backend or
+    # segmenter is not an approximation of this pass, it is a different
+    # measurement wearing this pass's label -- and it was shown at the same
+    # confidence as one taken at these very settings.
+    if not same:
+        return None
+    return statistics.median(float(r["seconds_per_frame"]) for r in same)
 
 
 def predict_pass_seconds(spec: PassSpec, *, path: Path | None = None) -> PassPrediction:
@@ -160,7 +205,7 @@ def predict_pass_seconds(spec: PassSpec, *, path: Path | None = None) -> PassPre
     key = history_key(spec.mapping_backend, spec.seg_model, spec.width, spec.height, spec.fps)
     priors = load_priors(key, path)
     if priors:
-        seconds = _predict_from(spec, priors, load_expected_points(key, path))
+        seconds = _predict_from(spec, priors, expected_points_for(key, spec.frames, path=path))
         if seconds is not None:
             return PassPrediction(spec.key, seconds, BASIS_EXACT)
 
@@ -236,12 +281,33 @@ class BatchEtaTracker:
         if predicted:
             self._ratios.append(seconds / predicted)
 
-    def set_pass_progress(self, percent: int, remaining_s: float | None) -> None:
+    def set_pass_percent(self, percent: int) -> None:
         self._pass_percent = max(0, min(100, percent))
-        self._pass_remaining_s = remaining_s
+
+    def set_pass_remaining(self, remaining_s: float | None) -> None:
+        """The run's own live figure for the pass in flight, when it has one."""
+        # Separate from the percent because both arrive on the same progress
+        # event: folded into one setter, whichever landed second wiped the other
+        # and the batch line alternated between two figures every tick.
+        if remaining_s is not None:
+            self._pass_remaining_s = remaining_s
+
+    def set_pass_progress(self, percent: int, remaining_s: float | None) -> None:
+        self.set_pass_percent(percent)
+        self.set_pass_remaining(remaining_s)
+
+    def pending_coverage(self) -> tuple[int, int]:
+        """How many of the passes still to run the remainder actually covers."""
+        keys = self._order if self._index is None else self._order[self._index :]
+        priced = sum(1 for key in keys if self._prediction.seconds_for(key) is not None)
+        return priced, len(keys)
 
     def remaining_s(self) -> float | None:
-        """Seconds left across the pass in flight and every pass after it."""
+        """Seconds left across the pass in flight and every pass after it.
+
+        Covers the passes there is a basis for; `pending_coverage` says how many
+        that is, so the shortfall is stated rather than summed as zero.
+        """
         if self._index is None:
             return self._scaled_total(self._order)
         pending = self._order[self._index + 1 :]

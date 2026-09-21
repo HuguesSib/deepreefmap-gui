@@ -115,8 +115,7 @@ class PackProgressDialog(QDialog):
         done = sum(self._phase_bytes.values())
         fraction = min(done / (self._total * self._passes), 1.0)
         self._bar.setValue(round(100 * fraction))
-        # Scaled back to the pack's own size: the verify pass folds into the same
-        # 0 -> pack-size sweep rather than doubling the figure the user sees.
+        # The verify pass folds into one 0 to pack-size sweep.
         shown = fraction * self._total
         self._detail.setText(f"{_byte_label(shown)} of {_byte_label(self._total)}")
 
@@ -126,9 +125,7 @@ class PackProgressDialog(QDialog):
 
     def _set_status(self, text: str) -> None:
         metrics = self._status.fontMetrics()
-        self._status.setText(
-            metrics.elidedText(text, Qt.TextElideMode.ElideRight, self._INNER_WIDTH)
-        )
+        self._status.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, self._INNER_WIDTH))
 
     def _on_cancel_clicked(self) -> None:
         if self._cancelling:
@@ -139,9 +136,7 @@ class PackProgressDialog(QDialog):
         self.canceled.emit()
 
 
-def _throttled(
-    emit: ProgressCallback, cancel: threading.Event | None = None
-) -> ProgressCallback:
+def _throttled(emit: ProgressCallback, cancel: threading.Event | None = None) -> ProgressCallback:
     """Forward pack progress only when the whole percent moves, and honour cancel.
 
     The verify pass reports every 1 MB, which for a 15 GB pack is fifteen thousand
@@ -192,7 +187,7 @@ class ModelSelectDialog(QDialog):
         parent: QWidget | None = None,
         *,
         title: str = "Export models",
-        prompt: str = "Choose the models to include in the pack:",
+        prompt: str = "Models to include:",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -231,9 +226,7 @@ class ModelSelectDialog(QDialog):
             cb.toggled.connect(self._on_model_toggled)
             self._checks[choice.name] = cb
             size = secondary_label(choice.note or _size_hint(choice.size_mb))
-            size.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
+            size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(cb, row, 0)
             grid.addWidget(size, row, 1)
         layout.addLayout(grid)
@@ -255,7 +248,7 @@ class ModelSelectDialog(QDialog):
         return [cb for cb in self._checks.values() if cb.isEnabled()]
 
     def _on_select_all(self) -> None:
-        # A click out of the partial state means "give me the lot", not "cycle on".
+        # A click out of the partial state selects everything.
         select = self._select_all.checkState() != Qt.CheckState.Unchecked
         for cb in self._selectable():
             cb.setChecked(select)
@@ -314,9 +307,7 @@ class ModelLibraryMixin(MixinBase):
             self._status_label.setText("No downloaded models to export yet.")
             return
 
-        dlg = ModelSelectDialog(
-            [Choice(info.name, info.approx_size_mb) for info in cached], self
-        )
+        dlg = ModelSelectDialog([Choice(info.name, info.approx_size_mb) for info in cached], self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         chosen = dlg.selected_names()
@@ -368,9 +359,7 @@ class ModelLibraryMixin(MixinBase):
             if packs.is_model_pack(candidate):
                 pack_dir = candidate
             else:
-                self._status_label.setText(
-                    "That folder is not a DeepReefMap model pack."
-                )
+                self._status_label.setText("That folder is not a DeepReefMap model pack.")
                 return
         if pack_dir.name.startswith("models--"):
             pack_dir = pack_dir.parent
@@ -430,15 +419,13 @@ class ModelLibraryMixin(MixinBase):
             ],
             self,
             title="Import models",
-            prompt="Choose the models to import from this pack:",
+            prompt="Models to import:",
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return sorted(dlg.selected_names())
 
-    def _on_pack_progress(
-        self, phase: str, label: str, current: int, total: int
-    ) -> None:
+    def _on_pack_progress(self, phase: str, label: str, current: int, total: int) -> None:
         dlg = getattr(self, "_pack_progress_dialog", None)
         if dlg is not None:
             dlg.report(phase, label, current, total)

@@ -21,6 +21,7 @@ from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
 from deepreefmap_gui.survey.models.batch_item import BatchItem
+from deepreefmap_gui.survey.models.camera import CameraCalibration, CameraProfile
 from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.convert import (
@@ -257,6 +258,16 @@ _assert_chain_is_contiguous()
 # The sections this device authors, and the table behind each. Only these can
 # owe the registry anything, so only these are marked when a person edits one.
 _PENDING_TABLES: dict[str, str] = {
+    "sites": "site",
+    "campaigns": "campaign",
+    "transects": "transect",
+    "videos": "video_asset",
+    "passes": "transect_pass",
+    "runs": "run_record",
+}
+
+# What migration 15 marked, before sites and campaigns could be made here.
+_PENDING_TABLES_15: dict[str, str] = {
     "transects": "transect",
     "videos": "video_asset",
     "passes": "transect_pass",
@@ -264,7 +275,7 @@ _PENDING_TABLES: dict[str, str] = {
 }
 
 
-def _pending_push_triggers() -> str:
+def _pending_push_triggers(tables: Mapping[str, str]) -> str:
     """Mark every locally written row of an authored table, whatever wrote it.
 
     Triggers rather than calls in the write helpers: a merge, a session delete
@@ -288,11 +299,11 @@ def _pending_push_triggers() -> str:
             VALUES ('{section}', new.id);
         END;
         """
-        for section, table in _PENDING_TABLES.items()
+        for section, table in tables.items()
     )
 
 
-def _pending_push_backfill() -> str:
+def _pending_push_backfill(tables: Mapping[str, str]) -> str:
     """Everything the previous build would have called unpushed, marked once.
 
     That build read a stamp at or past the section's watermark as a local edit,
@@ -313,7 +324,7 @@ def _pending_push_backfill() -> str:
         WHERE updated_at >= COALESCE(
             (SELECT value FROM sync_state WHERE key = '{WATERMARK_PREFIX}{section}'), '');
         """
-        for section, table in _PENDING_TABLES.items()
+        for section, table in tables.items()
     )
 
 
@@ -673,10 +684,230 @@ _MIGRATIONS: list[Migration] = [
             PRIMARY KEY (section, row_id)
         );
         """
-        + _pending_push_triggers()
-        + _pending_push_backfill(),
+        + _pending_push_triggers(_PENDING_TABLES_15)
+        + _pending_push_backfill(_PENDING_TABLES_15),
+    ),
+    # The registry position a row was last seen at, which a push sends back as
+    # base_seq so the registry can tell what this laptop changed. Sites and
+    # campaigns can be made here now, so they are marked like the rest.
+    Migration(
+        16,
+        "rows carry the registry position they were last seen at",
+        """
+        ALTER TABLE site ADD COLUMN head_seq INTEGER;
+        ALTER TABLE campaign ADD COLUMN head_seq INTEGER;
+        ALTER TABLE transect ADD COLUMN head_seq INTEGER;
+        ALTER TABLE video_asset ADD COLUMN head_seq INTEGER;
+        ALTER TABLE transect_pass ADD COLUMN head_seq INTEGER;
+        ALTER TABLE run_record ADD COLUMN head_seq INTEGER;
+        """
+        + _pending_push_triggers({"sites": "site", "campaigns": "campaign"}),
+    ),
+    # The catalogue as the field data needs it, matching the registry: a site name
+    # unique within its country, a transect that may lack GPS ends, a pass whose
+    # direction may be unrecorded and which knows the day it was swum, a clip that
+    # knows its camera and its review, a run that knows its scale. Every table
+    # carries the console's validation stamp. created_by was never read.
+    #
+    # SQLite cannot relax NOT NULL or drop a CHECK in place, so transect and
+    # transect_pass are rebuilt, and their pending-push triggers with them.
+    Migration(
+        17,
+        "the catalogue carries validation, clip review, run scale and optional ends",
+        """
+        DROP INDEX IF EXISTS site_name_lower;
+        CREATE UNIQUE INDEX site_country_name_lower
+            ON site(LOWER(COALESCE(country, '')), LOWER(name)) WHERE deleted_at IS NULL;
+        ALTER TABLE site ADD COLUMN validated_at TEXT;
+        ALTER TABLE site ADD COLUMN validated_by TEXT;
+        ALTER TABLE site DROP COLUMN created_by;
+        ALTER TABLE campaign ADD COLUMN validated_at TEXT;
+        ALTER TABLE campaign ADD COLUMN validated_by TEXT;
+        ALTER TABLE campaign DROP COLUMN created_by;
+
+        CREATE TABLE transect_new (
+            id TEXT PRIMARY KEY,
+            site_id TEXT REFERENCES site(id),
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            start_lat REAL,
+            start_lon REAL,
+            start_accuracy_m REAL,
+            end_lat REAL,
+            end_lon REAL,
+            end_accuracy_m REAL,
+            length_m REAL,
+            depth_m REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER,
+            validated_at TEXT,
+            validated_by TEXT
+        );
+        INSERT INTO transect_new
+            (id, site_id, name, description, start_lat, start_lon, start_accuracy_m,
+             end_lat, end_lon, end_accuracy_m, length_m, depth_m, created_at,
+             updated_at, deleted_at, device_id, head_seq)
+            SELECT id, site_id, name, description, start_lat, start_lon, start_accuracy_m,
+                   end_lat, end_lon, end_accuracy_m, length_m, depth_m, created_at,
+                   updated_at, deleted_at, device_id, head_seq
+            FROM transect;
+        DROP TABLE transect;
+        ALTER TABLE transect_new RENAME TO transect;
+        CREATE UNIQUE INDEX transect_site_name_lower
+            ON transect(site_id, LOWER(name)) WHERE deleted_at IS NULL;
+
+        CREATE TABLE transect_pass_new (
+            id TEXT PRIMARY KEY,
+            transect_id TEXT REFERENCES transect(id),
+            campaign_id TEXT REFERENCES campaign(id),
+            video_id TEXT NOT NULL REFERENCES video_asset(id),
+            batch_id TEXT REFERENCES survey_batch(id),
+            direction TEXT CHECK (direction IS NULL OR direction IN ('forward', 'reverse')),
+            begin_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            quality TEXT CHECK (quality IS NULL OR quality IN
+                ('excellent', 'very_good', 'good', 'meh', 'bad', 'very_bad')),
+            surveyed_on TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            extra_video_ids TEXT NOT NULL DEFAULT '[]',
+            head_seq INTEGER,
+            validated_at TEXT,
+            validated_by TEXT
+        );
+        INSERT INTO transect_pass_new
+            (id, transect_id, campaign_id, video_id, batch_id, direction, begin_s, end_s,
+             label, notes, quality, created_at, updated_at, deleted_at, device_id,
+             extra_video_ids, head_seq)
+            SELECT id, transect_id, campaign_id, video_id, batch_id, direction, begin_s,
+                   end_s, label, notes, quality, created_at, updated_at, deleted_at,
+                   device_id, extra_video_ids, head_seq
+            FROM transect_pass;
+        DROP TABLE transect_pass;
+        ALTER TABLE transect_pass_new RENAME TO transect_pass;
+
+        ALTER TABLE video_asset ADD COLUMN camera_label TEXT;
+        ALTER TABLE video_asset ADD COLUMN rig_position TEXT
+            CHECK (rig_position IS NULL OR rig_position IN ('left', 'centre', 'right'));
+        ALTER TABLE video_asset ADD COLUMN upside_down INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE video_asset ADD COLUMN review TEXT NOT NULL DEFAULT 'unreviewed'
+            CHECK (review IN ('unreviewed', 'usable', 'excluded'));
+        ALTER TABLE video_asset ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+        ALTER TABLE video_asset ADD COLUMN validated_at TEXT;
+        ALTER TABLE video_asset ADD COLUMN validated_by TEXT;
+        ALTER TABLE video_asset DROP COLUMN created_by;
+
+        ALTER TABLE run_record ADD COLUMN camera_profile TEXT;
+        ALTER TABLE run_record ADD COLUMN pixel_size_m REAL;
+        ALTER TABLE run_record ADD COLUMN scale_type TEXT;
+        ALTER TABLE run_record ADD COLUMN transect_length_m REAL;
+        ALTER TABLE run_record ADD COLUMN crop_width_m REAL;
+        ALTER TABLE run_record ADD COLUMN preset_id TEXT;
+        ALTER TABLE run_record ADD COLUMN validated_at TEXT;
+        ALTER TABLE run_record ADD COLUMN validated_by TEXT;
+        ALTER TABLE run_record DROP COLUMN created_by;
+
+        ALTER TABLE server_preset DROP COLUMN created_by;
+        """
+        + _pending_push_triggers({"transects": "transect", "passes": "transect_pass"}),
+    ),
+    Migration(
+        18,
+        "presets carry the registry position they were last seen at",
+        "ALTER TABLE server_preset ADD COLUMN head_seq INTEGER;",
+    ),
+    Migration(
+        19,
+        "a session is identified by when it began, not by a name",
+        # A session is this workstation's queue and never reaches the registry,
+        # so nothing outside the cart ever read the name. Dropping the column
+        # discards a hand-typed one; the default was always the day's date, so
+        # for almost every session the label is unchanged.
+        "ALTER TABLE survey_batch DROP COLUMN name;",
+    ),
+    Migration(
+        20,
+        "a transect records the depth at each end",
+        """
+        ALTER TABLE transect ADD COLUMN start_depth_m REAL;
+        ALTER TABLE transect ADD COLUMN end_depth_m REAL;
+        """,
+    ),
+    # The registry's camera profiles and their calibrations, pulled whole the way
+    # presets are. Never authored here: a laptop publishes what it calibrated
+    # through the registry's upload endpoint and reads it back on the next pull.
+    Migration(
+        21,
+        "the registry's camera profiles are pulled into their own tables",
+        """
+        CREATE TABLE camera_profile (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER
+        );
+
+        CREATE TABLE camera_calibration (
+            id TEXT PRIMARY KEY,
+            camera_profile_id TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            document TEXT NOT NULL DEFAULT '{}',
+            image_width INTEGER,
+            image_height INTEGER,
+            reprojection_error_px REAL,
+            registered_frames INTEGER,
+            source_clip TEXT NOT NULL DEFAULT '',
+            calibrated_at TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            device_id TEXT,
+            head_seq INTEGER
+        );
+        CREATE INDEX camera_calibration_profile_idx
+            ON camera_calibration (camera_profile_id);
+        """,
+    ),
+    # Which measurement of the lens a run was rectified with, where the device
+    # knew one. The run directory carries the document itself.
+    Migration(
+        22,
+        "a run names the calibration it was rectified with",
+        "ALTER TABLE run_record ADD COLUMN camera_calibration_id TEXT;",
+    ),
+    # Which calibration the registry deploys for a rig. Null follows the newest,
+    # which is what a profile no curator has deployed has always done.
+    Migration(
+        23,
+        "a camera profile names the calibration it deploys",
+        "ALTER TABLE camera_profile ADD COLUMN current_calibration_id TEXT;",
     ),
 ]
+
+
+def _one_second_later(stamp: str) -> str:
+    """The next second, in whatever shape the stamp arrived in.
+
+    An unparseable stamp is suffixed instead, so a session rebuilt from a
+    manifest that held something unexpected still ends up with its own label.
+    """
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return f"{stamp} "
+    return (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
 
 
 # The registry's sections and the table behind each, in the order a push
@@ -689,10 +920,12 @@ SYNC_SECTIONS: dict[str, str] = {
     "transects": "transect",
     "videos": "video_asset",
     "passes": "transect_pass",
-    "runs": "run_record",
-    # Pull-only and last, matching the registry's apply order. Never authored
-    # here: the contract keeps it out of the push sections.
+    # Pull-only, ahead of the runs that name the preset they ran under. Never
+    # authored here: the contract keeps it out of the push sections.
     "presets": "server_preset",
+    "camera_profiles": "camera_profile",
+    "camera_calibrations": "camera_calibration",
+    "runs": "run_record",
 }
 
 _TOMBSTONED_TABLES = frozenset(SYNC_SECTIONS.values())
@@ -705,6 +938,8 @@ _SYNC_MODELS: dict[str, type] = {
     "transect_pass": TransectPass,
     "run_record": RunRecord,
     "server_preset": ServerPreset,
+    "camera_profile": CameraProfile,
+    "camera_calibration": CameraCalibration,
 }
 
 # Which attribute of a row names which parent section, for building a closed push
@@ -813,9 +1048,8 @@ def _live(table: str) -> str:
 def _from_wire(section: str, incoming: Any) -> tuple[dict[str, Any], set[str]]:
     """A pulled row as a plain dict, with the names of the fields it carried.
 
-    A mapping is what a pull returns, and ``server_seq`` is dropped because this
-    side does not store it. A model is what a re-push or a test hands over, and
-    every one of its fields counts as carried.
+    A mapping is what a pull returns. A model is what a re-push or a test hands
+    over, and every one of its fields counts as carried.
     """
     if not isinstance(incoming, Mapping):
         return to_row(incoming), {f.name for f in fields(incoming)}
@@ -930,7 +1164,7 @@ def _blocked_only_by_each_other(
 # on ``deleted_at IS NULL``, so a tombstone collides with nothing. A table absent
 # from here carries no unique index a pulled row can land on.
 _UNIQUE_NAME_SCOPE: dict[str, tuple[str, ...]] = {
-    "site": (),
+    "site": ("country",),
     "campaign": (),
     "transect": ("site_id",),
 }
@@ -1008,6 +1242,8 @@ class ApplyResult:
 
 @dataclass
 class RebuildReport:
+    sites: int = 0
+    campaigns: int = 0
     transects: int = 0
     videos: int = 0
     batches: int = 0
@@ -1276,6 +1512,16 @@ class SurveyStore:
 
     def get_campaign(self, campaign_id: uuid.UUID) -> Campaign | None:
         return self._get("campaign", Campaign, campaign_id)
+
+    def get_campaign_for_reference(self, campaign_id: uuid.UUID) -> Campaign | None:
+        """The trip a pass was recorded on, retired or not.
+
+        The counterpart of get_transect_for_reference, for the same reason: a
+        pass filed against a campaign the registry has since withdrawn still
+        says which trip it belongs to, and a row that answered None would print
+        as unfiled work.
+        """
+        return self._row_including_deleted("campaign", campaign_id)
 
     def list_campaigns(self) -> list[Campaign]:
         # Newest expedition first: the one being worked is the one just begun.
@@ -1580,6 +1826,19 @@ class SurveyStore:
     # --- Batches ---
 
     def add_batch(self, batch: SurveyBatch) -> None:
+        """Store a session, keeping its start distinct from every other one's.
+
+        The start is the whole of a session's identity now, and a cart minted
+        the instant an order begins can land on the same second as it. The later
+        one is advanced until it is free, which is what suffixing a repeated
+        name used to do: a label two sessions share identifies neither.
+        """
+        with self._conn() as conn:
+            taken = {
+                row[0] for row in conn.execute("SELECT created_at FROM survey_batch")
+            }
+        while batch.created_at in taken:
+            batch.created_at = _one_second_later(batch.created_at)
         self._add("survey_batch", batch)
 
     def get_batch(self, batch_id: uuid.UUID) -> SurveyBatch | None:
@@ -1811,12 +2070,16 @@ class SurveyStore:
         transect_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
         video_id: uuid.UUID | None = None,
+        campaign_id: uuid.UUID | None = None,
     ) -> list[TransectPass]:
         clauses: list[str] = ["deleted_at IS NULL"]
         params: list[str] = []
         if transect_id is not None:
             clauses.append("transect_id = ?")
             params.append(str(transect_id))
+        if campaign_id is not None:
+            clauses.append("campaign_id = ?")
+            params.append(str(campaign_id))
         if batch_id is not None:
             clauses.append("batch_id = ?")
             params.append(str(batch_id))
@@ -1908,6 +2171,43 @@ class SurveyStore:
             (name, int(version)),
         ).fetchone()
         return from_row(ServerPreset, row) if row is not None else None
+
+    def list_camera_profiles(self) -> list[CameraProfile]:
+        """The registry's camera profiles, by name."""
+        rows = self._conn().execute(
+            "SELECT * FROM camera_profile WHERE deleted_at IS NULL ORDER BY LOWER(name)"
+        ).fetchall()
+        return [from_row(CameraProfile, r) for r in rows]
+
+    def camera_profile_by_name(self, name: str) -> CameraProfile | None:
+        """The profile row of this name, tombstoned or not.
+
+        Tombstones included deliberately: a materialised file is only taken back
+        on evidence of withdrawal, and the tombstone is that evidence.
+        """
+        row = self._conn().execute(
+            "SELECT * FROM camera_profile WHERE LOWER(name) = LOWER(?) "
+            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        return from_row(CameraProfile, row) if row is not None else None
+
+    def camera_calibration(self, calibration_id: uuid.UUID) -> CameraCalibration | None:
+        """One live measurement by id, whichever version it is."""
+        row = self._conn().execute(
+            "SELECT * FROM camera_calibration WHERE id = ? AND deleted_at IS NULL",
+            (str(calibration_id),),
+        ).fetchone()
+        return from_row(CameraCalibration, row) if row is not None else None
+
+    def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
+        """The latest measurement of one profile, deployed where none is named."""
+        row = self._conn().execute(
+            "SELECT * FROM camera_calibration WHERE camera_profile_id = ? "
+            "AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
+            (str(profile_id),),
+        ).fetchone()
+        return from_row(CameraCalibration, row) if row is not None else None
 
     def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
         """Copy a finished run's provenance onto its row.
@@ -2130,11 +2430,12 @@ class SurveyStore:
     def apply_from_server(
         self, section: str, rows: Iterable[Mapping[str, Any] | Any]
     ) -> ApplyResult:
-        """Land pulled rows under last-write-wins on ``updated_at``.
+        """Land pulled rows: the registry's copy stands unless this laptop owes it one.
 
-        A row that is not here is inserted; a row that is gets overwritten only
-        when the incoming stamp is strictly newer, so an equal stamp leaves the
-        stored copy alone. A tombstone lands like any other row, because
+        A row that is not here is inserted. A row with a pending mark keeps its
+        local edit and takes only the registry position, so the next push is
+        judged against it and the registry merges the two. A row already seen at
+        this position is skipped. A tombstone lands like any other row, because
         deleted_at is a column. Only the fields the pulled row actually carries
         are written, so the device-local ones -- a clip's path, a run's session --
         survive an update from a server that has never held them.
@@ -2183,9 +2484,7 @@ class SurveyStore:
                 except _UNREADABLE_ROW as exc:
                     result.unreadable.append((row_id, str(exc)))
                     continue
-                if stored is not None and str(row["updated_at"]) <= str(
-                    stored["updated_at"] or ""
-                ):
+                if stored is not None and self._keeps_local(conn, section, table, stored, row):
                     result.skipped.append(uuid.UUID(row["id"]))
                     continue
                 statement, values = (
@@ -2222,6 +2521,46 @@ class SurveyStore:
                     )
                 )
         return result
+
+    @staticmethod
+    def _keeps_local(
+        conn: sqlite3.Connection,
+        section: str,
+        table: str,
+        stored: sqlite3.Row,
+        row: Mapping[str, Any],
+    ) -> bool:
+        """Whether a stored row stands against the pulled one.
+
+        A local edit still owed to the registry stands, and adopts the pulled
+        position so the push it is waiting for is judged against it. Otherwise
+        the later registry position wins, and where the two positions are the
+        same or unknown, the later stamp.
+        """
+        incoming = row.get("head_seq")
+        pending = conn.execute(
+            "SELECT 1 FROM pending_push WHERE section = ? AND row_id = ?",
+            (section, str(row["id"])),
+        ).fetchone()
+        if pending is not None:
+            if incoming is not None:
+                conn.execute(
+                    f"UPDATE {table} SET head_seq = ? WHERE id = ?", (incoming, row["id"])
+                )
+            return True
+        seen = stored["head_seq"]
+        if incoming is not None and seen is not None and int(incoming) != int(seen):
+            return int(incoming) < int(seen)
+        return str(row["updated_at"]) <= str(stored["updated_at"] or "")
+
+    def set_head_seq(self, section: str, positions: Mapping[uuid.UUID, int]) -> None:
+        """Record the registry position rows were acknowledged at. Not an edit."""
+        table = SYNC_SECTIONS[_section_of(section)]
+        with self.transaction() as conn:
+            conn.executemany(
+                f"UPDATE {table} SET head_seq = ? WHERE id = ?",
+                [(seq, str(row_id)) for row_id, seq in positions.items()],
+            )
 
     @staticmethod
     def _land(
@@ -2552,16 +2891,47 @@ class SurveyStore:
             self.add_transect(Transect(
                 id=transect_id,
                 name=snapshot["name"],
-                start_lat=snapshot["start_lat"],
-                start_lon=snapshot["start_lon"],
-                end_lat=snapshot["end_lat"],
-                end_lon=snapshot["end_lon"],
+                start_lat=snapshot.get("start_lat"),
+                start_lon=snapshot.get("start_lon"),
+                end_lat=snapshot.get("end_lat"),
+                end_lon=snapshot.get("end_lon"),
+                site_id=self._restore_site(snapshot.get("site"), report),
                 length_m=snapshot.get("length_m"),
                 depth_m=snapshot.get("depth_m"),
+                start_depth_m=snapshot.get("start_depth_m"),
+                end_depth_m=snapshot.get("end_depth_m"),
                 deleted_at=snapshot.get("deleted_at"),
             ))
             report.transects += 1
         return transect_id
+
+    def _restore_site(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
+        if not isinstance(snapshot, dict) or not snapshot.get("id"):
+            return None
+        site_id = uuid.UUID(snapshot["id"])
+        if not self.holds_id("sites", site_id):
+            self.add_site(Site(
+                id=site_id,
+                name=snapshot.get("name") or "Recovered site",
+                country=snapshot.get("country"),
+                region=snapshot.get("region"),
+            ))
+            report.sites += 1
+        return site_id
+
+    def _restore_campaign(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
+        if not isinstance(snapshot, dict) or not snapshot.get("id"):
+            return None
+        campaign_id = uuid.UUID(snapshot["id"])
+        if not self.holds_id("campaigns", campaign_id):
+            self.add_campaign(Campaign(
+                id=campaign_id,
+                name=snapshot.get("name") or "Recovered campaign",
+                begin_date=snapshot.get("begin_date"),
+                end_date=snapshot.get("end_date"),
+            ))
+            report.campaigns += 1
+        return campaign_id
 
     def _restore_batch(self, survey: dict[str, Any], report: RebuildReport) -> uuid.UUID | None:
         raw = survey.get("batch_id")
@@ -2569,10 +2939,14 @@ class SurveyStore:
             return None
         batch_id = uuid.UUID(raw)
         if self.get_batch(batch_id) is None:
+            # created_at is restored, not defaulted: it is the session's whole
+            # identity now, so letting it fall to "now" would give every session
+            # rebuilt in one scan the same label.
+            created = survey.get("batch_created_at")
             self.add_batch(SurveyBatch(
                 id=batch_id,
-                name=survey.get("batch_name") or "Recovered batch",
                 preset_name=survey.get("preset_name") or "survey_preset",
+                **({"created_at": str(created)} if created else {}),
             ))
             report.batches += 1
         return batch_id
@@ -2622,9 +2996,12 @@ class SurveyStore:
                 video_id=video_ids[0],
                 extra_video_ids=video_ids[1:],
                 batch_id=batch_id,
-                direction=snapshot["direction"],
+                direction=snapshot.get("direction"),
                 begin_s=snapshot["begin_s"],
                 end_s=snapshot["end_s"],
+                campaign_id=self._restore_campaign(snapshot.get("campaign"), report),
+                surveyed_on=snapshot.get("surveyed_on"),
+                quality=snapshot.get("quality"),
             ))
             report.passes += 1
         return pass_id

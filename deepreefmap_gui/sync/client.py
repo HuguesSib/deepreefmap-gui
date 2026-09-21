@@ -22,7 +22,7 @@ from deepreefmap_gui.sync.contract import (
     CONTRACT_RANGE,
     CONTRACT_VERSION,
     MIN_CONTRACT_VERSION,
-    PULL_SECTIONS,
+    READ_SECTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,14 @@ CONTRACT_HEADER = "Deepreefmap-Contract"
 SECTIONS_HEADER = "Deepreefmap-Sections"
 
 DEFAULT_TIMEOUT = 15.0
+# What the probe asks: who the registry thinks this device is. The registry also
+# serves an unauthenticated liveness route beside `/api`, but that one answers
+# the same for a device whose token has been revoked, and the probe exists to
+# tell those two apart.
+PING_PATH = "/me"
+# Shorter than a data call on purpose. The question is whether anything is
+# there, and a probe that hangs for fifteen seconds has already answered it.
+PING_TIMEOUT = 5.0
 # Enrolment mints a token behind argon2, so it is slower than a data call.
 ENROL_TIMEOUT = 30.0
 # One PUT moves a whole archive part, 32 MiB at the server's default, and a
@@ -81,7 +89,15 @@ class ContractMismatchError(SyncError):
 
 
 class ServerFaultError(SyncError):
-    """The server failed on its own side."""
+    """The server failed on its own side.
+
+    Carries the status, because 500 and 502 are different news: the first is a
+    registry that ran and broke, the second a gateway with nothing behind it.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -207,6 +223,28 @@ class SyncClient:
             "POST", "/sync/heartbeat", body=dict(report), verify_contract=False
         )
 
+    def ping(self) -> dict[str, Any]:
+        """Ask the registry who it thinks this device is. Raises like any other exchange.
+
+        Authenticated, and that is the point: one request separates a registry
+        that is down from one that is up and no longer accepts this
+        installation, which look identical from a route that takes no token.
+        The answer names the device, and its body carries no contract stamp, so
+        it is not held to a version; the range header still travels and is
+        checked on errors.
+        """
+        return self._request("GET", PING_PATH, verify_contract=False, timeout=PING_TIMEOUT)
+
+    def publish_calibration(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Offer a calibration this laptop made to the registry.
+
+        Not a push: camera rows are pull-only, so a device publishes through an
+        endpoint of its own rather than authoring a row the ledger would have to
+        judge. Idempotent by content, so offering the same document twice returns
+        the calibration already stored rather than a second one.
+        """
+        return self._request("POST", "/camera_calibrations/upload", body=dict(payload))
+
     def archive_initiate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Begin or resume one content-addressed upload.
 
@@ -309,7 +347,7 @@ class SyncClient:
         # Declared here rather than per call, so no route can be added without it.
         headers = {"Accept": "application/json", CONTRACT_HEADER: CONTRACT_RANGE}
         if declare_sections:
-            headers[SECTIONS_HEADER] = ",".join(PULL_SECTIONS)
+            headers[SECTIONS_HEADER] = ",".join(READ_SECTIONS)
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -407,7 +445,7 @@ class SyncClient:
         if status == 404:
             return NotFoundError(f"The registry has no such record: {detail}")
         if status >= 500:
-            return ServerFaultError(f"The registry failed on its own side ({status}): {detail}")
+            return ServerFaultError(f"The registry failed on its own side ({status}): {detail}", status)
         return SyncError(f"Unexpected response {status} from the registry: {detail}")
 
 

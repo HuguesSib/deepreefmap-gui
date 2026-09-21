@@ -42,9 +42,17 @@ SERVER_SECTION = "server"
 LAST_SYNC_KEY = "sync.last_sync_at"
 
 # What the last sync said when it failed, cleared by the next success. The
-# status-bar badge repaints from disk on a timer, so a failure that is not
-# written here vanishes on its next repaint and the badge claims all is well.
+# status-bar badge repaints from this key on a timer.
 SYNC_ERROR_KEY = "sync.last_error"
+
+# Which kind of failure that was, beside the words. Stored rather than derived
+# from the message, because the badge has to choose a face from it after a
+# restart, and matching English is not a way to decide what a laptop is told.
+# Absent in a survey written before this key, which reads as the general face.
+SYNC_ERROR_KIND_KEY = "sync.last_error_kind"
+# The registry never answered. The one kind the badge words differently: it is
+# the server being unreachable, not the sync being at fault.
+UNREACHABLE_KIND = "unreachable"
 
 # In QSettings rather than the survey, because what this laptop calls itself is
 # about the laptop. A colleague opening the same output root has their own.
@@ -54,59 +62,51 @@ DEVICE_NAME_KEY = "sync_device_name"
 ENROLLED_BY_KEY = "sync_enrolled_by"
 
 # What each section is called in this app's words: the registry says video_asset
-# and transect_pass, the interface says clip and section.
+# and transect_pass, the interface says clip and pass.
 SECTION_LABELS = {
     "sites": "Sites",
     "campaigns": "Campaigns",
     "transects": "Transects",
     "videos": "Clips",
-    "passes": "Sections",
+    "passes": "Passes",
     "runs": "Runs",
     "presets": "Presets",
+    "camera_profiles": "Cameras",
+    "camera_calibrations": "Calibrations",
 }
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."
 
-# Read before a first sync: what connecting shares, and what the registry may
-# decide from its side. Shown until this survey has synced once, then the page
-# stops lecturing. Every claim here is pinned to the wire by
-# tests/server/test_disclaimer.py, so the words cannot quietly drift from what
-# actually travels.
+# Shown until this survey has synced once. Each claim is pinned to the wire by
+# tests/server/test_disclaimer.py.
 DISCLAIMER_TITLE = "What syncing shares"
 DISCLAIMER = (
-    "Syncing sends the survey records made here: transects, clips, sections, "
-    "and runs with their settings, software versions, timings and cover "
-    "numbers. Footage and run outputs never travel with a sync: they go only "
-    "when Archive to server is pressed.",
-    "Each sync also reports what this machine is: software versions, platform, "
-    "hardware totals, free space on the survey disk, and the name of the "
-    "preset it runs under. No file paths, and nothing about what this laptop "
-    "is otherwise doing.",
-    "Presets, sites, campaigns and transects come down from the registry: one "
-    "edited or deleted in the web console replaces or removes the copy here, "
-    "and the app says so when that overwrites an edit made on this laptop. The "
-    "registry can also assign this device a default preset, which is followed "
-    "until a choice made here or an administrator's settings file outranks it.",
-    "Nothing else comes down. The clips, sections and runs recorded here are "
-    "only ever sent. A sync writes nothing on this laptop but the survey "
-    "itself, and never deletes or changes footage or run outputs.",
+    "• Sends the sites, campaigns, transects, clips, passes and runs recorded "
+    "here, with each run's settings and cover. Footage and run outputs go only "
+    "with Archive to server.",
+    "• Reports this machine's software versions, platform, hardware totals, "
+    "free space on the survey disk and preset name. No file paths.",
+    "• Presets, cameras, calibrations, sites, campaigns and transects come down "
+    "from the console: one edited or deleted there replaces or removes the copy "
+    "here, and the app says when that overwrites an edit made here. A calibration "
+    "the console publishes is written into this laptop's camera profiles, beside "
+    "any calibrated here, which are left alone. The console can also assign a "
+    "default preset. Clips, passes and runs come back as the console leaves them. "
+    "An edit here to a row the console validated or edited becomes a proposal, "
+    "and the app reports its outcome.",
+    "• Writes nothing on this laptop but the survey database. Never deletes or changes footage or run outputs.",
 )
 
-# Said when the registry held sections back because this build never asked for
-# them. Their names would mean nothing to a diver, so it counts them instead.
+# Said when the registry held back sections this build never asked for.
 OMITTED_SECTIONS = (
     "The registry keeps {kinds} kind(s) of record this version of the app cannot read. "
-    "Everything else synced. Update the app when you are next at a desk."
+    "Everything else synced. Update the app."
 )
 
-# Said after any failure that leaves work undone. True of all of them: a push is
-# one transaction, and both halves resume from where they stopped.
-RETRY_LATER = "Nothing was lost. The next sync sends whatever this one did not."
+# Said after any failure that leaves work undone.
+RETRY_LATER = "The next sync sends whatever this one did not."
 
-# Said when one half of a sync worked and the other did not. Which half is the
-# fact worth stating: a diver told only that the sync failed assumes the day's
-# records are still stuck on the laptop, and being wrong about that in either
-# direction is worse than the failure itself.
+# Said when one half of a sync worked and the other did not.
 PUSH_LANDED = "Everything recorded on this laptop was still sent."
 PULL_LANDED = "Everything the registry had for this survey still arrived."
 
@@ -133,6 +133,9 @@ class ServerState:
     # token is still a readable credential, so `connected` alone would paint
     # a healthy badge over a connection the registry has refused.
     sync_fault: str = ""
+    # Whether the last failure was the registry not answering, which the badge
+    # words as the server being unavailable rather than as a fault.
+    sync_fault_unreachable: bool = False
     # Whether a survey database was open to be read. Without one the pending
     # counts are empty because nothing was counted, not because nothing waits.
     has_survey: bool = False
@@ -154,6 +157,13 @@ class Failure:
     detail: str
     # True when only a fresh connect code fixes it, so the page offers one.
     reconnect: bool = False
+    # True when nothing answered, which is the server rather than the sync.
+    unreachable: bool = False
+
+    @property
+    def kind(self) -> str:
+        """What to record beside the words, for the badge to read next launch."""
+        return UNREACHABLE_KIND if self.unreachable else ""
 
 
 @dataclass(frozen=True)
@@ -192,9 +202,7 @@ def half_note(outcome: SyncOutcome | None) -> str:
     return ""
 
 
-def read_state(
-    store: SurveyStore | None, device_name: str = "", enrolled_by: str = ""
-) -> ServerState:
+def read_state(store: SurveyStore | None, device_name: str = "", enrolled_by: str = "") -> ServerState:
     """The whole Server page in one read. Never raises: a fault is a field."""
     try:
         held = credentials.load()
@@ -212,6 +220,9 @@ def read_state(
         last_sync=store.sync_state(LAST_SYNC_KEY) if store is not None else None,
         pending=pending_rows(store) if store is not None else {},
         sync_fault=(store.sync_state(SYNC_ERROR_KEY) or "") if store is not None else "",
+        sync_fault_unreachable=(
+            store.sync_state(SYNC_ERROR_KIND_KEY) == UNREACHABLE_KIND if store is not None else False
+        ),
         has_survey=store is not None,
         set_aside=set_aside_names(store),
     )
@@ -226,9 +237,7 @@ def set_aside_names(store: SurveyStore | None) -> tuple[str, ...]:
     """
     if store is None:
         return ()
-    return tuple(
-        str(entry.get("name") or entry.get("id") or "") for entry in set_aside_rows(store)
-    )
+    return tuple(str(entry.get("name") or entry.get("id") or "") for entry in set_aside_rows(store))
 
 
 def read_cursor(store: SurveyStore | None) -> int | None:
@@ -346,7 +355,7 @@ def describe_failure(exc: BaseException) -> Failure:
     if isinstance(exc, CredentialsError):
         return Failure("The device credentials could not be stored", str(exc))
     if isinstance(exc, client.ServerUnreachableError):
-        return Failure("The registry did not answer", f"{exc} {RETRY_LATER}")
+        return Failure("The registry did not answer", f"{exc} {RETRY_LATER}", unreachable=True)
     if isinstance(exc, client.EnrolmentRejectedError):
         return Failure("The connect code was refused", str(exc), reconnect=True)
     if isinstance(exc, client.DeviceRevokedError):

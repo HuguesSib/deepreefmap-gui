@@ -204,10 +204,10 @@ def test_span_status_comes_from_the_latest_run():
     assert span.run_count == 2
 
 
-def test_a_section_with_no_runs_is_queued():
+def test_a_section_with_no_runs_is_ready():
     pass_ = make_pass()
     span = timeline_spans(clip(duration_s=60.0, passes=[pass_]))[0]
-    assert (span.status, span.run_count) == ("queued", 0)
+    assert (span.status, span.run_count) == ("ready", 0)
 
 
 def test_pass_status_matches_the_latest_run_regardless_of_order():
@@ -215,7 +215,7 @@ def test_pass_status_matches_the_latest_run_regardless_of_order():
     late = make_run(pass_, "succeeded", "2026-08-02T10:00:00+00:00")
     early = make_run(pass_, "failed", "2026-08-01T10:00:00+00:00")
     assert pass_status([late, early]) == "succeeded"
-    assert pass_status([]) == "queued"
+    assert pass_status([]) == "ready"
 
 
 def names(entries) -> list[str]:

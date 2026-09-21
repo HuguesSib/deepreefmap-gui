@@ -18,7 +18,6 @@ import pytest
 from deepreefmap_gui.profiling.batch_estimate import (
     BASIS_EXACT,
     BASIS_NONE,
-    BASIS_PER_FRAME,
     BASIS_SCALED,
     BatchEtaTracker,
     PassSpec,
@@ -140,14 +139,18 @@ def test_another_resolution_is_scaled_from_the_nearest_recorded_one(profile):
     assert got.seconds < full
 
 
-def test_a_different_backend_falls_back_to_what_a_frame_has_cost(profile):
-    """No donor on these models, but the machine's own speed is still known."""
+def test_a_different_model_is_not_costed_from_another_models_runs(profile):
+    """A per-frame rate from another backend is a different measurement.
+
+    Not an approximation of this pass, and it was shown at the same confidence
+    as one taken at these very settings.
+    """
     write_profile(profile, a_run())
 
     got = predict_pass_seconds(spec(backend="scsfmlearner", seg="segformer-b2"), path=profile)
 
-    assert got.basis == BASIS_PER_FRAME
-    assert got.seconds is not None and got.seconds > 0
+    assert got.basis == BASIS_NONE
+    assert got.seconds is None
 
 
 def test_a_batch_totals_what_it_can_and_counts_what_it_cannot(profile):
@@ -268,3 +271,46 @@ def test_a_recorded_run_is_not_served_from_the_stale_profile(profile):
     )
 
     assert load_priors("brand|new|640x480|3fps", profile)
+
+
+def test_the_point_count_is_scaled_to_the_pass_being_costed(profile):
+    """A 900-frame history must not price a 2700-frame pass as 900 frames."""
+    write_profile(profile, a_run(frames=900))
+    short = predict_pass_seconds(spec(frames=900), path=profile).seconds
+    long = predict_pass_seconds(spec(frames=2700), path=profile).seconds
+    assert short is not None and long is not None
+    # The point-driven stages carry roughly half the weight, so a 3x pass must
+    # cost well over twice a 1x one; unscaled points held them flat.
+    assert long > 2.5 * short
+
+
+def test_the_planned_total_names_the_passes_it_could_not_cost(profile):
+    write_profile(profile, a_run())
+    prediction = predict_batch([spec(key="known"), spec(key="unknown", frames=0)], path=profile)
+    assert prediction.coverage_clause() == "covering 1 of 2 passes"
+
+
+def test_a_fully_costed_batch_carries_no_caveat(profile):
+    write_profile(profile, a_run())
+    prediction = predict_batch([spec(key="a"), spec(key="b")], path=profile)
+    assert prediction.coverage_clause() is None
+
+
+def test_a_percent_report_does_not_wipe_the_live_pass_remainder(profile):
+    """Both arrive on one progress event; whichever landed second used to win."""
+    write_profile(profile, a_run())
+    prediction = predict_batch([spec(key="a"), spec(key="b")], path=profile)
+    tracker = BatchEtaTracker(prediction)
+    tracker.start_pass(0)
+    tracker.set_pass_remaining(900.0)
+    with_live = tracker.remaining_s()
+    tracker.set_pass_percent(50)
+    assert tracker.remaining_s() == pytest.approx(with_live)
+
+
+def test_the_live_remainder_states_how_much_of_the_queue_it_covers(profile):
+    write_profile(profile, a_run())
+    specs = [spec(key="a")] + [spec(key=f"u{i}", frames=0) for i in range(4)]
+    tracker = BatchEtaTracker(predict_batch(specs, path=profile))
+    tracker.start_pass(0)
+    assert tracker.pending_coverage() == (1, 5)

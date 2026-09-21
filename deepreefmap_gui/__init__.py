@@ -67,9 +67,9 @@ literally: `packs.py` is the model-pack format and the file copying, `packs_ui.p
 and the mixin that drive them. Prefer the suffix for new splits.
 
 `notify/` follows it too: `model.py`, `conditions.py`, `center.py` and `log.py` are pure, and the
-`_ui` modules are the bell, the popover and the Activity view. So does `server/`: `state.py` and
-`enrolment.py` read and act, `page_ui.py` and `connect_ui.py` are the page and the dialog. `sync/`
-below it is Qt-free throughout, and knows nothing about a window.
+`_ui` modules are the bell, the popover and the Activity view. So does `server/`: `state.py`,
+`reachability.py` and `enrolment.py` read and act, `page_ui.py` and `connect_ui.py` are the page
+and the dialog. `sync/` below it is Qt-free throughout, and knows nothing about a window.
 
 The same split exists under older names, and those stay: `survey/` is the Qt-free domain layer
 under `simple/`'s UI, `simple/section_state.py` the pure verdict behind the header badges,
@@ -96,9 +96,9 @@ Several features answer to two or three names. Prefer the first in prose, commen
   dive, which models are on it, what it is doing while it runs. Its first view is **Readiness**.
   The file is `simple/setup.py`; the mixin is `SimpleMachineMixin` in `simple/machine.py`, the
   label's old name.
-- **Pass**, not clip or video, for a cutout of a video; the UI also says **section**. The
-  README's glossary defines the whole vocabulary (section, run, session, cart, order); here is
-  how it maps to code. A run's `batch_id` names its session, the pass's own `batch_id` only its
+- **Pass**, not clip, video or section, for a cutout of a video, in code and in the UI
+  alike. The README's glossary defines the whole vocabulary (pass, run, session, cart,
+  order); here is how it maps to code. A run's `batch_id` names its session, the pass's own `batch_id` only its
   origin. The **cart** is `SurveyStore.current_cart` (the newest un-started session) and
   membership is the `batch_item` table, so one pass can be ordered in many sessions. The
   session's class is still `SurveyBatch` and its column `survey_batch`: the schema name is

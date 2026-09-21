@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QScrollArea,
     QStackedWidget,
     QToolButton,
@@ -41,13 +40,13 @@ from deepreefmap_gui.core.theme import (
     GUTTER,
     SPACE_SM,
     SPACE_XS,
-    TEXT_MUTED,
     UPDATE,
     WARNING,
 )
 from deepreefmap_gui.core.widgets import (
     SectionHeader,
     centred_column,
+    page_scroll_area,
     section_card,
     segmented_qss,
     utility_button_qss,
@@ -62,11 +61,12 @@ logger = logging.getLogger(__name__)
 # Left to right in the order they matter: what stops a run, what a run needs
 # installed, what the machine does while it runs, the software itself, and the
 # record of everything the app has had to say.
-MACHINE_VIEWS = ("readiness", "models", "performance", "updates", "server", "activity")
+MACHINE_VIEWS = ("readiness", "models", "cameras", "performance", "updates", "server", "activity")
 
 _VIEW_LABELS = {
     "readiness": "Readiness",
     "models": "Models",
+    "cameras": "Cameras",
     "performance": "Performance",
     "updates": "Updates",
     "server": "Server",
@@ -76,6 +76,7 @@ _VIEW_LABELS = {
 _VIEW_TIPS = {
     "readiness": "Whether this computer can process a dive, and how to fix it if not.",
     "models": "The models installed here, and how to add or remove them.",
+    "cameras": "The camera profiles installed here, and how to calibrate another.",
     "performance": "Live usage of this machine, and what past runs cost it.",
     "updates": "The version installed here, and any newer one available.",
     "server": "The registry this survey syncs with, and what is waiting to go.",
@@ -189,9 +190,7 @@ class SimpleMachineMixin(MixinBase):
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setToolTip(_VIEW_TIPS[view])
-            button.setStyleSheet(
-                segmented_qss(first=index == 0, last=index == len(MACHINE_VIEWS) - 1)
-            )
+            button.setStyleSheet(segmented_qss(first=index == 0, last=index == len(MACHINE_VIEWS) - 1))
             button.clicked.connect(partial(self._set_machine_view, view))
             group.addButton(button)
             switch.addWidget(button)
@@ -203,6 +202,7 @@ class SimpleMachineMixin(MixinBase):
         views = {
             "readiness": self._build_readiness_view(),
             "models": self._build_machine_host("_machine_models_host"),
+            "cameras": self._build_cameras_view(),
             "performance": self._build_machine_host("_machine_system_host"),
             "updates": self._build_machine_updates_view(),
             "server": self._build_server_page(),
@@ -215,6 +215,20 @@ class SimpleMachineMixin(MixinBase):
         self._set_machine_view("readiness")
         self._refresh_update_notice()
         return page
+
+    def _build_cameras_view(self) -> QWidget:
+        """The camera profiles on this machine, on a page of their own.
+
+        Beside Models because it answers the same question about the same
+        computer: is what a run needs installed here. The panel keeps the run
+        form's profile picker in step, so a profile calibrated from either place
+        is selectable without reopening the settings.
+        """
+        from deepreefmap_gui.camera.page_ui import CameraProfilesPanel
+
+        self._cameras_panel = CameraProfilesPanel()
+        self._cameras_panel.changed.connect(self._reload_camera_profiles)
+        return page_scroll_area(self._cameras_panel)
 
     def _build_machine_host(self, attribute: str) -> QWidget:
         """A scrolling slot for a panel that is lent here from its home.
@@ -247,10 +261,6 @@ class SimpleMachineMixin(MixinBase):
         outer.setSpacing(GUTTER)
 
         card, card_layout = section_card()
-        caption = QLabel("The version installed here, and any newer one available.")
-        caption.setWordWrap(True)
-        caption.setStyleSheet(f"color: {TEXT_MUTED};")
-        card_layout.addWidget(caption)
         self._machine_updates_host = QWidget()
         host_layout = QVBoxLayout(self._machine_updates_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
@@ -346,6 +356,10 @@ class SimpleMachineMixin(MixinBase):
             button.blockSignals(False)
         self._machine_stack.setCurrentIndex(MACHINE_VIEWS.index(view))
         self._sync_system_gauges_running()
+        # Read on opening: a profile may have arrived from the run form's own
+        # Calibrate button since this page was last looked at.
+        if view == "cameras":
+            self._cameras_panel.refresh()
         if view == "server":
             self._refresh_server_page()
         # Read on opening rather than kept live: the log is a record, and a table

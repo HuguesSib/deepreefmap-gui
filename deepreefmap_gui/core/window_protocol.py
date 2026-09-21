@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.models.packs_ui import PackProgressDialog
     from deepreefmap_gui.notify.center import NotificationCenter
     from deepreefmap_gui.notify.widgets import BellButton, NotificationPopover
-    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction
+    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction, PassSpec
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.runs.progress import ProgressModel, RunProgress
     from deepreefmap_gui.runs.run_table import RunTable
@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         _status_base_text: str
         _status_count_text: str
         _status_phase_key: str | None
+        _status_stage_key: str | None
         _status_phase_started: float
         _active_run_manifest: dict | None
         _results_output_dir: Path | None
@@ -274,6 +275,7 @@ if TYPE_CHECKING:
         # --- combos / line edits -----------------------------------------
         _map_combo: QComboBox
         _profile_combo: QComboBox
+        _calibrate_btn: QPushButton
         _resolution_preset_combo: QComboBox
         _seg_combo: QComboBox
         _update_version_combo: QComboBox
@@ -328,6 +330,7 @@ if TYPE_CHECKING:
         _sig_sync_progress = Signal(str)
         _sig_sync_done = Signal(object, object)
         _sig_sync_badge = Signal(object)
+        _sig_server_reach = Signal(object)
         _sig_archive_progress = Signal(str)
         _sig_archive_bytes = Signal(object)
         _sig_archive_plan = Signal(object)
@@ -351,7 +354,7 @@ if TYPE_CHECKING:
             flush: bool = False,
         ) -> None: ...
         def _auto_load_run(self, run_dir: Path) -> None: ...  # RunLoadingMixin
-        def _begin_progress(self, model: ProgressModel) -> None: ...  # ProgressBarsMixin
+        def _begin_progress(self, model: ProgressModel, spec: PassSpec | None = None) -> None: ...  # ProgressBarsMixin
         def _progress_sinks(self) -> list: ...  # ProgressBarsMixin
         def _build_legend(self) -> None: ...  # ViewerControlsMixin
         def _build_model_status_button(  # ModelManagementMixin
@@ -361,6 +364,13 @@ if TYPE_CHECKING:
         def _refresh_recorded_runs(self) -> None: ...  # SystemPanelMixin
         def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
         def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
+        def _on_calibrate_camera(self) -> None: ...  # FormPanelMixin
+        def _write_registry_camera_profiles(  # SimpleModeMixin
+            self, store: SurveyStore
+        ) -> None: ...
+        def _reload_camera_profiles(  # FormPanelMixin
+            self, select: str | None = None
+        ) -> None: ...
         def _paint_gpu_indicator(self, gpu: object) -> None: ...  # FormPanelMixin
         def _check_for_update(self) -> None: ...  # VersionCheckMixin
         def _measure_envs(self) -> None: ...  # VersionCheckMixin
@@ -436,8 +446,12 @@ if TYPE_CHECKING:
         def _apply_archive_states(self, states: object) -> None: ...  # ServerPageMixin
         def _archive_state_for_video(self, video_id: object) -> str | None: ...  # ServerPageMixin
         def _archive_state_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin
+        def _archive_note_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin
         def _paint_archive_badges(self) -> None: ...  # VideoLibraryMixin
+        def _refresh_archive_affordances(self, connected: bool | None = None) -> None: ...  # VideoLibraryMixin
         def _apply_sync_badge(self, state: object) -> None: ...  # ServerPageMixin
+        def _probe_server(self, force: bool = False) -> None: ...  # ServerPageMixin
+        def _apply_server_reachability(self, reading: object) -> None: ...  # ServerPageMixin
         def _on_sync_badge_clicked(self) -> None: ...  # ServerPageMixin
         def _host_machine_panels(self) -> None: ...  # SimpleMachineMixin
         def _machine_verdict(self) -> SectionState: ...  # SimpleMachineMixin
@@ -476,6 +490,7 @@ if TYPE_CHECKING:
         def _survey_db_health(self) -> SurveyDbHealth: ...  # InterfaceShellMixin
         def check_survey_database(self) -> None: ...  # InterfaceShellMixin
         def _browse_output_root(self) -> None: ...  # FormPanelMixin
+        def _refresh_site_choices(self) -> None: ...  # SimplePlanMixin
         def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...  # SimplePlanMixin
         def _select_transect_row(self, id_str: str) -> None: ...  # SimplePlanMixin
         def _on_transect_selected(self) -> None: ...  # SimplePlanMixin

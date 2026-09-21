@@ -39,7 +39,7 @@ class PassCover:
     run_id: uuid.UUID
     pass_id: uuid.UUID
     run_dir_name: str
-    direction: str
+    direction: str | None
     video_hash: str | None
     begin_s: float
     end_s: float
@@ -387,7 +387,7 @@ def collate_long_format(
                         contributing_passes=pooled.contributing_passes,
                         expected_passes=pooled.expected_passes,
                         pass_id=str(cover.pass_id),
-                        direction=cover.direction,
+                        direction=cover.direction or "",
                         begin_s=cover.begin_s,
                         end_s=cover.end_s,
                         run_id=str(cover.run_id),

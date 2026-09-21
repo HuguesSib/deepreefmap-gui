@@ -1,11 +1,11 @@
 """The rows the Videos page is a list of: one clip each, and what was cut from it.
 
-Innermost first: a strip painting a clip's sections along its length, a row
-describing one clip, a row describing one section, the scrolling list of date
-groups those rows sit in, a bare list of one clip's section rows for the detail
+Innermost first: a strip painting a clip's passes along its length, a row
+describing one clip, a row describing one pass, the scrolling list of date
+groups those rows sit in, a bare list of one clip's pass rows for the detail
 pane, and the header row naming the clip columns and sorting them. A clip's
-section rows sit directly under it and are shown by its disclosure chevron, so
-the three levels the app has (clip, section, run) read as the nesting they are.
+pass rows sit directly under it and are shown by its disclosure chevron, so
+the three levels the app has (clip, pass, run) read as the nesting they are.
 
 The list builds a widget per clip, which suits a field season and would not suit
 tens of thousands of them. The escape hatch is a QListView over a model with a
@@ -24,7 +24,6 @@ from PySide6.QtCore import (
     QEvent,
     QPointF,
     QRectF,
-    QSize,
     Qt,
     QTimer,
     QUrl,
@@ -35,7 +34,9 @@ from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
     QCursor,
+    QFontMetrics,
     QIcon,
+    QKeyEvent,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.icons import (
     DEFAULT_INK,
     ICON_SM,
@@ -71,13 +73,14 @@ from deepreefmap_gui.core.icons import (
     play_icon,
     status_dot_icon,
     trash_icon,
+    upload_icon,
 )
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BORDER,
     BRIGHT_TEXT,
+    BUTTON,
     CARD_BG,
-    CONTROL_HEIGHT,
     DISABLED_FG,
     ERROR,
     GROOVE,
@@ -91,8 +94,10 @@ from deepreefmap_gui.core.theme import (
     SPACE_SM,
     SPACE_XS,
     SUCCESS,
+    SURFACE_HI,
     TEXT_DIM,
     TEXT_MUTED,
+    WARNING,
     WINDOW_TEXT,
 )
 from deepreefmap_gui.core.widgets import (
@@ -100,12 +105,14 @@ from deepreefmap_gui.core.widgets import (
     PILL_TINT_ALPHA,
     STATUS_COLORS,
     EmptyState,
-    SectionHeader,
+    icon_button,
     muted_label,
     secondary_label,
 )
 from deepreefmap_gui.io.frame_grab import shared_frame_grabber
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.catalogue import (
     LINK_LINKED,
@@ -113,8 +120,9 @@ from deepreefmap_gui.survey.catalogue import (
     VideoLibraryEntry,
     preview_points,
 )
+from deepreefmap_gui.survey.jobs import clip_summary, job_filters
 from deepreefmap_gui.survey.models.run_record import RunRecord
-from deepreefmap_gui.survey.models.transect_pass import TransectPass
+from deepreefmap_gui.survey.models.transect_pass import TransectPass, direction_phrase
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_SORT_COLUMN,
@@ -136,14 +144,10 @@ from deepreefmap_gui.survey.video_probe import NO, SOURCE_CONTAINER, YES
 # The strip is one of the app's bars, so it takes bar_qss's geometry: the same
 # height, and the round ends MeterBar paints at half that height.
 STRIP_BAR_HEIGHT = BAR_HEIGHT
-# Rerun ticks sit above the bar rather than inside it, so the widget is taller.
-TICK_HEIGHT = SPACE_XS
-STRIP_HEIGHT = STRIP_BAR_HEIGHT + TICK_HEIGHT
+STRIP_HEIGHT = STRIP_BAR_HEIGHT
 
 # A hairline, the weight MeterBar's hatching is drawn at.
 LINE_WIDTH = 2.0
-# One tick's own width between ticks, so a run of them still reads as separate.
-TICK_PITCH = LINE_WIDTH * 2
 
 # A ten-second section of an hour-long clip is under a pixel wide. Painted at
 # least this wide so it can be seen and hit.
@@ -156,11 +160,11 @@ HATCH_PITCH = SPACE_SM
 # font size instead of holding a measure that no longer fits it. Each column is
 # wide enough for its header label and a sort arrow as well as its values.
 NAME_CHARS = 30  # a GoPro file name, with room for the ones that are not
-RECORDED_CHARS = 10  # "~14:32", "Recorded ▼"
-LENGTH_CHARS = 9  # "12m 03s", "Length ▼"
+RECORDED_CHARS = 9  # "~14:32", "Recorded ▼"
+LENGTH_CHARS = 8  # "12m 03s", "Length ▼"
 SIZE_CHARS = 9  # "1015 MB", "Size ▼"
 GRAVITY_CHARS = 9  # "Gravity ▼", over a cell holding only a dot
-WINDOW_CHARS = 22  # "0:00–11:51 · 11m 51s"
+WINDOW_CHARS = 22  # "0:00-11:51 · 11m 51s"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
 # What the clip pane's chip is allowed to shrink to before the pane itself has
 # to give: enough that an elided name is still a name rather than an ellipsis.
@@ -169,7 +173,7 @@ RUNS_CHARS = 9  # "12 runs"
 
 # What the clip name is allowed to shrink to. A GoPro name is told apart by its
 # two ends, so below this an elided one stops identifying its clip.
-NAME_MIN_CHARS = 26
+NAME_MIN_CHARS = 16
 
 # Below this the strip stops being a timeline and becomes a coloured smear.
 SECTIONS_MIN_WIDTH = 180
@@ -182,7 +186,8 @@ NAME_WEIGHT, SECTIONS_WEIGHT = 3, 2
 # One row: the smallest comfortable click target and not a pixel more. The list
 # is a whole field season of clips, so every pixel of padding costs one less on
 # screen, and the row's own buttons are told to fit rather than to pad.
-ROW_HEIGHT = CONTROL_HEIGHT
+ROW_HEIGHT = 30
+ROW_ACTION_SIZE = 24
 
 # The disclosure column keeps its width on a clip with nothing to disclose, so
 # the file names stay in one column all the way down the list.
@@ -192,8 +197,10 @@ DISCLOSURE_WIDTH = ICON_SM + SPACE_XS
 # the nesting read without drawing a connecting line for it.
 SECTION_INDENT = SPACE_SM + DISCLOSURE_WIDTH + SPACE_SM + ICON_SM
 
-# The play, cut and delete buttons that close every clip row.
+# The play, cut and delete buttons that close every clip row, plus the archive
+# button when there is a server to press it against.
 TRAILING_BUTTONS_WIDTH = ICON_SM * 3 + SPACE_XS * 6
+ARCHIVE_BUTTON_WIDTH = ICON_SM + SPACE_XS * 2
 
 UNASSIGNED_NAME = "Unassigned"
 
@@ -206,11 +213,8 @@ PICK_MODIFIERS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.Shift
 # runs perfectly well unfiled, so this is an invitation in the accent colour
 # rather than a warning in the red one.
 SET_TRANSECT = "Set transect"
-SET_TRANSECT_TOOLTIP = (
-    "This section is not filed against a transect. Click to pick one, or leave "
-    "it: a section processes either way."
-)
-CHANGE_TRANSECT_TOOLTIP = "Click to file this section somewhere else."
+SET_TRANSECT_TOOLTIP = "Not filed against a transect. Click to pick one."
+CHANGE_TRANSECT_TOOLTIP = "Click to file this pass somewhere else."
 
 # A tick, held for this long, so a click on the cart is answered where it was
 # made rather than only by the count in the far corner of the window.
@@ -220,37 +224,32 @@ CART_ACK_MS = 1200
 DROP_HINT = "Drop clips here to import them"
 
 # What the clip pane's section list says before anything has been cut.
-EMPTY_TITLE = "Not cut into sections yet"
+EMPTY_TITLE = "Not cut into passes yet"
 EMPTY_NOTE = "Use + to process part or all of it."
 
-IN_CART_TOOLTIP = "In the cart. Click to take it back out."
+IN_CART_TOOLTIP = "In the queue. Click to take it back out."
 
 # The section menu, named once so the page and the tests read the same words.
 # The row's own buttons do the first four; the menu is the right-click copy of
 # them, plus the one action that has nowhere on the row to live.
-MENU_ADD_TO_CART = "Add to cart"
-MENU_REMOVE_FROM_CART = "Take out of the cart"
+MENU_ADD_TO_CART = "Add to queue"
+MENU_REMOVE_FROM_CART = "Take out of the queue"
 MENU_RETRIM = "Adjust trim…"
 MENU_REASSIGN = "Change transect…"
+# Named in runs/pass_campaign.py, imported so the row, the pane and the tests
+# all say it the same way.
 MENU_OPEN_TRANSECT = "Show on the Transects page"
 # An unfiled section has no transect to show, but the page is still where one is
 # drawn or imported, so the action goes there and says that instead of greying
 # out and leaving no way to reach it.
 MENU_OPEN_TRANSECTS_PAGE = "Open the Transects page"
-MENU_DELETE = "Delete section"
-NO_TRANSECT_TOOLTIP = "This section is not filed against a transect."
-RETRIM_TOOLTIP = "Move this section's window."
-TRIM_UNLINKED_TOOLTIP = (
-    "The video file cannot be found, so there is nothing to scrub. Add it again "
-    "from where it lives now."
-)
-CART_UNLINKED_TOOLTIP = (
-    "The video file cannot be found, so this section cannot be processed. Add it "
-    "again from where it lives now."
-)
-DELETE_BLOCKED_TOOLTIP = (
-    "This section has runs. Delete those in Browse first, and the section can go with them."
-)
+MENU_DELETE = "Delete pass"
+NO_TRANSECT_TOOLTIP = "This pass is not filed against a transect."
+NO_CAMPAIGN_NAME = "No campaign"
+RETRIM_TOOLTIP = "Move this pass's window."
+TRIM_UNLINKED_TOOLTIP = "The video file cannot be found. Add it again from where it lives now."
+CART_UNLINKED_TOOLTIP = TRIM_UNLINKED_TOOLTIP
+DELETE_BLOCKED_TOOLTIP = "This pass has runs. Delete them in Results first."
 
 # A clip row's own menu. Hiding is a view of the library rather than a fact
 # about it, so it sits beside the destructive item rather than looking like one.
@@ -258,8 +257,8 @@ MENU_HIDE = "Hide clip"
 MENU_UNHIDE = "Unhide clip"
 MENU_HIDE_TOOLTIP = "Take this clip out of the list. Show hidden brings it back."
 MENU_UNHIDE_TOOLTIP = "Put this clip back in the list."
-MENU_DELETE_UNUSED = "Delete sections with no runs"
-NO_UNUSED_TOOLTIP = "Every section of this clip has been processed, or there are none."
+MENU_DELETE_UNUSED = "Delete passes with no runs"
+NO_UNUSED_TOOLTIP = "Every pass of this clip has been processed, or there are none."
 MENU_DELETE_CLIP = "Delete clip"
 
 # A trash can beside a video reads as deleting the footage, and this does not.
@@ -267,10 +266,7 @@ MENU_DELETE_CLIP = "Delete clip"
 # at when the doubt arrives is not something the row gets to choose.
 KEEPS_FILE_NOTE = "The video file itself is not deleted."
 DELETE_CLIP_TOOLTIP = f"Take this clip out of the library. {KEEPS_FILE_NOTE}"
-DELETE_CLIP_BLOCKED_TOOLTIP = (
-    f"This clip has runs. Delete those in Browse first, and the clip can go with "
-    f"them. {KEEPS_FILE_NOTE}"
-)
+DELETE_CLIP_BLOCKED_TOOLTIP = f"This clip has runs. Delete them in Results first. {KEEPS_FILE_NOTE}"
 
 # The clip delete asks in the button rather than in a dialog: one click arms it,
 # the second does it, and it disarms itself. Clearing a library of bad imports
@@ -285,20 +281,12 @@ DELETE_CLIP_ARMED_TOOLTIP = f"Click again to remove it. {KEEPS_FILE_NOTE}"
 # shape it has no other use for.
 NEW_SECTION_GLYPH = "+"
 
-UNKNOWN_LENGTH_TOOLTIP = (
-    "Length unknown, so there is nowhere to draw this clip's sections along it."
-)
-NO_SECTIONS_TOOLTIP = "Nothing has been cut from this clip yet. Use + to cut a section."
+UNKNOWN_LENGTH_TOOLTIP = "Length unknown; passes cannot be drawn."
+NO_SECTIONS_TOOLTIP = "No passes yet. Use + to cut one."
 GRAVITY_UNKNOWN_TOOLTIP = "Gravity not read yet."
-ESTIMATED_DATE_NOTE = (
-    "The recording date is the file's own timestamp: the clip carries none of "
-    "its own, which is what re-encoding or trimming leaves behind."
-)
-MISSING_FILE_NOTE = (
-    "Not found. Add videos… on the file's new home relinks it by checksum, "
-    "sections and all."
-)
-HIDDEN_NOTE = "Hidden on this machine, and shown only because Show hidden is on."
+ESTIMATED_DATE_NOTE = "Recording date taken from the file timestamp; the clip carries none."
+MISSING_FILE_NOTE = "Not found. Add videos… from its new home relinks it."
+HIDDEN_NOTE = "Hidden on this machine. Shown while Show hidden is on."
 
 
 def _clock(seconds: float) -> str:
@@ -333,14 +321,14 @@ def size_label(size_bytes: int | None) -> str:
 
 
 def window_label(pass_: TransectPass) -> str:
-    """A section's time window, which is what tells two sections of one clip apart."""
-    return f"{_clock(pass_.begin_s)}–{_clock(pass_.end_s)}"
+    """A pass's time window, which is what tells two passes of one clip apart."""
+    return f"{_clock(pass_.begin_s)}-{_clock(pass_.end_s)}"
 
 
 def section_length_label(pass_: TransectPass) -> str:
-    """How long the section runs for, in the clip row's own words.
+    """How long the pass runs for, in the clip row's own words.
 
-    The clip says how long the recording is; a section is a part of it, and how
+    The clip says how long the recording is; a pass is a part of it, and how
     much of it was cut is the figure that decides what a run will cost. Beside
     the window rather than in a column of its own, because the two answer one
     question between them.
@@ -352,27 +340,27 @@ def section_length_label(pass_: TransectPass) -> str:
 
 
 def preview_times(pass_: TransectPass) -> tuple[float, float, float]:
-    """The three moments of a section a hover preview shows.
+    """The three moments of a pass a hover preview shows.
 
     The same three ``catalogue.preview_points`` resolves onto chapters, but as
-    the section's own times: what a caption has to say is where in the window
+    the pass's own times: what a caption has to say is where in the window
     the frame came from, not where in some chapter file it was found.
     """
     return pass_.begin_s, (pass_.begin_s + pass_.end_s) / 2.0, pass_.end_s
 
 
 def run_label(count: int) -> str:
-    """"3 runs", and nothing at all until a section has been processed once."""
+    """ "3 runs", and nothing at all until a pass has been processed once."""
     if count < 1:
         return ""
     return f"{count} run" if count == 1 else f"{count} runs"
 
 
 def section_facts(entry: VideoLibraryEntry) -> list[tuple[TransectPass, str, int]]:
-    """Each section of a clip in time order, with its status and its run count.
+    """Each pass of a clip in time order, with its status and its run count.
 
     The status comes from ``video_groups``, which is where that rule lives: the
-    strip and the rows describe the same section, and a second copy of the rule
+    strip and the rows describe the same pass, and a second copy of the rule
     is how the two come to disagree. A pass whose clip has no readable length
     gets no span, and still gets a row.
     """
@@ -387,20 +375,21 @@ def section_facts(entry: VideoLibraryEntry) -> list[tuple[TransectPass, str, int
             facts.append((pass_, span.status, span.run_count))
             continue
         mine = runs.get(pass_.id, [])
-        facts.append((pass_, pass_status(mine), len(mine)))
+        facts.append((pass_, pass_status(mine, queued=str(pass_.id) in entry.queued_pass_ids), len(mine)))
     return facts
 
 
 def section_strip_lead(widget: QWidget, name_width: int) -> int:
-    """The gap that puts a section row's strip under its clip row's.
+    """The gap that puts a pass row's strip under its clip row's.
 
     Derived from the constants both rows are built from plus the clip name's
     current width, never from measured pixels, so the two stay aligned at any UI
     font size and at any window width. A clip row leads with the disclosure, the
-    link glyph, the name and four figure columns; a section row leads with its
+    link glyph, the name and four figure columns; a pass row leads with its
     indent, a status dot, the window, the transect chip and the run count.
     """
-    cw = widget.fontMetrics().averageCharWidth()
+    metrics = widget.fontMetrics()
+    figures = QFontMetrics(tabular(widget.font()))
     clip = (
         # A left margin, then one gap after each of the disclosure, the link, the
         # name and the four figure columns.
@@ -408,7 +397,8 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
         + DISCLOSURE_WIDTH
         + ICON_SM
         + name_width
-        + cw * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
+        + sum(figures.horizontalAdvance("0" * chars) for chars in (RECORDED_CHARS, LENGTH_CHARS, SIZE_CHARS))
+        + metrics.horizontalAdvance("0" * GRAVITY_CHARS)
     )
     section = (
         # SECTION_INDENT already carries two of these, then one gap after each of
@@ -416,28 +406,80 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
         SPACE_SM * 8
         + DISCLOSURE_WIDTH
         + ICON_SM * 3
-        + cw * (WINDOW_CHARS + TRANSECT_CHARS + RUNS_CHARS)
+        + figures.horizontalAdvance("0" * WINDOW_CHARS)
+        + metrics.averageCharWidth() * TRANSECT_CHARS
+        + figures.horizontalAdvance("0" * RUNS_CHARS)
     )
     return max(0, clip - section)
 
 
-def clip_name_width(available: int, char_width: int) -> int:
+def clip_name_width(available: int, char_width: int, *, archiving: bool = False) -> int:
     """How wide the clip name column is in a row ``available`` px across.
 
-    The figures and the buttons take theirs first, then the name and the sections
+    ``archiving`` is whether the rows are carrying their archive button, which
+    only appears once there is a server to send a clip to.
+
+    The figures and the buttons take theirs first, then the name and the passes
     strip share what is left by weight, each held above its floor. The strip is
     not sized here: it takes the remainder through its layout stretch, so the two
     always add up to the row exactly.
     """
-    fixed = char_width * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
-    spent = fixed + DISCLOSURE_WIDTH + ICON_SM + TRAILING_BUTTONS_WIDTH + SPACE_SM * 10
+    fixed = char_width * (RECORDED_CHARS + LENGTH_CHARS) + 150
+    trailing = ROW_ACTION_SIZE * 3 + SPACE_SM * 2
+    spent = fixed + DISCLOSURE_WIDTH + ICON_SM + trailing + SPACE_SM * 10
     slack = max(0, available - spent - SECTIONS_MIN_WIDTH)
     share = slack * NAME_WEIGHT // (NAME_WEIGHT + SECTIONS_WEIGHT)
     return max(char_width * NAME_MIN_CHARS, share)
 
 
-def _fixed_width(label: QLabel, chars: int) -> None:
-    label.setFixedWidth(label.fontMetrics().averageCharWidth() * chars)
+ARCHIVE_CLIP = "Send this clip to the server"
+ARCHIVE_CLIP_TOOLTIP = (
+    "Send this clip's original file to the registry's archive. On request only, "
+    "so a metered field uplink is never spent by accident."
+)
+# What the registry holds of a clip, as the glyph says it. The same vocabulary
+# the run rows use, so one icon means one thing across the app.
+ARCHIVE_FACES = {
+    "archived": "Already on the server.",
+    "uploading": "Sending to the server...",
+    "failed": "The registry could not verify the upload. Press to send it again.",
+}
+
+
+def archive_button(name: str, tooltip: str) -> QToolButton:
+    """The upload glyph, as a row action rather than a labelled button."""
+    return icon_button(upload_icon(), name, tooltip)
+
+
+def paint_archive_button(button: QToolButton, state: str | None, tooltip: str) -> None:
+    """Dress an archive button as what the registry holds, if it has been asked."""
+    told = ARCHIVE_FACES.get(state or "")
+    if told is None:
+        button.setIcon(upload_icon(color=QColor(DEFAULT_INK)))
+        button.setToolTip(tooltip)
+        return
+    # A tick for content already up, the upload glyph in the colour of what is
+    # still to do.
+    if state == "archived":
+        button.setIcon(check_icon())
+    else:
+        button.setIcon(upload_icon(color=QColor(ERROR if state == "failed" else WARNING)))
+    button.setToolTip(told)
+
+
+def _fixed_width(label: QLabel, chars: int, *, figures: bool = False) -> None:
+    """Reserve ``chars`` characters' worth of width for a row cell.
+
+    Measured against a digit rather than ``averageCharWidth``, which is a mean
+    dominated by lowercase letters and materially narrower than a figure: every
+    numeric column sized that way was short of what it held. ``figures`` also
+    gives the label tabular digits, so a column of times and sizes lines up
+    down the list instead of shifting with whichever numbers a row happens to
+    carry.
+    """
+    if figures:
+        label.setFont(tabular(label.font()))
+    label.setFixedWidth(label.fontMetrics().horizontalAdvance("0" * chars))
 
 
 def _selectable(widget: QWidget, name: str) -> None:
@@ -459,6 +501,7 @@ def _selectable(widget: QWidget, name: str) -> None:
     # stylesheet's, which leaves the selection fill invisible.
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     widget.setStyleSheet(
+        f'QWidget#{name}:hover {{ background-color: {SURFACE_HI}; }}'
         f'QWidget#{name}[selected="true"] {{ background-color: {SELECTION_BG};'
         f" border-radius: {RADIUS_SM}px; }}"
         f'QWidget#{name}[selected="true"] QLabel {{ color: {BRIGHT_TEXT}; }}'
@@ -469,7 +512,8 @@ def _selectable(widget: QWidget, name: str) -> None:
         f" border: 1px solid {SELECTION_CONTROL_BORDER}; color: {BRIGHT_TEXT}; }}"
         # Unavailable stays unavailable: the rule above would otherwise paint a
         # dead control in the same white as a live one.
-        f'QWidget#{name}[selected="true"] QToolButton:disabled {{'
+        f'QWidget#{name}[selected="true"] QToolButton:disabled,'
+        f' QWidget#{name}[selected="true"] QToolButton[dead="true"] {{'
         f" color: {DISABLED_FG}; border-color: {BORDER}; }}"
         # A mark you click rather than a button keeps its own nothing: boxing
         # the disclosure chevron on selection makes it read as an action.
@@ -503,9 +547,7 @@ def _quiet_button(glyph: str, name: str, tooltip: str) -> QToolButton:
     return button
 
 
-def apply_link_state(
-    button: QToolButton, link_state: str, ink: QColor | None = None
-) -> None:
+def apply_link_state(button: QToolButton, link_state: str, ink: QColor | None = None) -> None:
     """Dress a button as the clip's link: joined, broken, or not yet asked.
 
     Clickable in every state, including unknown: revealing is how you find out
@@ -525,20 +567,19 @@ def apply_link_state(
         button.setToolTip("Show in folder")
 
 
-def _icon_button(icon: QIcon, name: str, tooltip: str) -> QToolButton:
-    """The same button drawn from the icon layer rather than from a character."""
-    button = QToolButton()
-    button.setIcon(icon)
-    button.setIconSize(QSize(ICON_SM, ICON_SM))
-    button.setAccessibleName(name)
-    button.setToolTip(tooltip)
-    button.setProperty("quiet", "true")
-    button.setProperty("pad", "none")
-    return button
+def set_button_dead(button: QToolButton, dead: bool) -> None:
+    """Mark a row button that cannot act: no hover fill, still enabled for its tooltip."""
+    value = "true" if dead else "false"
+    if button.property("dead") == value:
+        return
+    button.setProperty("dead", value)
+    style = button.style()
+    style.unpolish(button)
+    style.polish(button)
 
 
 class SectionStrip(QWidget):
-    """Where a clip's sections sit along its length, as one of the app's bars."""
+    """Where a clip's passes sit along its length, as one of the app's bars."""
 
     span_clicked = Signal(str)
 
@@ -550,6 +591,8 @@ class SectionStrip(QWidget):
         self._spans: list[Span] = []
         self._duration = 0.0
         self._names: dict[str, str] = {}
+        self._selected_pass: str | None = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def set_spans(
         self,
@@ -557,10 +600,10 @@ class SectionStrip(QWidget):
         duration_s: float | None = None,
         names: Mapping[str, str] | None = None,
     ) -> None:
-        """The sections, and the clip length they were normalised against.
+        """The passes, and the clip length they were normalised against.
 
         Without a length there is no scale to place them on, so the strip says
-        so rather than spreading the sections it was given over a guess.
+        so rather than spreading the passes it was given over a guess.
         """
         self._duration = float(duration_s or 0.0)
         self._spans = list(spans) if self._duration > 0 else []
@@ -569,7 +612,7 @@ class SectionStrip(QWidget):
         self.update()
 
     def _resting_tooltip(self) -> str:
-        """What the strip says when the pointer is not over a section."""
+        """What the strip says when the pointer is not over a pass."""
         if self._duration <= 0:
             return UNKNOWN_LENGTH_TOOLTIP
         return "" if self._spans else NO_SECTIONS_TOOLTIP
@@ -579,14 +622,14 @@ class SectionStrip(QWidget):
         return list(self._spans)
 
     def span_at(self, x: float) -> str | None:
-        """The pass whose section covers ``x``, or None over bare groove."""
+        """The pass whose pass covers ``x``, or None over bare groove."""
         for span, rect in self._span_rects():
             if rect.left() <= x <= rect.right():
                 return span.pass_id
         return None
 
     def _bar_rect(self) -> QRectF:
-        return QRectF(0.0, float(TICK_HEIGHT), float(self.width()), float(STRIP_BAR_HEIGHT))
+        return QRectF(0.0, 0.0, float(self.width()), float(STRIP_BAR_HEIGHT))
 
     def _span_rects(self) -> list[tuple[Span, QRectF]]:
         track = self._bar_rect()
@@ -603,8 +646,13 @@ class SectionStrip(QWidget):
 
     def _span_tooltip(self, span: Span) -> str:
         name = self._names.get(span.pass_id) or UNASSIGNED_NAME
-        window = f"{_clock(span.begin * self._duration)}–{_clock(span.end * self._duration)}"
-        return f"{name}  ·  {window}  ·  {statuses.status_label(span.status)}"
+        window = f"{_clock(span.begin * self._duration)}-{_clock(span.end * self._duration)}"
+        # How many times this pass has been run is part of reading the bar,
+        # and the clip row has no column that says it.
+        facts = [name, window, statuses.status_label(span.status)]
+        if span.run_count:
+            facts.append(run_label(span.run_count))
+        return "  ·  ".join(facts)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pass_id = self.span_at(event.position().x())
@@ -633,27 +681,41 @@ class SectionStrip(QWidget):
             self._paint_uncut(painter, track, radius)
         for span, rect in self._span_rects():
             self._paint_span(painter, span, rect, radius)
+        if self.hasFocus():
+            painter.setPen(QPen(QColor(PRIMARY), 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(track.adjusted(1, 1, -1, -1), radius, radius)
         painter.end()
 
     def _paint_uncut(self, painter: QPainter, track: QRectF, radius: float) -> None:
-        """A dashed red edge round a clip nothing has been cut from.
-
-        A clip with its sections scrolled off screen and a clip with none at all
-        painted the same bare groove, and the second is the one holding up a
-        day's processing. The dashes say the outline is where a section would go
-        rather than a section itself.
-        """
-        pen = QPen(QColor(ERROR))
-        pen.setWidthF(LINE_WIDTH)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
+        """Draw the neutral outline of footage with no defined passes."""
+        painter.setPen(QPen(QColor(TEXT_MUTED), 1.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        # Inset by half the pen, or the stroke is clipped by the widget's edge.
-        painter.drawRoundedRect(track.adjusted(1.0, 1.0, -1.0, -1.0), radius, radius)
+        painter.drawRoundedRect(track.adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_span(
-        self, painter: QPainter, span: Span, rect: QRectF, radius: float
-    ) -> None:
+    def set_selected_pass(self, pass_id: str | None) -> None:
+        self._selected_pass = pass_id
+        self.update()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if not self._spans:
+            super().keyPressEvent(event)
+            return
+        keys = {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Space}
+        if event.key() not in keys:
+            super().keyPressEvent(event)
+            return
+        index = next((i for i, span in enumerate(self._spans) if span.pass_id == self._selected_pass), -1)
+        if event.key() in {Qt.Key.Key_Left, Qt.Key.Key_Right}:
+            index = (index + (-1 if event.key() == Qt.Key.Key_Left else 1)) % len(self._spans)
+        span = self._spans[max(0, index)]
+        self.set_selected_pass(span.pass_id)
+        self.setAccessibleDescription(self._span_tooltip(span))
+        self.setToolTip(self._span_tooltip(span))
+        self.span_clicked.emit(span.pass_id)
+        event.accept()
+
+    def _paint_span(self, painter: QPainter, span: Span, rect: QRectF, radius: float) -> None:
         colour = self._span_colour(span)
         fill = QColor(colour)
         # A section not started yet is a claim about the future, so it is tinted
@@ -663,32 +725,11 @@ class SectionStrip(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
         painter.drawRoundedRect(rect, radius, radius)
-        pen = QPen(colour)
-        pen.setWidthF(LINE_WIDTH)
+        pen = QPen(QColor(BRIGHT_TEXT) if span.pass_id == self._selected_pass else colour)
+        pen.setWidthF(3.0 if span.pass_id == self._selected_pass else LINE_WIDTH)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, radius, radius)
-        self._paint_ticks(painter, span, rect, colour)
-
-    def _paint_ticks(
-        self, painter: QPainter, span: Span, rect: QRectF, colour: QColor
-    ) -> None:
-        """One tick per run, above a section that has been run more than once.
-
-        A single tick over every processed section would be decoration; the mark
-        is there to say a section was done again, which is the thing worth
-        finding when two runs of one swim disagree.
-        """
-        if span.run_count < 2:
-            return
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(colour)
-        x = rect.left()
-        for _ in range(span.run_count):
-            if x + LINE_WIDTH > rect.right():
-                break
-            painter.drawRect(QRectF(x, 0.0, LINE_WIDTH, float(TICK_HEIGHT)))
-            x += TICK_PITCH
 
     def _paint_unknown(self, painter: QPainter, groove: QPainterPath, track: QRectF) -> None:
         """Hatching, as MeterBar draws a figure it cannot report.
@@ -702,9 +743,7 @@ class SectionStrip(QWidget):
         painter.setPen(pen)
         x = track.left() - track.height()
         while x < track.right() + track.height():
-            painter.drawLine(
-                QPointF(x, track.bottom()), QPointF(x + track.height(), track.top())
-            )
+            painter.drawLine(QPointF(x, track.bottom()), QPointF(x + track.height(), track.top()))
             x += HATCH_PITCH
 
 
@@ -723,6 +762,7 @@ class VideoRow(QWidget):
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
     delete_requested = Signal(str)
+    archive_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -736,8 +776,8 @@ class VideoRow(QWidget):
         self.chevron = QToolButton()
         self.chevron.setCheckable(True)
         self.chevron.setFixedWidth(DISCLOSURE_WIDTH)
-        self.chevron.setAccessibleName("Sections")
-        self.chevron.setToolTip("Show the sections cut from this clip.")
+        self.chevron.setAccessibleName("Passes")
+        self.chevron.setToolTip("Show the passes cut from this clip.")
         self.chevron.setProperty("bare", "true")
         self.chevron.toggled.connect(self._on_chevron)
         row.addWidget(self.chevron)
@@ -752,25 +792,25 @@ class VideoRow(QWidget):
         self.link_btn.clicked.connect(lambda: self._emit(self.reveal_requested))
         row.addWidget(self.link_btn)
 
-        self._name = secondary_label()
+        self._name = QLabel()
         _fixed_width(self._name, NAME_CHARS)
         row.addWidget(self._name)
         self._name_width = self._name.width()
 
         self._recorded = muted_label()
-        _fixed_width(self._recorded, RECORDED_CHARS)
+        _fixed_width(self._recorded, RECORDED_CHARS, figures=True)
         row.addWidget(self._recorded)
 
         # Length and size are figures, so they right-align under their header
         # cells and their digits line up down the list.
         self._length = muted_label()
         self._length.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        _fixed_width(self._length, LENGTH_CHARS)
+        _fixed_width(self._length, LENGTH_CHARS, figures=True)
         row.addWidget(self._length)
 
         self._size = muted_label()
         self._size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        _fixed_width(self._size, SIZE_CHARS)
+        _fixed_width(self._size, SIZE_CHARS, figures=True)
         row.addWidget(self._size)
 
         # A dot and nothing else. The word "Gravity" beside a green dot in a
@@ -783,6 +823,10 @@ class VideoRow(QWidget):
         self.strip = SectionStrip()
         self.strip.span_clicked.connect(self.span_clicked)
         row.addWidget(self.strip, 1)
+        self.processing = QLabel()
+        self.processing.setFixedWidth(150)
+        self.processing.setWordWrap(True)
+        row.addWidget(self.processing)
 
         self.play_btn = QToolButton()
         self.play_btn.setIcon(play_icon())
@@ -793,15 +837,21 @@ class VideoRow(QWidget):
         self.play_btn.clicked.connect(lambda: self._emit(self.play_requested))
         row.addWidget(self.play_btn)
 
-        self.new_section_btn = _quiet_button(
-            NEW_SECTION_GLYPH, "Cut a new section", "Cut a new section"
-        )
+        self.new_section_btn = _quiet_button(NEW_SECTION_GLYPH, "Cut a new pass", "Cut a new pass")
         self.new_section_btn.clicked.connect(lambda: self._emit(self.new_section_requested))
         row.addWidget(self.new_section_btn)
 
+        # Beside the row's other actions rather than in the detail pane's title:
+        # sending a clip up is something done to the clip, like playing it or
+        # cutting from it. Hidden until there is a server to send it to.
+        self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
+        self.archive_btn.setVisible(False)
+        self.archive_btn.clicked.connect(lambda: self._emit(self.archive_requested))
+        row.addWidget(self.archive_btn)
+
         # Live whatever the clip's state: the handler is what refuses, and the
         # tooltip carries the reason. A disabled button shows no tooltip.
-        self.delete_btn = _icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
+        self.delete_btn = icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         row.addWidget(self.delete_btn)
         # A text glyph measures narrower than an icon, and the sections column has
@@ -814,6 +864,20 @@ class VideoRow(QWidget):
         self._delete_arm.setInterval(DELETE_ARM_MS)
         self._delete_arm.timeout.connect(self._apply_delete_icon)
 
+        for button in (self.play_btn, self.new_section_btn):
+            button.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.archive_btn.hide()
+        self.delete_btn.hide()
+        self.more_btn = QToolButton()
+        self.more_btn.setText("…")
+        self.more_btn.setAccessibleName("Video actions")
+        self.more_btn.setProperty("pad", "none")
+        self.more_btn.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.more_btn.clicked.connect(
+            lambda: self.menu().exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
+        )
+        row.addWidget(self.more_btn)
+        self._archive_available = False
         self._entry: VideoLibraryEntry | None = None
         self._hidden = False
         self._selected = False
@@ -874,7 +938,7 @@ class VideoRow(QWidget):
         return QColor(BRIGHT_TEXT) if self._selected else None
 
     def _sync_chevron(self) -> None:
-        """Blank and dead on a clip with no sections, so the column stays aligned."""
+        """Blank and dead on a clip with no passes, so the column stays aligned."""
         has_sections = self._has_sections()
         self.chevron.setEnabled(has_sections)
         # Muted while the row is not selected: a disclosure mark is not one of
@@ -907,6 +971,8 @@ class VideoRow(QWidget):
             self._apply_delete_icon()
             self._emit(self.delete_requested)
             return
+        if self._entry is not None and self._entry.run_count:
+            return
         self._delete_arm.start()
         self._apply_delete_icon()
 
@@ -916,12 +982,11 @@ class VideoRow(QWidget):
             self.delete_btn.setIcon(check_icon(color=QColor(ERROR)))
             self.delete_btn.setToolTip(DELETE_CLIP_ARMED_TOOLTIP)
             return
-        ink = self._ink()
-        self.delete_btn.setIcon(trash_icon(color=ink) if ink is not None else trash_icon())
         runs = 0 if self._entry is None else self._entry.run_count
-        self.delete_btn.setToolTip(
-            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
-        )
+        ink = QColor(DISABLED_FG) if runs else self._ink() or QColor(DEFAULT_INK)
+        self.delete_btn.setIcon(trash_icon(color=ink))
+        set_button_dead(self.delete_btn, bool(runs))
+        self.delete_btn.setToolTip(DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Report the press, and treat a bare one as picking this clip.
@@ -937,16 +1002,24 @@ class VideoRow(QWidget):
         super().mousePressEvent(event)
 
     def unused_sections(self) -> int:
-        """Sections of this clip nothing was ever made from, so nothing needs them."""
+        """Passes of this clip nothing was ever made from, so nothing needs them."""
         if self._entry is None:
             return 0
         used = {str(run.pass_id) for run in self._entry.runs}
         return sum(1 for pass_ in self._entry.passes if str(pass_.id) not in used)
 
     def menu(self) -> QMenu:
-        """What can be done with the clip itself, as the section rows offer too."""
+        """What can be done with the clip itself, as the pass rows offer too."""
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
+        actions = (("Play video", self.play_btn), ("Cut pass", self.new_section_btn), ("Show in folder", self.link_btn))
+        for label, button in actions:
+            action = menu.addAction(label)
+            action.setEnabled(button.isEnabled())
+            action.triggered.connect(button.click)
+        if self._archive_available:
+            menu.addAction(ARCHIVE_CLIP).triggered.connect(self.archive_btn.click)
+        menu.addSeparator()
         hide = menu.addAction(MENU_UNHIDE if self._hidden else MENU_HIDE)
         hide.setToolTip(MENU_UNHIDE_TOOLTIP if self._hidden else MENU_HIDE_TOOLTIP)
         hide.triggered.connect(lambda *_: self.hide_requested.emit(self.video_id))
@@ -962,9 +1035,7 @@ class VideoRow(QWidget):
         delete.triggered.connect(lambda *_: self.delete_unused_requested.emit(self.video_id))
         runs = 0 if self._entry is None else self._entry.run_count
         delete_clip = menu.addAction(MENU_DELETE_CLIP)
-        delete_clip.setToolTip(
-            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
-        )
+        delete_clip.setToolTip(DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP)
         delete_clip.triggered.connect(lambda *_: self.delete_requested.emit(self.video_id))
         return menu
 
@@ -1008,6 +1079,9 @@ class VideoRow(QWidget):
         self._hidden = hidden
         video = entry.video
         self._set_link(entry)
+        summary = clip_summary(entry)
+        self.processing.setText("File missing" if entry.link_state == LINK_MISSING else summary)
+        self.processing.setToolTip(summary)
         self._apply_name_text()
         self._recorded.setText(capture_label(video))
         self._length.setText(length_label(video.duration_s))
@@ -1016,10 +1090,7 @@ class VideoRow(QWidget):
         self.strip.set_spans(
             timeline_spans(entry),
             video.duration_s,
-            {
-                str(pass_.id): transect_name(pass_.transect_id) or UNASSIGNED_NAME
-                for pass_ in entry.passes
-            },
+            {str(pass_.id): transect_name(pass_.transect_id) or UNASSIGNED_NAME for pass_ in entry.passes},
         )
         # Playing and cutting both decode the file, so they need the file, and
         # an unknown link state is not yet a yes. Revealing stays live: the
@@ -1080,7 +1151,7 @@ def _dot(colour: str) -> QPixmap:
 
 
 class TransectChip(QToolButton):
-    """Where a section is filed and which way it was swum, and the way to change it.
+    """Where a pass is filed and which way it was swum, and the way to change it.
 
     A label that is also the control: the fact and the way to edit it are the
     same thing, so there is no second button competing with it for the row.
@@ -1101,7 +1172,7 @@ class TransectChip(QToolButton):
         """What the chip says before the width of the row gets at it."""
         return self._full
 
-    def set_assignment(self, name: str | None, direction: str) -> None:
+    def set_assignment(self, name: str | None, direction: str | None) -> None:
         if name:
             self._full = name
             self._colour = TEXT_MUTED
@@ -1139,9 +1210,9 @@ class TransectChip(QToolButton):
 
 
 class SectionRow(QWidget):
-    """One section of a clip: its window, where it is filed, and what came of it.
+    """One pass of a clip: its window, where it is filed, and what came of it.
 
-    Indented under the clip it was cut from, because a section only means
+    Indented under the clip it was cut from, because a pass only means
     anything as part of that clip. The same row serves the clip pane, where
     ``compact`` drops the columns a third of a page has no room for.
 
@@ -1155,8 +1226,10 @@ class SectionRow(QWidget):
     add_to_cart_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
+    rename_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
@@ -1176,39 +1249,32 @@ class SectionRow(QWidget):
         # that tells two sections of one clip apart before they are filed.
         self._window = secondary_label()
         if not compact:
-            _fixed_width(self._window, WINDOW_CHARS)
+            _fixed_width(self._window, WINDOW_CHARS, figures=True)
         else:
-            # No column here: the pane is a third of the page, and a column
-            # wide enough for the longest window a clip could have spends the
-            # difference on a gap in front of the transect. Every section of one
-            # clip writes its window to much the same length anyway, so they
-            # line up without being made to.
-            self._window.setSizePolicy(
-                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-            )
+            # No fixed column here: a column wide enough for the longest window
+            # a clip could have spends the difference on a gap in front of the
+            # transect, and the pane is a third of the page. The list sizes this
+            # to the widest window it actually holds instead (``set_window_width``),
+            # so the passes of one clip line up with each other without reserving
+            # room for windows none of them writes. Tabular digits, so the times
+            # themselves line up inside that width.
+            self._window.setFont(tabular(self._window.font()))
+            self._window.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         row.addWidget(self._window)
 
         self.transect_chip = TransectChip()
-        self.transect_chip.clicked.connect(
-            lambda: self._emit(self.reassign_requested)
-        )
+        self.transect_chip.clicked.connect(lambda: self._emit(self.reassign_requested))
         if compact:
             # The chip takes what the pane leaves it and elides; in the wide
             # list it holds a column so the names line up down the page. The
             # floor is set here rather than left to the button's own text, or a
             # long transect name makes the row wider than the pane and pushes
             # the buttons off the end of it.
-            self.transect_chip.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-            self.transect_chip.setMinimumWidth(
-                self.fontMetrics().averageCharWidth() * TRANSECT_MIN_CHARS
-            )
+            self.transect_chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.transect_chip.setMinimumWidth(self.fontMetrics().averageCharWidth() * TRANSECT_MIN_CHARS)
             row.addWidget(self.transect_chip, 1)
         else:
-            self.transect_chip.setFixedWidth(
-                self.fontMetrics().averageCharWidth() * TRANSECT_CHARS
-            )
+            self.transect_chip.setFixedWidth(self.fontMetrics().averageCharWidth() * TRANSECT_CHARS)
             row.addWidget(self.transect_chip)
 
         # An arrow rather than the word: which way a swim went is one bit, and
@@ -1219,7 +1285,7 @@ class SectionRow(QWidget):
         row.addWidget(self._direction)
 
         self._runs = muted_label()
-        _fixed_width(self._runs, RUNS_CHARS)
+        _fixed_width(self._runs, RUNS_CHARS, figures=True)
         self._runs.setVisible(not compact)
         row.addWidget(self._runs)
 
@@ -1229,16 +1295,38 @@ class SectionRow(QWidget):
         # its tooltip carries the frame preview.
         self.strip: SectionStrip | None = None
         if not compact:
-            self._strip_lead = QLabel()
-            self._strip_lead.setFixedWidth(
-                section_strip_lead(self, self.fontMetrics().averageCharWidth() * NAME_CHARS)
-            )
-            row.addWidget(self._strip_lead)
+            row.removeWidget(self._runs)
+            self._prefix = QWidget()
+            prefix_layout = QHBoxLayout(self._prefix)
+            prefix_layout.setContentsMargins(0, 0, 0, 0)
+            prefix_layout.setSpacing(SPACE_SM)
+            while row.count():
+                item = row.takeAt(0)
+                widget = item.widget() if item is not None else None
+                if widget is not None:
+                    prefix_layout.addWidget(widget)
+            self.transect_chip.setMinimumWidth(48)
+            self.transect_chip.setMaximumWidth(16777215)
+            self.transect_chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._window.setFixedWidth(self.fontMetrics().horizontalAdvance("0:00-0:00 · 00s"))
+            row.addWidget(self._prefix)
             self.strip = SectionStrip()
             self.strip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             row.addWidget(self.strip, 1)
+            self._runs.setFixedWidth(150)
+            row.addWidget(self._runs)
+            self._optional_columns = {"size": False, "gravity": False}
 
-        self.cart_btn = _icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
+        # Nothing to press: a pass is not archived, its runs are. It reserves the
+        # width the clip row's archive button takes so the two strips keep ending
+        # on the same pixel, which is what makes a position along one mean the
+        # same as along the other.
+        self._archive_gap = QWidget()
+        self._archive_gap.setFixedWidth(ARCHIVE_BUTTON_WIDTH)
+        self._archive_gap.setVisible(False)
+        row.addWidget(self._archive_gap)
+
+        self.cart_btn = icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
         self.cart_btn.clicked.connect(self._on_cart_clicked)
         row.addWidget(self.cart_btn)
         # Owned by the row, so a list rebuilt under a pending tick takes the
@@ -1248,18 +1336,32 @@ class SectionRow(QWidget):
         self._cart_ack.setInterval(CART_ACK_MS)
         self._cart_ack.timeout.connect(self._apply_cart_icon)
 
-        self.trim_btn = _icon_button(pencil_icon(), MENU_RETRIM, RETRIM_TOOLTIP)
+        self.trim_btn = icon_button(pencil_icon(), MENU_RETRIM, RETRIM_TOOLTIP)
         self.trim_btn.clicked.connect(lambda: self._emit(self.retrim_requested))
         row.addWidget(self.trim_btn)
 
-        self.delete_btn = _icon_button(trash_icon(), MENU_DELETE, MENU_DELETE)
+        self.delete_btn = icon_button(trash_icon(), MENU_DELETE, MENU_DELETE)
         self.delete_btn.clicked.connect(lambda: self._emit(self.delete_requested))
         row.addWidget(self.delete_btn)
+
+        for button in (self.cart_btn, self.trim_btn):
+            button.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.delete_btn.hide()
+        self.more_btn = QToolButton()
+        self.more_btn.setText("…")
+        self.more_btn.setAccessibleName("Pass actions")
+        self.more_btn.setProperty("pad", "none")
+        self.more_btn.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.more_btn.clicked.connect(
+            lambda: self.menu().exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
+        )
+        row.addWidget(self.more_btn)
 
         self._pass: TransectPass | None = None
         self._run_count = 0
         self._in_cart = False
         self._available = True
+        self._processing = "ready"
         self._selected = False
         # What the tooltip says before any frame has been decoded, and what it
         # goes on saying underneath them once they have.
@@ -1268,11 +1370,30 @@ class SectionRow(QWidget):
         self._preview_key = ""
         self._preview_wired = False
 
+    def window_hint(self) -> int:
+        """How much room this row's window text wants, for the list to level."""
+        return self._window.fontMetrics().horizontalAdvance(self._window.text())
+
+    def set_window_width(self, width: int) -> None:
+        """Hold the window column at ``width``, so the rows beside it align."""
+        self._window.setFixedWidth(width)
+
     def set_name_width(self, width: int) -> None:
         """Follow the clip name's column, so this row's strip stays under its clip's."""
         if self.strip is None:
             return
-        self._strip_lead.setFixedWidth(section_strip_lead(self, width))
+        figures = QFontMetrics(tabular(self.font()))
+        leading = SPACE_SM * 6 + DISCLOSURE_WIDTH + ICON_SM + width
+        leading += sum(figures.horizontalAdvance("0" * chars) for chars in (RECORDED_CHARS, LENGTH_CHARS))
+        for key, chars in (("size", SIZE_CHARS), ("gravity", GRAVITY_CHARS)):
+            if self._optional_columns.get(key):
+                metrics = figures if key == "size" else self.fontMetrics()
+                leading += metrics.horizontalAdvance("0" * chars) + SPACE_SM
+        self._prefix.setFixedWidth(max(0, leading - SECTION_INDENT - SPACE_SM))
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Reserve the clip rows' archive slot, so both strips still line up."""
+        self._archive_gap.hide()
 
     @property
     def pass_id(self) -> str:
@@ -1293,6 +1414,7 @@ class SectionRow(QWidget):
         pass_: TransectPass,
         *,
         transect_name: str | None,
+        campaign_name: str | None = None,
         status: str,
         run_count: int = 0,
         in_cart: bool = False,
@@ -1332,15 +1454,15 @@ class SectionRow(QWidget):
                     {str(pass_.id): transect_name or UNASSIGNED_NAME},
                 )
         length = section_length_label(pass_)
-        self._window.setText(
-            f"{window_label(pass_)} · {length}" if length else window_label(pass_)
-        )
+        self._window.setText(f"{window_label(pass_)} · {length}" if length else window_label(pass_))
+        if not self._compact:
+            self._window.setFixedWidth(self._window.fontMetrics().horizontalAdvance(self._window.text()))
         self.transect_chip.set_assignment(transect_name, pass_.direction)
-        self._direction.setToolTip(
-            f"Swum {pass_.direction} along the transect."
-        )
+        self._direction.setToolTip(f"Swum {direction_phrase(pass_.direction)} along the transect.")
         self._apply_icons()
-        self._runs.setText(run_label(run_count))
+        self._processing = status
+        self._runs.setText(statuses.status_label(status))
+        self._runs.setToolTip(run_label(run_count))
         self.delete_btn.setToolTip(DELETE_BLOCKED_TOOLTIP if run_count else MENU_DELETE)
         # Trimming decodes the file, so a clip whose file is gone cannot be
         # trimmed. Marked in red rather than greyed out: a disabled button shows
@@ -1348,9 +1470,11 @@ class SectionRow(QWidget):
         self.trim_btn.setToolTip(RETRIM_TOOLTIP if available else TRIM_UNLINKED_TOOLTIP)
         # The window is not repeated here: the row shows it, and once frames
         # arrive each one is captioned with where in the window it came from.
-        self._plain_tooltip = (
-            f"{transect_name or UNASSIGNED_NAME}  ·  {statuses.status_label(status)}"
-        )
+        # The campaign is here rather than in a column: this row's widths are
+        # what line its strip up with the clip's above it, and the trip is a
+        # thing to check rather than to scan down.
+        parts = [transect_name or UNASSIGNED_NAME, campaign_name or NO_CAMPAIGN_NAME, statuses.status_label(status)]
+        self._plain_tooltip = "  ·  ".join(parts)
         self._preview = preview if available else None
         self._preview_key = f"{pass_.id}@{pass_.begin_s:.2f}-{pass_.end_s:.2f}"
         self.setToolTip(self._plain_tooltip)
@@ -1358,7 +1482,7 @@ class SectionRow(QWidget):
     def event(self, event: QEvent) -> bool:
         """Decode the preview only when a tooltip is actually being asked for.
 
-        A section a cursor never rests on costs nothing, which is what makes it
+        A pass a cursor never rests on costs nothing, which is what makes it
         affordable to do this for every row in a season's worth of clips.
         """
         if event.type() == QEvent.Type.ToolTip:
@@ -1405,7 +1529,7 @@ class SectionRow(QWidget):
         )
 
     def _emit(self, signal: SignalInstance) -> None:
-        """Nothing at all until the row describes a section.
+        """Nothing at all until the row describes a pass.
 
         A pass can span two clips and so has a row under each; a row the list
         built and has not filled yet knows no pass, and a click on it used to
@@ -1458,9 +1582,7 @@ class SectionRow(QWidget):
             self.cart_btn.setIcon(cart_icon(color=QColor(ERROR)))
             self.cart_btn.setToolTip(CART_UNLINKED_TOOLTIP)
             return
-        self.cart_btn.setIcon(
-            cart_icon(color=QColor(SUCCESS)) if self._in_cart else cart_icon(color=self._ink())
-        )
+        self.cart_btn.setIcon(cart_icon(color=QColor(SUCCESS)) if self._in_cart else cart_icon(color=self._ink()))
         self.cart_btn.setToolTip(IN_CART_TOOLTIP if self._in_cart else MENU_ADD_TO_CART)
 
     def _on_cart_clicked(self) -> None:
@@ -1479,36 +1601,33 @@ class SectionRow(QWidget):
         self.add_to_cart_requested.emit(self.pass_id)
 
     def menu(self) -> QMenu:
-        """The section's actions, as the right click offers them.
+        """The pass's actions, as the right click offers them.
 
-        Built fresh each time rather than kept: what a section allows depends on
+        Built fresh each time rather than kept: what a pass allows depends on
         runs and on the cart, both of which move while the row sits there.
         """
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
+        # First, because it is about what this row is rather than what to do with
+        # it, and because the name is what reaches the console.
+        menu.addAction(RENAME_ACTION).triggered.connect(
+            lambda *_: self.rename_requested.emit(self.pass_id)
+        )
         # One entry that names the move it will make, rather than an "Add to
         # cart" greyed out on everything already in it.
-        cart = menu.addAction(
-            MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART
-        )
+        cart = menu.addAction(MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART)
+        cart.setEnabled(self._in_cart or self._processing not in {"running", "pending"})
         cart.triggered.connect(lambda *_: self.add_to_cart_requested.emit(self.pass_id))
-        menu.addAction(MENU_RETRIM).triggered.connect(
-            lambda *_: self.retrim_requested.emit(self.pass_id)
-        )
-        menu.addAction(MENU_REASSIGN).triggered.connect(
-            lambda *_: self.reassign_requested.emit(self.pass_id)
-        )
+        menu.addAction(MENU_RETRIM).triggered.connect(lambda *_: self.retrim_requested.emit(self.pass_id))
+        menu.addAction(MENU_REASSIGN).triggered.connect(lambda *_: self.reassign_requested.emit(self.pass_id))
+        menu.addAction(CAMPAIGN_ACTION).triggered.connect(lambda *_: self.campaign_requested.emit(self.pass_id))
         # The one action with nowhere on the row to live: it leaves the page
         # altogether, which is not something a row's own buttons should look
         # like they do.
-        open_transect = menu.addAction(
-            MENU_OPEN_TRANSECT if self.transect_id else MENU_OPEN_TRANSECTS_PAGE
-        )
+        open_transect = menu.addAction(MENU_OPEN_TRANSECT if self.transect_id else MENU_OPEN_TRANSECTS_PAGE)
         if not self.transect_id:
             open_transect.setToolTip(NO_TRANSECT_TOOLTIP)
-        open_transect.triggered.connect(
-            lambda *_: self.open_transect_requested.emit(self.transect_id)
-        )
+        open_transect.triggered.connect(lambda *_: self.open_transect_requested.emit(self.transect_id))
         menu.addSeparator()
         delete = menu.addAction(MENU_DELETE)
         # A section with runs stands for something that happened. Letting it
@@ -1530,10 +1649,10 @@ class SectionRow(QWidget):
 
 
 class SectionList(QScrollArea):
-    """The sections of one clip, as rows, for the clip pane beside the list.
+    """The passes of one clip, as rows, for the clip pane beside the list.
 
     The same rows the Videos list nests under each clip, in their compact form:
-    the pane is a third of the page, and a section should not be one thing here
+    the pane is a third of the page, and a pass should not be one thing here
     and another thing there.
     """
 
@@ -1541,8 +1660,10 @@ class SectionList(QScrollArea):
     add_to_cart_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
     delete_requested = Signal(str)
     open_transect_requested = Signal(str)
+    rename_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1580,14 +1701,15 @@ class SectionList(QScrollArea):
         entry: VideoLibraryEntry,
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
+        campaign_name: Callable[[Any], str | None] = lambda _id: None,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
         assets: Mapping[uuid.UUID, VideoAsset] | None = None,
     ) -> None:
-        """Fill the pane from one clip, rebuilding only when the sections change.
+        """Fill the pane from one clip, rebuilding only when the passes change.
 
-        ``assets`` is every clip in the library, for resolving a section that
+        ``assets`` is every clip in the library, for resolving a pass that
         spans chapters onto the files behind it. Without it only this clip can
-        be reached, and a chaptered section gets no hover preview.
+        be reached, and a chaptered pass gets no hover preview.
         """
         facts = section_facts(entry)
         known = {entry.video.id: entry.video} if assets is None else assets
@@ -1598,14 +1720,30 @@ class SectionList(QScrollArea):
             self._rows[str(pass_.id)].set_section(
                 pass_,
                 transect_name=transect_name(pass_.transect_id),
+                campaign_name=campaign_name(pass_.campaign_id),
                 status=status,
                 run_count=run_count,
                 in_cart=bool(in_cart(str(pass_.id))),
                 available=entry.link_state != LINK_MISSING,
                 preview=preview_points(pass_, known),
             )
+        self._level_windows()
         self.empty.setVisible(not facts)
         self._paint_selection()
+
+    def _level_windows(self) -> None:
+        """One width for every window in the pane, taken from the widest.
+
+        The windows are what the transect names and the buttons after them
+        start from, so a row whose times are a digit shorter than its
+        neighbour's would otherwise set every column on it a few pixels left.
+        """
+        rows = list(self._rows.values())
+        if not rows:
+            return
+        width = max(row.window_hint() for row in rows)
+        for row in rows:
+            row.set_window_width(width)
 
     def set_selected(self, pass_id: str | None) -> None:
         self._selected = pass_id
@@ -1628,8 +1766,10 @@ class SectionList(QScrollArea):
             row.add_to_cart_requested.connect(self.add_to_cart_requested)
             row.retrim_requested.connect(self.retrim_requested)
             row.reassign_requested.connect(self.reassign_requested)
+            row.campaign_requested.connect(self.campaign_requested)
             row.delete_requested.connect(self.delete_requested)
             row.open_transect_requested.connect(self.open_transect_requested)
+            row.rename_requested.connect(self.rename_requested)
             self._body_layout.addWidget(row)
             self._rows[pass_id] = row
         self._body_layout.addStretch(1)
@@ -1649,9 +1789,7 @@ SORT_ASC_GLYPH, SORT_DESC_GLYPH = "▲", "▼"
 
 # Gravity's column is dots rather than values, so its heading has to say which
 # way round the sort goes; the rest read plainly enough from their own titles.
-_SORT_TOOLTIPS = {
-    SORT_GRAVITY: "Sort by gravity: ascending brings the clips without one to the top."
-}
+_SORT_TOOLTIPS = {SORT_GRAVITY: "Sort by gravity: ascending brings the clips without one to the top."}
 
 
 class _HeaderCell(QLabel):
@@ -1676,10 +1814,10 @@ class VideoListHeader(QWidget):
     """The clip columns over the list, sorting whichever one is clicked.
 
     Not a QHeaderView: the rows under it are widgets in a scroll area rather
-    than cells of a view, so this restates ``QHeaderView::section`` from
+    than cells of a view, so this restates ``QHeaderView::pass`` from
     ``core/theme.py`` out of the same tokens and must stay in step with it.
     Its cells hold the widths the rows do, which is what lines a heading up
-    over its column. Sections keep their own grid and are not sorted from
+    over its column. Passes keep their own grid and are not sorted from
     here: the columns describe clips only.
     """
 
@@ -1717,15 +1855,17 @@ class VideoListHeader(QWidget):
         self._add_cell(row, "Size", SORT_SIZE, SIZE_CHARS, right=True)
 
         self._add_cell(row, "Gravity", SORT_GRAVITY, GRAVITY_CHARS)
-        row.addWidget(_HeaderCell("Sections", sortable=False), 1)
+        row.addWidget(_HeaderCell("Pass timeline", sortable=False), 1)
+        processing = _HeaderCell("Processing", sortable=False)
+        processing.setFixedWidth(150)
+        row.addWidget(processing)
+        row.addSpacing(ROW_ACTION_SIZE * 3 + SPACE_SM * 2)
 
         self._column = DEFAULT_SORT_COLUMN
         self._descending = DEFAULT_SORT_DESCENDING
         self._relabel()
 
-    def _add_cell(
-        self, row: QHBoxLayout, title: str, column: str, chars: int, *, right: bool = False
-    ) -> None:
+    def _add_cell(self, row: QHBoxLayout, title: str, column: str, chars: int, *, right: bool = False) -> None:
         cell = _HeaderCell(title, sortable=True)
         _fixed_width(cell, chars)
         if right:
@@ -1778,7 +1918,7 @@ _GroupShape = tuple[str, tuple[tuple[str, bool, tuple[str, ...]], ...]]
 
 
 class VideoLibraryList(QScrollArea):
-    """Every imported clip, under the date it was shot, over the sections cut from it."""
+    """Every imported clip, under the date it was shot, over the passes cut from it."""
 
     play_requested = Signal(str)
     reveal_requested = Signal(str)
@@ -1788,10 +1928,13 @@ class VideoLibraryList(QScrollArea):
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
     delete_requested = Signal(str)
+    archive_requested = Signal(str)
     section_activated = Signal(str)
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
     section_reassign = Signal(str)
+    section_campaign = Signal(str)
+    section_rename = Signal(str)
     section_delete = Signal(str)
     section_open_transect = Signal(str)
     # Which clips are picked has changed. What acts on a set of clips listens
@@ -1811,8 +1954,12 @@ class VideoLibraryList(QScrollArea):
         self._body_layout.setSpacing(0)
         self.setWidget(body)
         self._body = body
+        body.setObjectName("videoListSurface")
+        body.setStyleSheet(f"QWidget#videoListSurface {{ background: {CARD_BG}; }}")
         self._shape: list[_GroupShape] = []
         self._groups: list[DateGroup] = []
+        self._group_expanded: dict[str, bool] = {}
+        self._group_headings: dict[str, QToolButton] = {}
         self._rows: dict[str, VideoRow] = {}
         # A pass can span several clips, and it gets a row under each of them,
         # so one pass id owns a list rather than a widget. Keyed by the widget
@@ -1822,7 +1969,9 @@ class VideoLibraryList(QScrollArea):
         self._sections_by_video: dict[str, list[SectionRow]] = {}
         self._expanded: set[str] = set()
         self._name_width = 0
+        self._archiving = False
         self._header: VideoListHeader | None = None
+        self._optional_columns = {"size": False, "gravity": False}
         self._selected: str | None = None
         self._selected_section: str | None = None
         # Every picked clip, the row a shift range runs from, and the set the
@@ -1858,10 +2007,42 @@ class VideoLibraryList(QScrollArea):
     def follow_header(self, header: VideoListHeader) -> None:
         """Keep the header's Name column the same width as the rows' own."""
         self._header = header
+        self.set_column_visible("size", False)
+        self.set_column_visible("gravity", False)
+        self._apply_name_width()
+
+    def set_column_visible(self, column: str, visible: bool) -> None:
+        if not hasattr(self, "_optional_columns"):
+            self._optional_columns = {"size": False, "gravity": False}
+        self._optional_columns[column] = visible
+        if self._header is not None:
+            self._header.cell(column).setVisible(visible)
+        for row in self._rows.values():
+            getattr(row, f"_{column}").setVisible(visible)
+        self._name_width = -1
         self._apply_name_width()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().resizeEvent(event)
+        self._apply_name_width()
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Show or hide the archive button on every clip row, and its pass rows' gap.
+
+        Both together, always: the clip and pass strips are aligned from the
+        constants the rows are built from, so a button on one and not the other
+        pulls the two out of step.
+        """
+        if connected == self._archiving:
+            return
+        self._archiving = connected
+        for row in self._rows.values():
+            row._archive_available = connected
+            row.archive_btn.hide()
+        for rows in self._sections_by_video.values():
+            for section in rows:
+                section.set_server_connected(connected)
+        self._name_width = -1
         self._apply_name_width()
 
     def _apply_name_width(self) -> None:
@@ -1873,7 +2054,10 @@ class VideoLibraryList(QScrollArea):
         available = self.viewport().width()
         if available <= 0:
             return
-        width = clip_name_width(available, self.fontMetrics().averageCharWidth())
+        optional = getattr(self, "_optional_columns", {})
+        extra = sum(self.fontMetrics().horizontalAdvance("0" * chars) + SPACE_SM
+                    for key, chars in (("size", SIZE_CHARS), ("gravity", GRAVITY_CHARS)) if optional.get(key))
+        width = clip_name_width(available - extra, self.fontMetrics().averageCharWidth())
         if width == self._name_width:
             return
         self._name_width = width
@@ -1883,6 +2067,7 @@ class VideoLibraryList(QScrollArea):
             row.set_name_width(width)
         for rows in self._sections_by_video.values():
             for section in rows:
+                section._optional_columns = optional
                 section.set_name_width(width)
 
     def set_groups(
@@ -1890,6 +2075,7 @@ class VideoLibraryList(QScrollArea):
         groups: Sequence[DateGroup],
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
+        campaign_name: Callable[[Any], str | None] = lambda _id: None,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
         hidden: Callable[[str], bool] = lambda _video_id: False,
     ) -> None:
@@ -1897,8 +2083,8 @@ class VideoLibraryList(QScrollArea):
 
         The page refreshes this on every scan, and a rebuild under the cursor
         loses the row being clicked and scrolls the list back to the top. The
-        shape carries the sections and which clips are open as well as the
-        clips, or a section cut a moment ago would never get a row.
+        shape carries the passes and which clips are open as well as the
+        clips, or a pass cut a moment ago would never get a row.
         """
         self._groups = list(groups)
         shape = self._shape_of(self._groups)
@@ -1908,16 +2094,15 @@ class VideoLibraryList(QScrollArea):
         self._prune_selection()
         # Built once for the whole list: a section spanning chapters needs the
         # clips either side of the one its row sits under.
-        assets = {
-            entry.video.id: entry.video
-            for group in self._groups
-            for entry in group.entries
-        }
+        assets = {entry.video.id: entry.video for group in self._groups for entry in group.entries}
         for group in self._groups:
             for entry in group.entries:
                 video_id = str(entry.video.id)
                 row = self._rows[video_id]
+                entry.queued_pass_ids = {str(p.id) for p in entry.passes if in_cart(str(p.id))}
                 row.set_entry(entry, transect_name, hidden=bool(hidden(video_id)))
+                for column, visible in getattr(self, "_optional_columns", {}).items():
+                    getattr(row, f"_{column}").setVisible(visible)
                 # A rebuild makes fresh rows, which start at the char-count width.
                 if self._name_width:
                     row.set_name_width(self._name_width)
@@ -1933,6 +2118,7 @@ class VideoLibraryList(QScrollArea):
                     section.set_section(
                         pass_,
                         transect_name=transect_name(pass_.transect_id),
+                        campaign_name=campaign_name(pass_.campaign_id),
                         status=status,
                         run_count=run_count,
                         in_cart=bool(in_cart(str(pass_.id))),
@@ -1940,14 +2126,21 @@ class VideoLibraryList(QScrollArea):
                         preview=preview_points(pass_, assets),
                         duration_s=entry.video.duration_s,
                     )
+        self._update_group_headings()
         self._apply_expansion()
         self._apply_selection()
+        self._name_width = -1
+        self._apply_name_width()
 
     def expand(self, video_id: str) -> None:
         """Open a clip from outside, as clicking its chevron would."""
         row = self._rows.get(video_id)
         if row is not None:
             row.set_expanded(True)
+        for group in self._groups:
+            if any(str(entry.video.id) == video_id for entry in group.entries):
+                self._group_expanded[group.key] = True
+        self._update_group_headings()
         self._set_expanded(video_id, True)
 
     def set_selected(self, video_id: str | None) -> None:
@@ -1961,9 +2154,9 @@ class VideoLibraryList(QScrollArea):
         self._apply_selection()
 
     def set_selected_section(self, pass_id: str | None) -> None:
-        """Pick one section, and let go of every clip.
+        """Pick one pass, and let go of every clip.
 
-        A picked section is a level down from a picked clip, so a set of clips
+        A picked pass is a level down from a picked clip, so a set of clips
         left standing under it would be a target the user cannot see.
         """
         self._selected_section = pass_id
@@ -2009,8 +2202,17 @@ class VideoLibraryList(QScrollArea):
         self._rows = {}
         self._sections = {}
         self._sections_by_video = {}
+        self._group_headings = {}
         for group in groups:
-            self._body_layout.addWidget(SectionHeader(group.title))
+            self._body_layout.addSpacing(SPACE_SM)
+            heading = QToolButton()
+            heading.setCheckable(True)
+            heading.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            heading.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            heading.setStyleSheet(f"text-align: left; background: {BUTTON}; color: {WINDOW_TEXT};")
+            heading.toggled.connect(lambda expanded, key=group.key: self._toggle_group(key, expanded))
+            self._group_headings[group.key] = heading
+            self._body_layout.addWidget(heading)
             for entry in group.entries:
                 self._add_clip(entry)
         self._body_layout.addStretch(1)
@@ -2027,9 +2229,12 @@ class VideoLibraryList(QScrollArea):
         row.hide_requested.connect(self.hide_requested)
         row.delete_unused_requested.connect(self.delete_unused_requested)
         row.delete_requested.connect(self.delete_requested)
+        row.archive_requested.connect(self.archive_requested)
         row.activated.connect(self._on_activated)
         row.clicked.connect(self._on_clicked)
         row.expand_toggled.connect(self._set_expanded)
+        row._archive_available = self._archiving
+        row.archive_btn.hide()
         self._body_layout.addWidget(row)
         self._rows[video_id] = row
 
@@ -2040,8 +2245,11 @@ class VideoLibraryList(QScrollArea):
             section.add_to_cart_requested.connect(self.section_add_to_cart)
             section.retrim_requested.connect(self.section_retrim)
             section.reassign_requested.connect(self.section_reassign)
+            section.campaign_requested.connect(self.section_campaign)
             section.delete_requested.connect(self.section_delete)
             section.open_transect_requested.connect(self.section_open_transect)
+            section.rename_requested.connect(self.section_rename)
+            section.set_server_connected(self._archiving)
             self._body_layout.addWidget(section)
             self._sections.setdefault(str(pass_.id), []).append(section)
             sections.append(section)
@@ -2049,7 +2257,9 @@ class VideoLibraryList(QScrollArea):
 
     def _set_expanded(self, video_id: str, expanded: bool) -> None:
         if expanded:
-            self._expanded.add(video_id)
+            self._expanded = {video_id}
+            for row_id, row in self._rows.items():
+                row.set_expanded(row_id == video_id)
         else:
             self._expanded.discard(video_id)
         self._apply_expansion()
@@ -2058,11 +2268,33 @@ class VideoLibraryList(QScrollArea):
         # it under the cursor.
         self._shape = self._shape_of(self._groups)
 
+    def _update_group_headings(self) -> None:
+        for group in self._groups:
+            complete = sum("complete" in job_filters(entry) for entry in group.entries)
+            expanded = self._group_expanded.get(group.key, complete != len(group.entries))
+            heading = self._group_headings[group.key]
+            heading.blockSignals(True)
+            heading.setChecked(expanded)
+            heading.blockSignals(False)
+            heading.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+            count = len(group.entries)
+            noun = "clip" if count == 1 else "clips"
+            heading.setText(f"{group.title}  ·  {count} {noun}  ·  {complete} complete")
+            heading.setToolTip("Collapse group" if expanded else "Expand group")
+
+    def _toggle_group(self, key: str, expanded: bool) -> None:
+        self._group_expanded[key] = expanded
+        self._update_group_headings()
+        self._apply_expansion()
+
     def _apply_expansion(self) -> None:
-        for video_id, sections in self._sections_by_video.items():
-            visible = video_id in self._expanded
-            for section in sections:
-                section.setVisible(visible)
+        for group in self._groups:
+            expanded = self._group_headings[group.key].isChecked()
+            for entry in group.entries:
+                video_id = str(entry.video.id)
+                self._rows[video_id].setVisible(expanded)
+                for section in self._sections_by_video.get(video_id, []):
+                    section.setVisible(expanded and video_id in self._expanded)
 
     def _on_activated(self, video_id: str) -> None:
         self.set_selected(video_id)
@@ -2094,7 +2326,7 @@ class VideoLibraryList(QScrollArea):
     def _range(self, anchor: str, video_id: str) -> set[str]:
         """The clips from ``anchor`` to ``video_id`` in the order they are listed.
 
-        Over the clips alone: a section row sits inside the range on screen and
+        Over the clips alone: a pass row sits inside the range on screen and
         is a level down from what is being picked, so it is not part of one.
         """
         order = [str(entry.video.id) for group in self._groups for entry in group.entries]
@@ -2111,7 +2343,7 @@ class VideoLibraryList(QScrollArea):
         """Drop picked clips that no longer have a row.
 
         Rows are destroyed and rebuilt whenever the list's shape changes, which
-        a background scan does every time it finds a clip or a section. A set
+        a background scan does every time it finds a clip or a pass. A set
         left holding ids nobody can see is a delete aimed at nothing.
         """
         self._selection &= set(self._rows)
@@ -2122,6 +2354,7 @@ class VideoLibraryList(QScrollArea):
         """Paint what is picked, and say so when the set of clips has moved."""
         for video_id, row in self._rows.items():
             row.set_selected(video_id in self._selection)
+            row.strip.set_selected_pass(self._selected_section)
         for pass_id, sections in self._sections.items():
             for section in sections:
                 section.set_selected(pass_id == self._selected_section)

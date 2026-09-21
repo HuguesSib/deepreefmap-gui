@@ -11,36 +11,55 @@ Download the build for your platform from the [releases page](https://github.com
 | macOS (Apple Silicon) | `deepreefmap-gui-macos-arm64-<version>.dmg` | |
 | Linux | `deepreefmap-gui-linux-x64-<version>` | `-cu130` for RTX 50-series, `-rocm` for AMD |
 
-macOS builds are unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway"; Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under Setup.
+macOS builds are unsigned: the first launch needs System Settings > Privacy & Security > "Open Anyway". Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under Setup.
 
-Four destinations, none a prerequisite for another. **Transects** are the lines you survey, with the cover and repeatability their repeat passes agree on. **Videos** is the footage itself, grouped by the day it was shot: every clip, what has been cut from it, and whether the file is still where you left it. **Cart** queues sections for the next session and runs them: add them from anywhere in the app, then Start processing checks the cart out as a session, and reruns land beside their originals in Browse. **Browse** is everything produced so far, grouped by session, transect or run. **Setup** covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
+Five destinations, none a prerequisite for another:
+
+- **Transects**: the lines you survey, with the cover and repeatability of their repeat passes.
+- **Videos**: the footage, grouped by the day it was shot: every clip, what has been cut from it, and whether the file is still there.
+- **Cart**: passes queued for the next session. Start processing checks the cart out as a session; reruns land beside their originals in Browse.
+- **Browse**: everything produced so far, grouped by session, transect or run.
+- **Setup**: whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models download there or import from a USB pack; the `coralscapes-*` models need a free Hugging Face account.
 
 ## Glossary
 
+Catalogue:
+
+- **Site**: a named place on a reef, with country and a map point. Transects belong to a site.
+- **Campaign**: one trip. A repeat visit is a new campaign.
+- **Transect**: a tape line at a site, with end points, tape length and depth. Optional on a pass.
+- **Survey event**: all passes of one transect in one campaign. Derived; nothing to create.
+- **Validated**: checked in the console. Later changes made here become proposals.
+- **Proposal**: a change made here to a row the console validated, deleted or edited meanwhile. The console accepts or dismisses it.
+
 Footage:
 
-- **Video (clip)**: a file off the camera, listed under Videos. Identity is its content hash, so a moved file is still the same clip. GoPro chapters of one recording are separate files, one swim.
-- **Section (pass)**: a cutout of a video, the unit everything else works on. Identity is `video + start/end time + direction`. One traversal of a transect, when there is one.
-- **Gravity**: the `GRAV` stream a GoPro records beside the footage, which the mapping backends use to stand a reconstruction upright. Read from the file's own index on import, so Videos says yes, no, or nothing at all where it could not be read.
-- **Transect**: a named tape line with GPS endpoints, tape length and depth. Optional on a section; without one the run is unscaled and skipped by the repeatability comparison.
+- **Video (clip)**: a file off the camera, identified by its content hash. Carries camera, rig position, mounting and a review verdict.
+- **Pass**: a cutout of a video, identified by `video + start/end time + direction`. One traversal of a transect on a day in a campaign.
+- **Gravity**: the `GRAV` stream a GoPro records beside the footage. Read on import; Videos shows yes, no or unread.
 
 Queueing:
 
-- **Cart**: the newest un-started session, filled from anywhere via Add to cart. The header's Cart button counts it.
-- **Checkout**: Start processing. Turns the cart into an order by placing a run for every queued section.
-- **Order**: a started session. Membership is closed; the only mid-run controls are pause, cancel, and Hold on a section the worker has not reached.
-- **Next session**: the cart assembled while an order runs, under its own divider on the Cart page. Startable once the order finishes.
-- **Held**: a section kept in its session but skipped when processing starts.
+- **Cart**: the newest un-started session, filled from anywhere via Add to cart.
+- **Checkout**: Start processing. Places a run for every queued pass.
+- **Order**: a started session. Membership is closed; mid-run controls are pause, cancel and Hold.
+- **Next session**: the cart assembled while an order runs. Startable once the order finishes.
+- **Held**: a pass kept in its session but skipped when processing starts.
 
 Results:
 
-- **Run**: one reconstruction of one section, in its own directory. A rerun is a second run of the same section; repeats are the reproducibility data.
-- **Attempt**: one run among several of the same section, numbered by its directory suffix (`__r02`, `__r03`, ...) and listed under the section node in Browse.
-- **Session**: the set of runs placed together, usually a dive or a day. A run records its session; a section only records where it was first catalogued.
+- **Run**: one reconstruction of one pass, in its own directory. Repeats are the reproducibility data.
+- **Attempt**: one run among several of the same pass, numbered by directory suffix (`__r02`, `__r03`, ...).
+- **Session**: the set of runs placed together, usually a dive or a day. Never leaves this laptop.
 
 ## Settings
 
-Runs are configured from a preset YAML, `deepreefmap_gui/resources/configs/survey_preset.yaml`. `segmentation_name` picks the segmentation model (`coralscapes-vit-{s,b,l}-dpt`, `segformer-b{2,5}`) and `mapping_name` the reconstruction backend (`loger_star` and `loger` need a GPU, `scsfmlearner` runs on CPU). Transect length and time trim come from the survey database, not the preset. To standardise several machines on one configuration, point them at a shared copy with `DEEPREEFMAP_SURVEY_PRESET`; the file's header comment covers the rest.
+Runs are configured from a preset YAML, `deepreefmap_gui/resources/configs/survey_preset.yaml`:
+
+- `segmentation_name`: the segmentation model (`coralscapes-vit-{s,b,l}-dpt`, `segformer-b{2,5}`).
+- `mapping_name`: the reconstruction backend (`loger_star` and `loger` need a GPU, `scsfmlearner` runs on CPU).
+- Transect length and time trim come from the survey database, not the preset.
+- `DEEPREEFMAP_SURVEY_PRESET` points several machines at one shared copy; the file's header comment covers the rest.
 
 ## Development
 

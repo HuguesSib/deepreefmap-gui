@@ -21,6 +21,7 @@ from deepreefmap_gui.survey.models.convert import (
     survey_manifest_block,
     to_row,
 )
+from deepreefmap_gui.survey.models.transect import mean_depth_m
 from deepreefmap_gui.survey.video_probe import NO, UNKNOWN, YES
 
 
@@ -102,11 +103,14 @@ def test_pass_duration_is_the_trimmed_window():
     assert make_pass(transect, video, begin_s=12.5, end_s=42.5).duration_s() == 30.0
 
 
-def test_batch_rejects_a_name_that_is_only_whitespace():
-    """Batches are addressed by name in the queue and in batch_out/<name>/."""
-    SurveyBatch(name=" Day 1 ")  # padding is fine, emptiness is not
-    with pytest.raises(ValueError):
-        SurveyBatch(name="   ")
+def test_a_session_is_labelled_by_when_it_began():
+    """A session is a local queue, so nobody names it; its start identifies it."""
+    assert SurveyBatch(created_at="2026-07-01T09:00").label == "2026-07-01 09:00:00"
+
+
+def test_a_session_with_an_unreadable_start_still_labels_itself():
+    """Rebuilt from a manifest, the stamp is whatever that file held."""
+    assert SurveyBatch(created_at="not a time").label == "not a time"
 
 
 def test_run_record_rejects_unknown_status():
@@ -119,10 +123,10 @@ def test_run_record_rejects_unknown_status():
 def test_row_round_trip_preserves_every_model():
     site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
     transect, video = make_transect(site_id=site.id), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(
         transect, video, batch_id=batch.id, campaign_id=campaign.id, direction="reverse",
-        quality="meh", upside_down=True,
+        quality="meh", surveyed_on="2026-07-01",
     )
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01__20260720-0900", batch_id=batch.id)
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
@@ -135,7 +139,7 @@ def test_row_round_trip_preserves_every_model():
 def test_document_round_trip():
     site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
     transect, video = make_transect(site_id=site.id), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(transect, video, batch_id=batch.id, campaign_id=campaign.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
@@ -171,17 +175,20 @@ def test_document_rejects_unknown_schema_version():
 
 def test_manifest_block_snapshots_pass_and_transect():
     transect, video = make_transect(), make_video()
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     pass_ = make_pass(transect, video, batch_id=batch.id, direction="reverse")
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
     block = survey_manifest_block(run, pass_, transect, batch)
     assert block["run_id"] == str(run.id)
-    assert block["batch_name"] == "Day 1"
+    assert block["batch_created_at"] == "2026-07-01T09:00"
     assert block["pass"] == {
         "id": str(pass_.id),
         "direction": "reverse",
         "begin_s": 0.0,
         "end_s": 60.0,
+        "surveyed_on": None,
+        "quality": None,
+        "campaign": None,
     }
     assert block["transect"]["name"] == "T1"
     assert block["transect"]["start_lat"] == -17.5
@@ -234,6 +241,7 @@ def test_every_video_field_is_covered_by_a_carry_over_group():
         + VideoAsset.CARRIED_FIELDS
         + VideoAsset.TRISTATE_FIELDS
         + VideoAsset.SYNC_FIELDS
+        + VideoAsset.REVIEW_FIELDS
     )
     assert len(set(grouped)) == len(grouped), "a field is named in two groups"
     assert set(grouped) == {f.name for f in fields(VideoAsset)}
@@ -304,3 +312,16 @@ def test_direction_reads_the_same_wherever_it_is_shown() -> None:
         assert direction_arrow(d) and direction_text(d)
     for absent in ("", None, "sideways", "  "):
         assert direction_arrow(absent) == "" and direction_text(absent) == ""
+
+
+def test_transect_rejects_a_negative_end_depth():
+    with pytest.raises(ValueError):
+        make_transect(start_depth_m=-1.0)
+    with pytest.raises(ValueError):
+        make_transect(end_depth_m=-1.0)
+
+
+def test_mean_depth_needs_both_ends():
+    assert mean_depth_m(5.0, 11.0) == 8.0  # (5 + 11) / 2
+    assert mean_depth_m(5.0, None) is None
+    assert mean_depth_m(None, 11.0) is None

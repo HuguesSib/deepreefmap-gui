@@ -319,19 +319,23 @@ def write_scene_file(
         run_dir=run_dir,
         progress_cb=progress_cb,
     )
-    _write_web_cloud_or_warn(run_dir, fci, frame_order, classes_config, reference_cloud)
+    _write_web_cloud_or_warn(
+        run_dir, fci, frame_order, classes_config, reference_cloud, mapping_result
+    )
     prune_other_scene_files(run_dir, keep=out)
     return out
 
 
-def _write_web_cloud_or_warn(run_dir, fci, frame_order, classes_config, cloud) -> None:
+def _write_web_cloud_or_warn(
+    run_dir, fci, frame_order, classes_config, cloud, mapping_result
+) -> None:
     """Write the browser export beside the scene, never failing the run for it.
 
     Reuses the index the scene write just built, so the cost is serialisation.
     The archive walks the run directory, so once written the file uploads like
     any other output.
     """
-    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME, write_web_cloud
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME, camera_track, write_web_cloud
 
     try:
         write_web_cloud(
@@ -341,6 +345,7 @@ def _write_web_cloud_or_warn(run_dir, fci, frame_order, classes_config, cloud) -
             classes_config.id_to_name,
             classes_config.id_to_color,
             has_confidence=getattr(cloud, "confidence", None) is not None,
+            cameras=camera_track(mapping_result, frame_order),
         )
     except Exception:
         logger.warning("Could not write the web cloud for %s", run_dir, exc_info=True)

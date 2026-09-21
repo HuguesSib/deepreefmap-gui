@@ -65,9 +65,7 @@ def test_locked_settings_say_who_set_them(window, tmp_path, monkeypatch):
 def test_a_deviation_is_named_on_the_run_step(window):
     window._batch_size_spin.setValue(1)
     window._recompute_survey_start()
-    assert "Changed on this machine: frames processed at once." in (
-        window._survey_preset_label.text()
-    )
+    assert "Changed on this machine: frames processed at once." in (window._survey_preset_label.text())
     assert window._survey_restore_btn.isEnabled()
 
 
@@ -79,9 +77,7 @@ def test_restore_is_offered_only_when_something_deviates(window):
     assert window._survey_restore_btn.isEnabled()
 
 
-def test_locked_preset_puts_back_an_edit_it_does_not_allow(
-    window, tmp_path, monkeypatch, machine_preset_path
-):
+def test_locked_preset_puts_back_an_edit_it_does_not_allow(window, tmp_path, monkeypatch, machine_preset_path):
     """Expected behaviour: an authoritative configuration the next run would
     silently ignore is not authoritative, so the form goes back to standard."""
     publish_org_preset(window, tmp_path, monkeypatch, grid_bins=1500)
@@ -91,19 +87,15 @@ def test_locked_preset_puts_back_an_edit_it_does_not_allow(
     assert window._grid_bins_spin.value() == 1500
     assert window._survey_preset["grid_bins"] == 1500
     assert not machine_preset_path.exists()
-    assert "Reef Watch sets map detail" in window._status_label.text()
+    assert "map detail went back to standard: set by Reef Watch" in window._status_label.text()
 
 
-def test_locked_preset_still_allows_a_machine_setting(
-    window, tmp_path, monkeypatch, machine_preset_path
-):
+def test_locked_preset_still_allows_a_machine_setting(window, tmp_path, monkeypatch, machine_preset_path):
     publish_org_preset(window, tmp_path, monkeypatch)
     window._batch_size_spin.setValue(1)
     window._adopt_form_as_preset()
 
-    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {
-        "preprocess_batch_size": 1
-    }
+    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {"preprocess_batch_size": 1}
     assert "Saved for this machine: frames processed at once." in window._status_label.text()
 
 
@@ -112,9 +104,7 @@ def test_admin_preset_drives_the_run(window, tmp_path, monkeypatch):
     assert window._collect_run_settings()["fps"] == 2
 
 
-def test_malformed_admin_preset_blocks_the_gate_rather_than_the_app(
-    window, tmp_path, monkeypatch
-):
+def test_malformed_admin_preset_blocks_the_gate_rather_than_the_app(window, tmp_path, monkeypatch):
     """A field laptop must still open, and say why it cannot process."""
     admin = tmp_path / "org_preset.yaml"
     admin.write_text("not: [valid yaml")
@@ -136,10 +126,12 @@ def test_settings_history_lists_what_past_runs_used(window, out_root, monkeypatc
         run_dir = out_root / dir_name
         run_dir.mkdir()
         (run_dir / "run_manifest.json").write_text(
-            json.dumps({
-                "name": dir_name,
-                "survey": {"provenance": {"config": manifest_config_block(org, deviations)}},
-            })
+            json.dumps(
+                {
+                    "name": dir_name,
+                    "survey": {"provenance": {"config": manifest_config_block(org, deviations)}},
+                }
+            )
         )
 
     shown = captured_audit_dialogs(monkeypatch)

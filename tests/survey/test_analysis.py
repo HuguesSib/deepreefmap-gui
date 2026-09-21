@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from _factories import VIDEO_HASH, make_transect, make_video
+from _factories import VIDEO_HASH, as_pushed, make_transect, make_video
 from deepreefmap.config.classes import load_classes
 
 from deepreefmap_gui.survey.analysis import (
@@ -361,6 +361,7 @@ def test_a_retired_line_keeps_its_results_in_the_long_format(store, tmp_path, cl
     seed_run_counts(store, out_root, transect, "run_a", [90.0, 10.0], 100.0,
                     classes_config=classes_config)
     retired_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="seconds")
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": retired_at,

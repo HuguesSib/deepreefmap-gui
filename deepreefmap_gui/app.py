@@ -153,6 +153,7 @@ class DeepReefMapWindow(
     _sig_sync_progress = Signal(str)
     _sig_sync_done = Signal(object, object)
     _sig_sync_badge = Signal(object)
+    _sig_server_reach = Signal(object)
     # The archive queue, on the same worker-and-signal shape as the sync. One
     # object rather than a pair: the slot tells a report from a Failure itself.
     _sig_archive_progress = Signal(str)
@@ -198,6 +199,7 @@ class DeepReefMapWindow(
         self._sig_sync_progress.connect(self._on_sync_progress)
         self._sig_sync_done.connect(self._on_sync_done)
         self._sig_sync_badge.connect(self._apply_sync_badge)
+        self._sig_server_reach.connect(self._apply_server_reachability)
         self._sig_archive_progress.connect(self._on_archive_progress)
         self._sig_archive_bytes.connect(self._on_archive_bytes)
         self._sig_archive_plan.connect(self._on_archive_plan_ready)
@@ -357,7 +359,7 @@ class DeepReefMapWindow(
 
         bindings = (
             ("Show or hide the log", "Ctrl+L", self._log_toggle_btn.click),
-            ("Go to Browse", "Ctrl+B", self._activate_browse),
+            ("Go to Results", "Ctrl+B", self._activate_browse),
             ("Run settings", "Ctrl+,", self._activate_settings),
             ("Setup", "F1", self._activate_machine),
             ("Quit", QKeySequence.StandardKey.Quit, self.close),
@@ -564,6 +566,10 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     os.environ.setdefault("QT_OPENGL", "desktop")
+    # Read by torch at import: an op the Apple GPU backend lacks then runs on the
+    # CPU instead of failing the run. Same default as deepreefmap.device sets, but
+    # this process imports torch on a worker long after it resolved nothing.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     prefer_portal_file_dialogs()
     fmt = QSurfaceFormat()
     fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
@@ -584,6 +590,9 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
     _install_crash_dialog()
+    from deepreefmap_gui.camera.profiles import bind_profiles_dir
+
+    bind_profiles_dir()
     classes_config = load_classes(classes_path) if classes_path is not None else load_classes()
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()

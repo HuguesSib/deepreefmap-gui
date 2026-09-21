@@ -18,6 +18,7 @@ from typing import cast
 from PySide6.QtCore import (
     QFileSystemWatcher,
     QSettings,
+    QSignalBlocker,
     QSize,
     QStandardPaths,
     Qt,
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -83,6 +85,7 @@ from deepreefmap_gui.core.widgets import (
     EmptyState,
     lent_panel_home,
     muted_label,
+    unpad,
     utility_button_qss,
     warning_banner_qss,
 )
@@ -146,9 +149,7 @@ class CapacityRow(QWidget):
         layout.setSpacing(SPACE_XS)
 
         self.title = QLabel()
-        self.title.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: {FONT_SM}; font-weight: {WEIGHT_BOLD};"
-        )
+        self.title.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_SM}; font-weight: {WEIGHT_BOLD};")
         layout.addWidget(self.title)
 
         self.bar = MeterBar()
@@ -189,9 +190,7 @@ class CapacityRow(QWidget):
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
         self.title.setText(resource.label)
-        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK, "none": TEXT_MUTED}[
-            resource.level
-        ]
+        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK, "none": TEXT_MUTED}[resource.level]
         draw = {
             "ok": check_icon,
             "warn": warning_icon,
@@ -200,8 +199,7 @@ class CapacityRow(QWidget):
         }[resource.level]
         self.icon.setPixmap(icon_pixmap(draw(ICON_SM), ICON_SM, self.devicePixelRatio()))
         self.message.setStyleSheet(
-            f"color: {TEXT_MUTED if resource.level in ('ok', 'none') else colour}; "
-            f"font-size: {FONT_SM};"
+            f"color: {TEXT_MUTED if resource.level in ('ok', 'none') else colour}; font-size: {FONT_SM};"
         )
         self.message.setText(resource.message)
 
@@ -236,23 +234,20 @@ class CapacityRow(QWidget):
             parts.append((colour, "▸", "Over by", over))
         self.legend.setText(
             "&nbsp;&nbsp;&nbsp;".join(
-                f'<span style="color:{swatch};">{mark}</span> {label} '
-                f"{format_bytes(value)}"
+                f'<span style="color:{swatch};">{mark}</span> {label} {format_bytes(value)}'
                 for swatch, mark, label, value in parts
             )
         )
-        self.bar.setToolTip(
-            "\n".join(f"{label}: {format_bytes(value)}" for _, _, label, value in parts)
-        )
+        self.bar.setToolTip("\n".join(f"{label}: {format_bytes(value)}" for _, _, label, value in parts))
 
 
 class FormPanelMixin(MixinBase):
     """DeepReefMapWindow methods that build and drive the run form and the status bars."""
 
     def _build_form_widgets(self) -> None:
-        from deepreefmap.camera.intrinsics import available_profile_names
         from deepreefmap.mapping.registry import list_mapping_backends
 
+        from deepreefmap_gui.camera.profiles import available_profile_names
         from deepreefmap_gui.models.cache import segmentation_model_names
 
         profiles = available_profile_names() or ["gopro_hero_10"]
@@ -373,9 +368,7 @@ class FormPanelMixin(MixinBase):
         self._warnings_label_running = QLabel("")
         self._warnings_label_running.setWordWrap(True)
         self._warnings_label_running.setTextFormat(Qt.TextFormat.RichText)
-        self._warnings_label_running.setStyleSheet(
-            warning_banner_qss()
-        )
+        self._warnings_label_running.setStyleSheet(warning_banner_qss())
         self._warnings_label_running.setVisible(False)
         setup_layout.addWidget(self._warnings_label_running)
 
@@ -394,8 +387,38 @@ class FormPanelMixin(MixinBase):
         ig.addWidget(QLabel("Camera profile"))
         self._profile_combo = QComboBox()
         self._profile_combo.addItems(profiles)
-        ig.addWidget(self._profile_combo)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self._profile_combo, 1)
+        # A camera the bundled profiles do not cover is calibrated from one of
+        # its own clips, here, and lands in this list.
+        self._calibrate_btn = QPushButton("Calibrate…")
+        self._calibrate_btn.setProperty("quiet", "true")
+        self._calibrate_btn.setToolTip("Calibrate a new camera profile from a clip shot on that camera.")
+        self._calibrate_btn.clicked.connect(self._on_calibrate_camera)
+        profile_row.addWidget(self._calibrate_btn)
+        ig.addLayout(profile_row)
         setup_layout.addWidget(input_group)
+
+    def _on_calibrate_camera(self) -> None:
+        from deepreefmap_gui.camera.calibration_dialog import CalibrationDialog
+
+        dialog = CalibrationDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_name:
+            self._reload_camera_profiles(select=dialog.saved_name)
+
+    def _reload_camera_profiles(self, select: str | None = None) -> None:
+        """Re-read the profiles on disk into the combo, keeping the selection."""
+        from deepreefmap_gui.camera.profiles import available_profile_names
+
+        wanted = select or self._profile_combo.currentText()
+        profiles = available_profile_names() or ["gopro_hero_10"]
+        with QSignalBlocker(self._profile_combo):
+            self._profile_combo.clear()
+            self._profile_combo.addItems(profiles)
+            index = self._profile_combo.findText(wanted)
+            self._profile_combo.setCurrentIndex(max(index, 0))
+        if index < 0:
+            self._status_label.setText(f"Camera profile {wanted} is no longer available.")
 
     def _build_capacity_readout(self, ig: QVBoxLayout) -> None:
         """How much of the machine the longest queued pass would use.
@@ -490,9 +513,7 @@ class FormPanelMixin(MixinBase):
         self._fps_spin.setValue(5)
         self._fps_spin.setFixedWidth(80)
         fps_row.addWidget(self._fps_spin)
-        fps_row.addWidget(
-            muted_label("Frames read from each video, per second of footage."), 1
-        )
+        fps_row.addWidget(muted_label("Frames read from each video, per second of footage."), 1)
         mg.addLayout(fps_row)
 
         setup_layout.addWidget(models_group)
@@ -522,6 +543,7 @@ class FormPanelMixin(MixinBase):
 
         root_open_btn = QPushButton()
         root_open_btn.setIcon(arrow_right_icon(18))
+        unpad(root_open_btn)
         root_open_btn.setFixedSize(26, 24)
         root_open_btn.setToolTip("Open output root in file manager")
         root_open_btn.setAccessibleName("Open output root in file manager")
@@ -538,6 +560,7 @@ class FormPanelMixin(MixinBase):
         root_browse_btn = QPushButton()
         root_browse_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         root_browse_btn.setIconSize(QSize(18, 18))
+        unpad(root_browse_btn)
         root_browse_btn.setFixedSize(28, 28)
         root_browse_btn.setToolTip("Browse for output root folder…")
         root_browse_btn.setAccessibleName("Browse for output root folder")
@@ -546,6 +569,7 @@ class FormPanelMixin(MixinBase):
         root_default_btn = QPushButton()
         root_default_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         root_default_btn.setIconSize(QSize(18, 18))
+        unpad(root_default_btn)
         root_default_btn.setFixedSize(28, 28)
         root_default_btn.setToolTip("Reset to <Documents>/DeepReefMap")
         root_default_btn.setAccessibleName("Reset the output root to its default")
@@ -638,17 +662,13 @@ class FormPanelMixin(MixinBase):
         res_row.addLayout(h_col, 1)
         adv_layout.addLayout(res_row)
 
-        self._dpt_resolution_warning = QLabel(
-            "DPT models have no internal resize, so non-native resolution may reduce accuracy."
-        )
+        self._dpt_resolution_warning = QLabel("Non-native resolution may reduce accuracy with DPT models.")
         self._dpt_resolution_warning.setWordWrap(True)
         self._dpt_resolution_warning.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM};")
         self._dpt_resolution_warning.setVisible(False)
         adv_layout.addWidget(self._dpt_resolution_warning)
 
-        self._resolution_preset_combo.currentTextChanged.connect(
-            self._on_resolution_preset_changed
-        )
+        self._resolution_preset_combo.currentTextChanged.connect(self._on_resolution_preset_changed)
         self._proc_width_spin.valueChanged.connect(self._on_processing_settings_changed)
         self._proc_height_spin.valueChanged.connect(self._on_processing_settings_changed)
 
@@ -657,9 +677,7 @@ class FormPanelMixin(MixinBase):
         self._batch_size_spin = QSpinBox()
         self._batch_size_spin.setRange(1, 16)
         self._batch_size_spin.setValue(4)
-        self._batch_size_spin.setToolTip(
-            "Frames segmented per GPU batch. Lower values use less VRAM."
-        )
+        self._batch_size_spin.setToolTip("Frames segmented per GPU batch. Lower values use less VRAM.")
         self._batch_size_spin.valueChanged.connect(self._on_processing_settings_changed)
         adv_layout.addWidget(self._batch_size_spin)
         self._vram_auto_label = QLabel()
@@ -738,6 +756,7 @@ class FormPanelMixin(MixinBase):
         scs_ckpt_btn = QPushButton()
         scs_ckpt_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         scs_ckpt_btn.setIconSize(QSize(18, 18))
+        unpad(scs_ckpt_btn)
         scs_ckpt_btn.setFixedSize(28, 28)
         scs_ckpt_btn.setToolTip("Browse for a SCSfMLearner .pt checkpoint…")
         scs_ckpt_btn.setAccessibleName("Browse for a SCSfMLearner checkpoint")
@@ -774,6 +793,7 @@ class FormPanelMixin(MixinBase):
         loger_ckpt_btn = QPushButton()
         loger_ckpt_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         loger_ckpt_btn.setIconSize(QSize(18, 18))
+        unpad(loger_ckpt_btn)
         loger_ckpt_btn.setFixedSize(28, 28)
         loger_ckpt_btn.setToolTip("Browse for a LoGeR .pt checkpoint…")
         loger_ckpt_btn.setAccessibleName("Browse for a LoGeR checkpoint")
@@ -803,9 +823,7 @@ class FormPanelMixin(MixinBase):
         self._warnings_label = QLabel("")
         self._warnings_label.setWordWrap(True)
         self._warnings_label.setTextFormat(Qt.TextFormat.RichText)
-        self._warnings_label.setStyleSheet(
-            warning_banner_qss()
-        )
+        self._warnings_label.setStyleSheet(warning_banner_qss())
         self._warnings_label.setVisible(False)
         self._run_warnings: list[str] = []
         viewer_layout.addWidget(self._warnings_label)
@@ -851,10 +869,7 @@ class FormPanelMixin(MixinBase):
         self._pause_btn = QPushButton()
         self._pause_btn.setProperty("pad", "none")
         self._pause_btn.setIcon(pause_icon(_TRANSPORT_ICON))
-        self._pause_btn.setToolTip(
-            "Pause at the next safe checkpoint. Long mapping passes may take "
-            "time to respond."
-        )
+        self._pause_btn.setToolTip("Pause at the next safe checkpoint. Long mapping passes may take time to respond.")
         self._pause_btn.setAccessibleName("Pause the reconstruction")
         self._pause_btn.setCheckable(True)
         self._pause_btn.setFixedSize(_TRANSPORT_SIZE, _TRANSPORT_SIZE)
@@ -967,13 +982,10 @@ class FormPanelMixin(MixinBase):
         res_layout.addLayout(exports_grid)
         viewer_layout.addWidget(self._results_group)
 
-        # The group above is hidden until a run loads, which left this tab a
-        # blank rectangle -- the one panel in the app that said nothing at all
-        # about why it was empty.
+        # The group above is hidden until a run loads.
         self._results_empty = EmptyState(
             "No run loaded",
-            "Start a run, or open a finished one from Browse, to see its ortho, "
-            "benthic cover and exports here.",
+            "Start a run, or open a finished one from Results.",
         )
         viewer_layout.addWidget(self._results_empty, 1)
         viewer_layout.addStretch()
@@ -1015,15 +1027,11 @@ class FormPanelMixin(MixinBase):
         open_lib_btn.clicked.connect(self._open_model_library)
         lib_row.addWidget(open_lib_btn)
         self._export_models_btn = QPushButton("Export…")
-        self._export_models_btn.setToolTip(
-            "Copy downloaded models to a folder or USB drive as a portable pack"
-        )
+        self._export_models_btn.setToolTip("Copy downloaded models to a folder or USB drive as a portable pack")
         self._export_models_btn.clicked.connect(self._on_export_models)
         lib_row.addWidget(self._export_models_btn)
         self._import_pack_btn = QPushButton("Import…")
-        self._import_pack_btn.setToolTip(
-            "Install models from a pack folder or USB drive (no internet needed)"
-        )
+        self._import_pack_btn.setToolTip("Install models from a pack folder or USB drive (no internet needed)")
         self._import_pack_btn.clicked.connect(self._on_import_model_pack)
         lib_row.addWidget(self._import_pack_btn)
         self._models_layout.addLayout(lib_row)
@@ -1040,10 +1048,7 @@ class FormPanelMixin(MixinBase):
         self._models_layout.addWidget(self._models_grid_host)
 
         self._discover_btn = QPushButton("Check Hugging Face for new models")
-        self._discover_btn.setToolTip(
-            "Query the EPFL-ECEO organisation on Hugging Face for newly published "
-            "models. Requires an internet connection."
-        )
+        self._discover_btn.setToolTip("Query Hugging Face for newly published EPFL-ECEO models. Needs internet.")
         self._discover_btn.clicked.connect(self._on_discover_clicked)
         self._models_layout.addWidget(self._discover_btn)
 
@@ -1113,9 +1118,7 @@ class FormPanelMixin(MixinBase):
         # holds the GIL through an import as surely as this one would. Off the
         # window's own build, it costs the window nothing. Receiver-bound so a
         # window closed before it fires takes the callback with it.
-        QTimer.singleShot(
-            0, self, lambda: threading.Thread(target=self._refresh_model_status, daemon=True).start()
-        )
+        QTimer.singleShot(0, self, lambda: threading.Thread(target=self._refresh_model_status, daemon=True).start())
 
     def _build_updates_section(self, updates_layout: QVBoxLayout) -> None:
         self._update_version_label = QLabel(f"Version: <b>{current_version()}</b>")
@@ -1169,10 +1172,8 @@ class FormPanelMixin(MixinBase):
         if pyapp_binary_path() is None:
             return
         layout.addWidget(QLabel("<b>Installed versions</b>"))
-        caption = QLabel(
-            "Each version keeps its own environment. Sizes are what deleting frees; "
-            "most of an environment is shared with the package cache."
-        )
+        caption = QLabel("Sizes are what deleting frees.")
+        caption.setToolTip("Each version keeps its own environment; most of it is shared with the package cache.")
         caption.setWordWrap(True)
         caption.setStyleSheet(f"color: {TEXT_MUTED};")
         layout.addWidget(caption)
@@ -1188,9 +1189,7 @@ class FormPanelMixin(MixinBase):
         self._model_cache_label.setStyleSheet(f"color: {TEXT_MUTED};")
         layout.addWidget(self._model_cache_label)
         self._manage_models_btn = QPushButton("Manage models")
-        self._manage_models_btn.clicked.connect(
-            lambda: self._set_machine_view("models")
-        )
+        self._manage_models_btn.clicked.connect(lambda: self._set_machine_view("models"))
         layout.addWidget(self._manage_models_btn)
 
         self._refresh_envs()
@@ -1205,8 +1204,7 @@ class FormPanelMixin(MixinBase):
         self._bottom_bar = bar
         bar.setObjectName("bottomBar")
         bar.setStyleSheet(
-            f"QWidget {{ background-color: {CARD_BG}; }}"
-            f" QWidget#bottomBar {{ border-top: 1px solid {BORDER}; }}"
+            f"QWidget {{ background-color: {CARD_BG}; }} QWidget#bottomBar {{ border-top: 1px solid {BORDER}; }}"
         )
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1345,18 +1343,12 @@ class FormPanelMixin(MixinBase):
         # before anything has been written to it: it is the drive whose free
         # space decides whether the next run can start.
         outputs: list[tuple[str, int | None]] = [(str(root), 0)]
-        outputs += [
-            (str(root / name), size) for name, size in getattr(self, "_run_size_cache", {}).items()
-        ]
+        outputs += [(str(root / name), size) for name, size in getattr(self, "_run_size_cache", {}).items()]
 
         self._storage_scan_running = True
-        threading.Thread(
-            target=self._scan_storage, args=(videos, outputs), name="storage-scan", daemon=True
-        ).start()
+        threading.Thread(target=self._scan_storage, args=(videos, outputs), name="storage-scan", daemon=True).start()
 
-    def _scan_storage(
-        self, videos: list[tuple[str, int | None]], outputs: list[tuple[str, int | None]]
-    ) -> None:
+    def _scan_storage(self, videos: list[tuple[str, int | None]], outputs: list[tuple[str, int | None]]) -> None:
         try:
             # Only clips that are actually there: a file on an unplugged drive
             # takes up none of the space being reported.
@@ -1423,6 +1415,7 @@ class FormPanelMixin(MixinBase):
                 total = sum(sizes) or 800
                 bottom = max(200, total // 4)
                 self._central_vsplitter.setSizes([total - bottom, bottom])
+
     def _on_advanced_toggled(self, checked: bool) -> None:
         self._advanced_panel.setVisible(checked)
 
@@ -1646,14 +1639,16 @@ class FormPanelMixin(MixinBase):
         verdict = fit.verdict
         # Says what was modelled and from what. "Longest pass" alone read as a
         # statistic about the batch rather than as the input to these figures.
+        from deepreefmap_gui.profiling.system_probe import gpu_hint
+
+        # Names the device too: a Mac reads its unified memory here, and the
+        # verdict is against that pool rather than against a card it lacks.
         self._capacity_caption.setText(
-            f"Modelled on a pass of <b>{format_duration(fit.seconds)}</b> at "
-            f"<b>{fit.fps} FPS</b>, the longest queued."
+            f"Modelled on a pass of <b>{format_duration(fit.seconds)}</b> at <b>{fit.fps} FPS</b>, "
+            f"the longest queued, on <b>{gpu_hint().name}</b>."
         )
         for resource in verdict.resources:
-            self._capacity_rows[resource.key].set_resource(
-                resource, held_colour=SURFACE_HI
-            )
+            self._capacity_rows[resource.key].set_resource(resource, held_colour=SURFACE_HI)
         # The ceiling is a property of the machine and the settings, not of the
         # queued pass: it is the length at which the tightest stage would fill
         # the pool. A fixed cost has no such length -- it does not fit at one
@@ -1673,8 +1668,7 @@ class FormPanelMixin(MixinBase):
         colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
         self._capacity_advice.setStyleSheet(f"color: {colour}; font-size: {FONT_SM};")
         self._capacity_advice.setText(
-            f"<b>{fit.headline}.</b> {fit.advice} "
-            f'<a href="#system" style="color:{colour};">Setup</a>'
+            f'<b>{fit.headline}.</b> {fit.advice} <a href="#system" style="color:{colour};">Setup</a>'
         )
         self._capacity_advice.setVisible(True)
 
@@ -1716,8 +1710,7 @@ class FormPanelMixin(MixinBase):
             self._gated_warning.setVisible(False)
             return
         links = " ".join(
-            f'<a href="https://huggingface.co/{repo}" style="color:{WARN_TEXT}">{repo}</a>'
-            for repo in missing_repos
+            f'<a href="https://huggingface.co/{repo}" style="color:{WARN_TEXT}">{repo}</a>' for repo in missing_repos
         )
         logged_in = self._hf_auth_user is not None
         can_gated = getattr(self, "_can_read_gated", True)
@@ -1779,11 +1772,8 @@ class FormPanelMixin(MixinBase):
         if d and Path(d).exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
 
-
     def _browse_output_root(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self, "Select output root directory", self._out_root_input.text()
-        )
+        path = QFileDialog.getExistingDirectory(self, "Select output root directory", self._out_root_input.text())
         if path:
             self._out_root_input.setText(path)
 

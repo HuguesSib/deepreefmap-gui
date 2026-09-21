@@ -1,6 +1,6 @@
-"""What one section of a clip is, and which sessions have run it.
+"""What one pass of a clip is, and which sessions have run it.
 
-A section outlives any one attempt at it: the same cutout can be processed in
+A pass outlives any one attempt at it: the same cutout can be processed in
 several sessions, and comparing those repeats is the point of processing it more
 than once. The clip pane says what footage exists; this says what has been asked
 of one piece of it.
@@ -8,69 +8,86 @@ of one piece of it.
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable
+from datetime import datetime
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QMouseEvent, QResizeEvent
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QColor, QMouseEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QSizePolicy,
+    QPushButton,
     QToolButton,
     QWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.icons import (
+    DEFAULT_INK,
     ICON_SM,
     check_icon,
     icon_pixmap,
     status_dot_icon,
     upload_icon,
 )
-from deepreefmap_gui.core.theme import DISABLED_FG, ERROR, SPACE_SM, TEXT_MUTED, WARNING
+from deepreefmap_gui.core.theme import (
+    DISABLED_FG,
+    ERROR,
+    SPACE_SM,
+    SPACE_XS,
+    TEXT_MUTED,
+    WARNING,
+)
 from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
+    ElidingLabel,
     direction_html,
     fact_link,
     muted_label,
 )
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.runs.run_detail import DetailCard
+from deepreefmap_gui.runs.video_rows import icon_button, set_button_dead
+from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
 # The href behind the transect-and-direction fact. Both are set in one dialog,
 # so the fact that shows them is the way into it.
 _FILING_LINK = "filing"
+_CAMPAIGN_LINK = "campaign"
 
 _NO_SESSION = "No session recorded"
 
 ARCHIVE_RUN = "Archive this run's outputs"
-ARCHIVE_RUN_TOOLTIP = (
-    "Send this run's outputs to the registry's archive. "
-    "The clip's own footage is archived from the clip card."
-)
+ARCHIVE_RUN_TOOLTIP = "Send this run's outputs to the registry's archive."
 # Why the icon is dead on a run that never finished. The other reasons a run
 # cannot be archived (no database row, outputs cleared away) belong to the run
 # card in Browse, which can see them; a row here always has its record.
 ARCHIVE_UNFINISHED = "Only a finished run's outputs can be archived."
+ARCHIVING = "Archiving…"
 
 # What the registry holds of one run, as its icon says it.
 _ARCHIVE_FACES = {
-    "archived": "Outputs on server. Archiving again verifies them and sends nothing new.",
+    "archived": "Outputs on server. Press to verify them again.",
     "partial": "Some outputs are on the server. Press to send the rest.",
     "pending": "Offered to the registry, not verified yet. Press to resume.",
+    "uploading": ARCHIVING,
     "failed": "The registry could not verify an upload. Press to archive again.",
 }
 
 
 def section_window(pass_: TransectPass) -> str:
-    """The section's own name: where it starts and stops in the clip."""
+    """The pass's own name: where it starts and stops in the clip."""
     end = pass_.end_s
     tail = "end" if end is None else f"{int(end) // 60}:{int(end) % 60:02d}"
-    return f"{int(pass_.begin_s) // 60}:{int(pass_.begin_s) % 60:02d}–{tail}"
+    return f"{int(pass_.begin_s) // 60}:{int(pass_.begin_s) % 60:02d}-{tail}"
 
 
 def _length(pass_: TransectPass) -> str:
@@ -81,13 +98,40 @@ def _length(pass_: TransectPass) -> str:
 
 
 def _short_date(stamp: str | None) -> str:
-    return (stamp or "").split("T")[0] or "unknown"
+    """The day a run was made, in local time.
+
+    Local rather than the stored UTC, so it agrees with the session label it is
+    compared against; the two disagreed either side of midnight UTC and the row
+    then printed the same day twice.
+    """
+    if not stamp:
+        return "unknown"
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        return stamp.split("T")[0] or "unknown"
+
+
+# Every outcome a run can end in, so the column is measured against the widest
+# word it will ever hold rather than against the row in front of it.
+_OUTCOMES = ("succeeded", "failed", "unfinished", "running", "queued")
+
+
+def _outcome_width(label: QLabel) -> int:
+    """Wide enough for whichever outcome a run can end in, so the column holds still."""
+    metrics = label.fontMetrics()
+    return max(metrics.horizontalAdvance(statuses.status_label(s)) for s in _OUTCOMES) + SPACE_XS
+
+
+def _date_width(label: QLabel) -> int:
+    """One date's width, from a specimen rather than from the row in front."""
+    return label.fontMetrics().horizontalAdvance("2026-08-25") + SPACE_XS
 
 
 class RunRow(QWidget):
-    """One session's attempt at this section, with its own archive control.
+    """One session's attempt at this pass, with its own archive control.
 
-    The trailing button follows the section rows' icon-button convention (cart,
+    The trailing button follows the pass rows' icon-button convention (cart,
     trim, delete): one glyph wearing the probe's answer, with the words in the
     tooltip. A run that cannot be archived keeps the glyph in the disabled ink
     and says why in the tooltip rather than hiding it, and the press does
@@ -99,12 +143,11 @@ class RunRow(QWidget):
     activated = Signal(str)
     archive_requested = Signal(object)
 
-    def __init__(
-        self, run: RunRecord, text: str, tooltip: str, parent: QWidget | None = None
-    ) -> None:
+    def __init__(self, run: RunRecord, session: str, tooltip: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.run = run
-        self._full = text
+        self._session = session
+        self._date = _short_date(run.created_at)
         row = QHBoxLayout(self)
         row.setContentsMargins(SPACE_SM, 0, SPACE_SM, 0)
         row.setSpacing(SPACE_SM)
@@ -112,42 +155,71 @@ class RunRow(QWidget):
         dot.setFixedWidth(ICON_SM)
         dot.setPixmap(icon_pixmap(status_dot_icon(STATUS_COLORS.get(run.status, TEXT_MUTED))))
         row.addWidget(dot)
+        # Three fields at their own positions rather than one joined string: the
+        # outcome and the date used to start wherever the words before them
+        # ended, so no two rows agreed and the list could not be read down.
         # Ignored rather than Preferred: a session is named by whoever ran it,
         # and one long name made the row wider than the pane it sits in, which
         # carried the archive button off the right-hand edge of a list that has
         # no horizontal scrollbar to go looking for it with.
-        self.label = QLabel()
-        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.label = ElidingLabel(session)
         row.addWidget(self.label, 1)
+
+        self.outcome = QLabel(statuses.status_label(run.status))
+        self.outcome.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.outcome.setFixedWidth(_outcome_width(self.outcome))
+        self.outcome.setStyleSheet(f"color: {STATUS_COLORS.get(run.status, TEXT_MUTED)};")
+        row.addWidget(self.outcome)
+
+        # A session is identified by when it began, so its label already opens
+        # with the day it ran; printing that again beside it said the same thing
+        # twice. startswith, not equality: the label carries a time as well.
+        self.date = QLabel("" if session.startswith(self._date) else self._date)
+        self.date.setFont(tabular(self.date.font()))
+        self.date.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Nothing reserved when there is nothing to show: within one list every
+        # session is named the same way, so the column is either there for all
+        # of them or for none, and an empty one only costs the name its width.
+        self.date.setFixedWidth(_date_width(self.date) if self.date.text() else 0)
+        self.date.setStyleSheet(f"color: {TEXT_MUTED};")
+        row.addWidget(self.date)
+
         self.setToolTip(tooltip)
-        self.archive_btn = QToolButton()
-        self.archive_btn.setIconSize(QSize(ICON_SM, ICON_SM))
-        self.archive_btn.setAccessibleName(ARCHIVE_RUN)
-        self.archive_btn.setProperty("quiet", "true")
-        self.archive_btn.setProperty("pad", "none")
+        self.archive_btn = icon_button(upload_icon(), ARCHIVE_RUN, ARCHIVE_RUN_TOOLTIP)
         self.archive_btn.clicked.connect(self._on_archive_clicked)
+        # Hidden until a registry is enrolled, like the clip rows' own.
+        self.archive_btn.setVisible(False)
         row.addWidget(self.archive_btn)
         self.set_archive_state(None)
-        self._apply_elide()
+
+    def set_server_connected(self, connected: bool) -> None:
+        """Offer this run's archive button only where there is a registry."""
+        self.archive_btn.setVisible(connected)
 
     def text(self) -> str:
         """The whole line, however much of it the pane has room to draw."""
-        return self._full
+        return "  ".join(
+            part for part in (self._session, self.outcome.text(), self.date.text()) if part
+        )
 
     @property
     def archivable(self) -> bool:
         """A run that did not finish wrote no outputs to send."""
         return self.run.status == "succeeded"
 
-    def set_archive_state(self, state: str | None) -> None:
-        """Dress the button as what the registry holds of this run, if asked."""
+    def set_archive_state(self, state: str | None, note: str | None = None) -> None:
+        """Dress the button as what the registry holds of this run, if asked.
+
+        ``note`` replaces the state's stock tooltip, for a failure's own words.
+        """
+        set_button_dead(self.archive_btn, not self.archivable)
         if not self.archivable:
             self.archive_btn.setIcon(upload_icon(color=QColor(DISABLED_FG)))
             self.archive_btn.setToolTip(ARCHIVE_UNFINISHED)
             return
         told = _ARCHIVE_FACES.get(state or "")
         if told is None:
-            self.archive_btn.setIcon(upload_icon())
+            self.archive_btn.setIcon(upload_icon(color=QColor(DEFAULT_INK)))
             self.archive_btn.setToolTip(ARCHIVE_RUN_TOOLTIP)
             return
         # A tick for content already up, the upload glyph in the colour of what
@@ -155,27 +227,12 @@ class RunRow(QWidget):
         if state == "archived":
             self.archive_btn.setIcon(check_icon())
         else:
-            self.archive_btn.setIcon(
-                upload_icon(color=QColor(ERROR if state == "failed" else WARNING))
-            )
-        self.archive_btn.setToolTip(told)
+            self.archive_btn.setIcon(upload_icon(color=QColor(ERROR if state == "failed" else WARNING)))
+        self.archive_btn.setToolTip(note or told)
 
     def _on_archive_clicked(self) -> None:
         if self.archivable:
             self.archive_requested.emit(self.run.id)
-
-    def _apply_elide(self) -> None:
-        """Fit the line to the label, from the middle: the session names it and
-        the outcome and date end it, so both ends carry something."""
-        shown = self.label.fontMetrics().elidedText(
-            self._full, Qt.TextElideMode.ElideMiddle, self.label.width()
-        )
-        if shown != self.label.text():
-            self.label.setText(shown)
-
-    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._apply_elide()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         self.activated.emit(self.run.run_dir_name)
@@ -183,11 +240,17 @@ class RunRow(QWidget):
 
 
 class SectionDetailPanel(DetailCard):
-    """A titled card describing one section and the sessions that ran it."""
+    """A titled card describing one pass and the sessions that ran it."""
 
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
+    campaign_requested = Signal(str)
+    campaign_selected = Signal(str, str)
+    add_to_queue_requested = Signal(str)
+    back_to_video_requested = Signal()
+    open_transect_requested = Signal(str)
     delete_requested = Signal(str)
+    rename_requested = Signal(str)
     run_activated = Signal(str)
     # The database run id whose outputs to archive, from whichever row was pressed.
     archive_run_requested = Signal(object)
@@ -195,8 +258,32 @@ class SectionDetailPanel(DetailCard):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = self.body
+        self.back_btn = QPushButton("Back to video")
+        self.back_btn.clicked.connect(self.back_to_video_requested)
+        layout.insertWidget(0, self.back_btn)
 
-        layout.addWidget(muted_label("Sessions this section has run in"))
+        campaign_row = QHBoxLayout()
+        campaign_row.addWidget(QLabel("Campaign"))
+        self.campaign_combo = QComboBox()
+        self.campaign_combo.setAccessibleName("Pass campaign")
+        self.campaign_combo.setMinimumContentsLength(10)
+        self.campaign_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.campaign_combo.activated.connect(
+            lambda *_: self.campaign_selected.emit(self._pass_id(), self.campaign_combo.currentData() or "")
+        )
+        campaign_row.addWidget(self.campaign_combo, 1)
+        layout.addLayout(campaign_row)
+        self.site_label = QLabel("Site: Unassigned")
+        self.site_label.linkActivated.connect(self.open_transect_requested.emit)
+        layout.addWidget(self.site_label)
+        self.queue_btn = QPushButton("Add to queue")
+        self.queue_btn.setProperty("cta", "true")
+        self.queue_btn.clicked.connect(lambda: self.add_to_queue_requested.emit(self._pass_id()))
+        layout.addWidget(self.queue_btn)
+        self.assign_btn = QPushButton("Change transect…")
+        self.assign_btn.clicked.connect(self._emit_reassign)
+        layout.addWidget(self.assign_btn)
+        layout.addWidget(muted_label("Processing history"))
 
         self.run_list = QListWidget()
         self.run_list.setAlternatingRowColors(True)
@@ -207,6 +294,9 @@ class SectionDetailPanel(DetailCard):
         # control below it and left the pane a different shape for a section
         # that had run and one that had not.
         layout.addWidget(self.run_list, 1)
+        self.open_result_btn = QPushButton("Open result")
+        self.open_result_btn.clicked.connect(self._open_selected_result)
+        layout.addWidget(self.open_result_btn)
 
         # A menu rather than a row of buttons the pane cannot hold without
         # truncating every label. The cart is not among them: the section's own
@@ -227,17 +317,46 @@ class SectionDetailPanel(DetailCard):
 
         self._pass: TransectPass | None = None
         self._run_rows: list[RunRow] = []
+        # No registry until the window says there is one.
+        self._server_connected = False
+
+    def set_site(self, name: str | None, transect_id) -> None:
+        """Show the location with a link to its transect editor."""
+        label = html.escape(name or "Unassigned")
+        value = f'<a href="{transect_id}">{label}</a>' if transect_id else label
+        self.site_label.setText(f"Site: {value}")
+
+    def _open_selected_result(self) -> None:
+        index = self.run_list.currentRow()
+        if 0 <= index < len(self._run_rows):
+            self.run_activated.emit(self._run_rows[index].run.run_dir_name)
+
+    def set_campaigns(self, campaigns, selected) -> None:
+        """Fill the campaign selector without changing the pass assignment."""
+        self.campaign_combo.blockSignals(True)
+        self.campaign_combo.clear()
+        self.campaign_combo.addItem("Unassigned", "")
+        for campaign in campaigns:
+            self.campaign_combo.addItem(campaign.name, str(campaign.id))
+        index = self.campaign_combo.findData(str(selected) if selected else "")
+        if selected and index < 0:
+            self.campaign_combo.addItem("Archived campaign", str(selected))
+            index = self.campaign_combo.count() - 1
+        self.campaign_combo.setCurrentIndex(max(0, index))
+        self.campaign_combo.blockSignals(False)
 
     def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
-        """Everything the menu offers on this section, in one list.
+        """Everything the menu offers on this pass, in one list.
 
         A None key is a separator.
         """
         return (
+            ("rename", RENAME_ACTION, self._emit_rename),
             ("retrim", "Adjust trim…", self._emit_retrim),
             ("reassign", "Change transect…", self._emit_reassign),
+            ("campaign", CAMPAIGN_ACTION, self._emit_campaign),
             (None, "", None),
-            ("delete", "Delete section", self._emit_delete),
+            ("delete", "Delete pass", self._emit_delete),
         )
 
     def _fill_section_actions(self, menu: QMenu) -> dict[str, QAction]:
@@ -256,11 +375,17 @@ class SectionDetailPanel(DetailCard):
     def _pass_id(self) -> str:
         return "" if self._pass is None else str(self._pass.id)
 
+    def _emit_rename(self) -> None:
+        self.rename_requested.emit(self._pass_id())
+
     def _emit_retrim(self) -> None:
         self.retrim_requested.emit(self._pass_id())
 
     def _emit_reassign(self) -> None:
         self.reassign_requested.emit(self._pass_id())
+
+    def _emit_campaign(self) -> None:
+        self.campaign_requested.emit(self._pass_id())
 
     def _emit_delete(self) -> None:
         self.delete_requested.emit(self._pass_id())
@@ -268,14 +393,32 @@ class SectionDetailPanel(DetailCard):
     def run_rows(self) -> list[RunRow]:
         return list(self._run_rows)
 
-    def paint_archive_states(self, state_for_run: Callable[[object], str | None]) -> None:
+    def set_server_connected(self, connected: bool) -> None:
+        """Show or hide every run row's archive button, now and on rebuild.
+
+        Remembered rather than pushed once: the rows are rebuilt on every
+        section shown, and a new row must not arrive carrying a button the
+        window has already said there is no server for.
+        """
+        self._server_connected = connected
+        for row in self._run_rows:
+            row.set_server_connected(connected)
+
+    def paint_archive_states(
+        self,
+        state_for_run: Callable[[object], str | None],
+        note_for_run: Callable[[object], str | None] | None = None,
+    ) -> None:
         """Dress each run row's archive icon from the probe's answers."""
         for row in self._run_rows:
-            row.set_archive_state(state_for_run(row.run.id))
+            note = None if note_for_run is None else note_for_run(row.run.id)
+            row.set_archive_state(state_for_run(row.run.id), note)
 
     def _on_fact_link(self, href: str) -> None:
         if href == _FILING_LINK:
             self._emit_reassign()
+        elif href == _CAMPAIGN_LINK:
+            self._emit_campaign()
 
     def show_section(
         self,
@@ -287,10 +430,13 @@ class SectionDetailPanel(DetailCard):
         runs: list[RunRecord],
         session_name,
         in_cart: bool,
+        campaign_name: str | None = None,
         output_bytes: int = 0,
     ) -> None:
-        """Describe one section. ``session_name`` resolves a run's batch id."""
+        """Describe one pass. ``session_name`` resolves a run's batch id."""
         self.title.setText(section_window(pass_))
+        self.queue_btn.setText("Remove from queue" if in_cart else "Add to queue")
+        self.queue_btn.setEnabled(in_cart or status not in {"running", "pending"})
         self.set_status(status, STATUS_COLORS.get(status, TEXT_MUTED))
         # Transect and direction on one row, as one link. They are set together
         # in one dialog, and which way a swim went means nothing without the
@@ -300,6 +446,10 @@ class SectionDetailPanel(DetailCard):
         rows = [
             ("Clip", clip_name),
             ("Transect", fact_link(filing, _FILING_LINK)),
+            # Its own row rather than fused into the filing above: the trip is
+            # set on its own, and a swim belongs to one whether or not anyone
+            # has said which line it followed.
+
             ("Length", _length(pass_)),
         ]
         # What this cut has cost so far, which is the figure worth having when
@@ -316,11 +466,8 @@ class SectionDetailPanel(DetailCard):
         # last time, not what happened first.
         for run in sorted(runs, key=lambda r: r.created_at or "", reverse=True):
             name = session_name(run.batch_id) or _NO_SESSION
-            row = RunRow(
-                run,
-                f"{name} · {run.status} · {_short_date(run.created_at)}",
-                run.error or run.run_dir_name,
-            )
+            row = RunRow(run, name, run.error or run.run_dir_name)
+            row.set_server_connected(self._server_connected)
             row.activated.connect(self.run_activated)
             row.archive_requested.connect(self.archive_run_requested)
             item = QListWidgetItem()
@@ -332,9 +479,9 @@ class SectionDetailPanel(DetailCard):
             # In the list rather than instead of it, so the pane keeps its shape
             # and the empty case is answered where the answer would appear.
             empty = QListWidgetItem(
-                "Not processed yet. Add it to the cart to run it."
+                "Not processed yet. Add it to the queue to run it."
                 if not in_cart
-                else "Not processed yet. It is in the cart for the next session."
+                else "Not processed yet. It is in the queue for the next session."
             )
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor(TEXT_MUTED))
@@ -345,11 +492,12 @@ class SectionDetailPanel(DetailCard):
         delete = self.menu_actions["delete"]
         delete.setEnabled(not runs)
         delete.setToolTip(
-            "This section has runs. Delete them in Browse first."
-            if runs
-            else "Remove this cut. The clip itself is left alone."
+            "This pass has runs. Delete them in Results first." if runs else "Delete this pass from the clip."
         )
         self._pass = pass_
+        self.open_result_btn.setEnabled(bool(runs))
+        if runs:
+            self.run_list.setCurrentRow(0)
 
     def clear(self) -> None:
         super().clear()

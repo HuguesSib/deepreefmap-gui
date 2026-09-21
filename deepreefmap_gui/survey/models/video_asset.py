@@ -51,11 +51,23 @@ class VideoAsset:
     probed_at: str | None = None
     gravity: str = UNKNOWN
     gps: str = UNKNOWN
+    # What a person knows about the clip and no probe can read: which camera of
+    # the rig shot it, where that camera sat, whether it was mounted upside down,
+    # and whether the footage is any good.
+    camera_label: str | None = None
+    rig_position: str | None = None
+    upside_down: bool = False
+    review: str = "unreviewed"
+    notes: str = ""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
     device_id: uuid.UUID | None = None
+    # The registry position this row was last seen at, sent back as base_seq.
+    head_seq: int | None = None
+    validated_at: str | None = None
+    validated_by: str | None = None
 
     # Every field belongs to exactly one group, and the two carry-over policies
     # below are written in terms of the groups rather than a list per call site.
@@ -85,7 +97,26 @@ class VideoAsset:
         "updated_at",
         "deleted_at",
         "device_id",
+        "head_seq",
+        "validated_at",
+        "validated_by",
     )
+    # A person's word on the clip. A probe never touches these, and a merge takes
+    # them only where the keeper has none.
+    REVIEW_FIELDS: ClassVar[tuple[str, ...]] = (
+        "camera_label",
+        "rig_position",
+        "upside_down",
+        "review",
+        "notes",
+    )
+    REVIEW_DEFAULTS: ClassVar[dict[str, object]] = {
+        "camera_label": None,
+        "rig_position": None,
+        "upside_down": False,
+        "review": "unreviewed",
+        "notes": "",
+    }
 
     @classmethod
     def from_path(cls, path: Path) -> VideoAsset:
@@ -103,6 +134,9 @@ class VideoAsset:
         return cls(
             file_name=path.name,
             path=str(path),
+            # Field cards are copied one camera per folder, so the folder is the
+            # camera's name until somebody says otherwise.
+            camera_label=path.parent.name or None,
             hash=content_hash if isinstance(content_hash, str) else None,
             size_bytes=size_bytes if isinstance(size_bytes, int) else None,
             mtime=mtime if isinstance(mtime, str) else None,
@@ -137,6 +171,9 @@ class VideoAsset:
                 value = getattr(other, name)
                 if value is not None:
                     setattr(self, name, value)
+        for name in self.REVIEW_FIELDS:
+            if getattr(self, name) == self.REVIEW_DEFAULTS[name]:
+                setattr(self, name, getattr(other, name))
         for name in self.TRISTATE_FIELDS:
             if getattr(self, name) == UNKNOWN:
                 value = getattr(other, name)

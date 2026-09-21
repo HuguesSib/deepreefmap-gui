@@ -110,10 +110,7 @@ def test_transects_facet_groups_and_buckets_unassigned(out_root, make_window):
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     window._data_facet_buttons["transects"].click()
-    titles = [
-        window._data_tree.topLevelItem(i).text(0)
-        for i in range(window._data_tree.topLevelItemCount())
-    ]
+    titles = [window._data_tree.topLevelItem(i).text(0) for i in range(window._data_tree.topLevelItemCount())]
     assert titles[0].startswith(UNASSIGNED_TITLE)
     assert any(t.startswith("T1") for t in titles)
 
@@ -123,9 +120,7 @@ def write_session_runs(root: Path, name: str, dirs: list[str]) -> None:
     store = SurveyStore(root / "survey.db")
     batch = make_batch(store, name)
     for index, dir_name in enumerate(dirs):
-        seed_survey_run(
-            store, root, dir_name, transect=make_transect(f"T{index}"), batch=batch
-        )
+        seed_survey_run(store, root, dir_name, transect=make_transect(f"T{index}"), batch=batch)
     store.close()
 
 
@@ -139,7 +134,7 @@ def test_sessions_facet_groups_a_day_and_describes_it(out_root, make_window):
 
     window._data_tree.setCurrentItem(window._data_tree.topLevelItem(0))
     assert window._data_detail_stack.currentWidget() is window._session_detail
-    assert window._session_detail.title.text() == "2026-07-01"
+    assert window._session_detail.title.text().startswith("2026-07-01")
     assert len(window._session_detail.entries) == 2
     assert window._session_detail.pass_list.count() == 2
 
@@ -179,7 +174,7 @@ def test_browse_is_the_destination_holding_the_run_browser(make_window):
     """One widget, one name: the destination called Browse is the run browser."""
     window = make_window()
     assert list(window._simple_nav_buttons) == list(DESTINATIONS)
-    assert window._simple_nav_buttons["browse"].text() == "Browse"
+    assert window._simple_nav_buttons["browse"].text() == "Results"
 
     window._set_simple_section("browse")
     assert window._simple_stack.currentWidget().isAncestorOf(window._data_panel)
@@ -216,9 +211,7 @@ def test_rename_refuses_a_name_another_run_already_has(out_root, make_window, mo
         asked.append(text)
         return ("reef north", True) if len(asked) == 1 else (text, True)
 
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.browse.QInputDialog.getText", staticmethod(answer)
-    )
+    monkeypatch.setattr("deepreefmap_gui.runs.browse.QInputDialog.getText", staticmethod(answer))
     window._on_data_rename_clicked()
 
     assert asked[1] == "reef north 2"
@@ -342,9 +335,7 @@ def test_assign_moves_loose_run_under_transect(out_root, make_window, monkeypatc
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     select_run(window, row_of(window, "loose"))
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose"].transect_name == "T1"
@@ -490,9 +481,7 @@ def test_dropped_video_registers_a_clip_without_a_pass(tmp_path, make_window, mo
     clip = tmp_path / "reef.mp4"
     clip.write_bytes(b"x" * 4096)
     window = make_window()
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
-    )
+    monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0))
     store = window._survey_store()
     window._handle_data_drop([clip])
     # Probing runs on a worker thread, so the clip arrives with a queued signal.
@@ -637,12 +626,32 @@ def test_a_run_whose_data_went_cannot_have_its_command_copied(out_root, make_win
     assert "gone" in copy.toolTip()
 
 
+def test_the_archive_action_is_absent_without_a_registry(out_root, make_window):
+    """Expected behaviour: nothing in the app offers to send footage anywhere
+    until this laptop is connected to a registry."""
+    write_survey_run(out_root, "recorded")
+    window = make_window()
+
+    select_run(window, row_of(window, "recorded"))
+
+    assert not window._run_detail.menu_actions["archive"].isVisible()
+
+
+def enrol(window) -> None:
+    """Connect this laptop to a registry, so the archive controls are offered."""
+    from deepreefmap_gui.sync import credentials
+
+    credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
+    window._refresh_archive_affordances()
+
+
 def test_archive_is_offered_only_on_a_recorded_finished_run(out_root, make_window):
     """The registry catalogues artefacts against the run row, so a folder-only
     run has nothing to hang them off."""
     write_run(out_root, "folder_only")
     write_survey_run(out_root, "recorded")
     window = make_window()
+    enrol(window)
     archive = window._run_detail.menu_actions["archive"]
 
     select_run(window, row_of(window, "folder_only"))
@@ -660,6 +669,7 @@ def test_a_failed_run_cannot_be_archived(out_root, make_window):
     store.set_run_status(run.id, "failed", "ran out of memory")
     store.close()
     window = make_window()
+    enrol(window)
 
     select_run(window, 0)
     archive = window._run_detail.menu_actions["archive"]
@@ -670,6 +680,7 @@ def test_a_failed_run_cannot_be_archived(out_root, make_window):
 def test_a_run_whose_data_went_cannot_be_archived(out_root, make_window, monkeypatch):
     write_survey_run(out_root, "kept_record")
     window = make_window()
+    enrol(window)
     select_run(window, 0)
     archive = window._run_detail.menu_actions["archive"]
     assert archive.isEnabled()
@@ -679,7 +690,7 @@ def test_a_run_whose_data_went_cannot_be_archived(out_root, make_window, monkeyp
     select_run(window, 0)
 
     assert not archive.isEnabled()
-    assert "nothing to send" in archive.toolTip()
+    assert "output data was removed" in archive.toolTip()
 
 
 # --- T1.7 multi-select actions ---
@@ -725,18 +736,14 @@ def test_multi_select_assign_moves_all_selected(out_root, make_window, monkeypat
     write_run(out_root, "loose_b", video_hashes=["ef" * 16])
     window = make_window()
     _select_rows(window, {"loose_a", "loose_b"})
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose_a"].transect_name == "T1"
     assert entries["loose_b"].transect_name == "T1"
 
 
-def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(
-    out_root, make_window, monkeypatch
-):
+def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(out_root, make_window, monkeypatch):
     """Scenario: a whole group of loose runs is selected in the rail, nothing
     in the table.
 
@@ -755,18 +762,14 @@ def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(
     targets = {e.dir_name for e in window._data_assign_targets()}
     assert targets == {"loose_a", "loose_b"}
 
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (transect.id, "forward"))
     window._on_data_assign_clicked()
     entries = {e.dir_name: e for e in window._data_entries}
     assert entries["loose_a"].transect_name == "T1"
     assert entries["loose_b"].transect_name == "T1"
 
 
-def test_assigning_from_browse_reaches_the_process_table(
-    out_root, make_window, monkeypatch
-):
+def test_assigning_from_browse_reaches_the_process_table(out_root, make_window, monkeypatch):
     """Scenario: a run is assigned to a transect from Browse while its pass sits
     in the Process table.
 
@@ -782,9 +785,7 @@ def test_assigning_from_browse_reaches_the_process_table(
 
     window = make_window()
     assert any(row.pass_id == pass_.id for row in window._survey_rows)
-    monkeypatch.setattr(
-        window, "_ask_assign_target", lambda transects: (other.id, "forward")
-    )
+    monkeypatch.setattr(window, "_ask_assign_target", lambda transects: (other.id, "forward"))
     select_run(window, row_of(window, "assigned"))
     window._on_data_assign_clicked()
 
@@ -800,15 +801,15 @@ def test_run_record_names_the_session_in_tooltip_and_detail(out_root, make_windo
     from deepreefmap_gui.runs.run_detail import run_fact_rows
 
     store = SurveyStore(out_root / "survey.db")
-    batch = make_batch(store, "Day 1")
+    batch = make_batch(store, "2026-07-01 09:00:00")
     seed_survey_run(store, out_root, "filed", batch=batch)
     store.close()
     window = make_window()
     entry = next(e for e in window._data_entries if e.dir_name == "filed")
 
-    assert "Session: Day 1" in format_run_metadata(entry)
+    assert "Session: 2026-07-01 09:00:00" in format_run_metadata(entry)
     rows = dict(run_fact_rows(entry))
-    assert rows["Session"] == "Day 1"
+    assert rows["Session"] == "2026-07-01 09:00:00"
 
     write_run(out_root, "loose", video_hashes=["cd" * 16])
     window._refresh_data_manager()
@@ -864,12 +865,12 @@ def test_add_to_cart_requeues_a_finished_run(out_root, make_window):
     assert cart.id != batch.id
     assert [i.pass_id for i in store.list_batch_items(cart.id)] == [pass_.id]
     assert window._cart_button._count == 1
-    assert "cart" in window._status_label.text().lower()
+    assert "queue" in window._status_label.text().lower()
 
 
 def test_add_to_cart_adopts_an_adhoc_run_unassigned(out_root, make_window):
     """A run the database has never seen becomes a pass with no transect --
-    a section is a cutout first, filing it is optional."""
+    a pass is a cutout first, filing it is optional."""
     write_run(out_root, "loose", begin_s=10.0, end_s=50.0)
     window = make_window()
     select_run(window, row_of(window, "loose"))
@@ -898,9 +899,9 @@ def test_status_chips_count_and_filter_runs(out_root, make_window):
     write_crashed_run(out_root, "crashed")
     window = make_window()
     chips = window._data_status_chips
-    assert chips._buttons["all"].text().endswith("3")
-    assert chips._buttons["succeeded"].text().endswith("2")
-    assert chips._buttons["unfinished"].text().endswith("1")
+    assert chips.itemText(chips.findData("all")).endswith("(3)")
+    assert chips.itemText(chips.findData("succeeded")).endswith("(2)")
+    assert chips.itemText(chips.findData("unfinished")).endswith("(1)")
 
     chips.set_current("unfinished")
     assert listed_runs(window) == ["crashed"]
@@ -1022,7 +1023,7 @@ def test_unfinished_run_detail_carries_its_reason(out_root, make_window):
 
 
 def test_columns_sort_by_value_not_by_their_formatting(out_root, make_window):
-    """"988k pts" is smaller than "1.2M pts", and every string comparison disagrees."""
+    """ "988k pts" is smaller than "1.2M pts", and every string comparison disagrees."""
     write_run(out_root, "small", semantic_reference_points=988_000)
     write_run(out_root, "large", semantic_reference_points=1_200_000)
     window = make_window()
@@ -1061,15 +1062,22 @@ def test_map_click_narrows_the_table_to_that_transect(out_root, make_window):
 
 def two_sites(root: Path) -> None:
     """Two transects an ocean apart, one run each, so a viewport can separate them."""
-    write_survey_run(root, "fiji", Transect(name="Fiji", start_lat=-17.5, start_lon=177.1,
-                                            end_lat=-17.5005, end_lon=177.1005, length_m=50.0))
-    write_survey_run(root, "azores", Transect(name="Azores", start_lat=38.5, start_lon=-28.6,
-                                              end_lat=38.5005, end_lon=-28.6005, length_m=50.0))
+    write_survey_run(
+        root,
+        "fiji",
+        Transect(name="Fiji", start_lat=-17.5, start_lon=177.1, end_lat=-17.5005, end_lon=177.1005, length_m=50.0),
+    )
+    write_survey_run(
+        root,
+        "azores",
+        Transect(name="Azores", start_lat=38.5, start_lon=-28.6, end_lat=38.5005, end_lon=-28.6005, length_m=50.0),
+    )
 
 
 def browse_by_transect(make_window):
     window = make_window()
     window._data_facet_buttons["transects"].click()
+    window._data_map_toggle.setChecked(True)
     window._data_map.resize(400, 300)
     return window
 
@@ -1146,6 +1154,8 @@ def test_the_map_scope_appears_only_where_it_decides_anything(out_root, make_win
     assert not chips.isVisibleTo(window._data_panel)
 
     window._data_facet_buttons["transects"].click()
+    assert not chips.isVisibleTo(window._data_panel)
+    window._data_map_toggle.setChecked(True)
     assert chips.isVisibleTo(window._data_panel)
     window._data_facet_buttons["sessions"].click()
     assert not chips.isVisibleTo(window._data_panel)
@@ -1204,6 +1214,7 @@ def test_the_map_draws_transects_only_while_grouping_by_them(out_root, make_wind
     window = make_window()
 
     window._data_facet_buttons["transects"].click()
+    window._data_map_toggle.setChecked(True)
     assert window._data_map.isVisibleTo(window._data_rail)
     assert [o.label for o in window._data_map._transects] == ["T1"]
 
@@ -1338,37 +1349,47 @@ def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
     name put a horizontal scrollbar under the one table the page is for. 830px
     is about what Browse leaves the table with the rail open and a run selected.
     """
-    from deepreefmap_gui.runs.run_table import COL_NAME, COL_TRANSECT, COL_VIDEO, column_widths
+    from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths
 
     widths = column_widths(available)
     assert sum(widths.values()) <= available
-    # Name identifies the row, so it takes the largest share of the slack.
-    assert widths[COL_NAME] > widths[COL_VIDEO] >= widths[COL_TRANSECT]
+    # Name identifies the row, so it takes the larger share of the slack.
+    assert widths[COL_NAME] > widths[COL_VIDEO]
 
 
 def test_the_secondary_columns_appear_only_where_there_is_room_for_them():
-    """Expected behaviour: Direction and Recorded are dropped, widest last in,
-    rather than squeezing the columns that say which run this is.
+    """Expected behaviour: the figures and then the secondary identifiers are
+    dropped, widest last in, rather than squeezing the columns that say which run
+    this is.
 
-    A pane wide enough shows both. The 830px Browse leaves with the rail open
-    shows neither, and the tooltip is where they are read there.
+    A pane wide enough shows every column. The ~700px Browse leaves with the rail
+    open shows only what identifies a run, and the tooltip is where the rest are
+    read there.
     """
-    from deepreefmap_gui.runs.run_table import COL_DIRECTION, COL_RECORDED, column_widths
+    from deepreefmap_gui.runs.run_table import (
+        COL_DIRECTION,
+        COL_POINTS,
+        COL_RECORDED,
+        column_widths,
+    )
 
     assert {COL_DIRECTION, COL_RECORDED} <= set(column_widths(1440))
-    assert COL_DIRECTION in column_widths(900)
-    assert COL_RECORDED not in column_widths(900)
-    assert not {COL_DIRECTION, COL_RECORDED} & set(column_widths(830))
+    assert COL_DIRECTION in column_widths(1080)
+    assert COL_RECORDED not in column_widths(1080)
+    # Figures earn their width before the identifiers do: a number is read off
+    # the row, where the transect and the session repeat the group heading.
+    assert COL_POINTS in column_widths(800)
+    assert not {COL_DIRECTION, COL_RECORDED} & set(column_widths(800))
 
 
 def test_a_window_too_narrow_for_the_columns_keeps_them_readable():
     """A column shrunk past reading is not a column, so below the floors' total
     the floors win and the table scrolls rather than eliding everything away."""
-    from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths
+    from deepreefmap_gui.runs.run_table import _FLEX_MINIMUMS, COL_NAME, COL_VIDEO, column_widths
 
     widths = column_widths(400)
-    assert widths[COL_NAME] == 140
-    assert widths[COL_VIDEO] == 100
+    assert widths[COL_NAME] == _FLEX_MINIMUMS[COL_NAME]
+    assert widths[COL_VIDEO] == _FLEX_MINIMUMS[COL_VIDEO]
     assert sum(widths.values()) > 400
 
 
@@ -1577,9 +1598,8 @@ def test_an_outcome_is_the_same_chip_wherever_it_is_read(out_root, make_window):
     assert succeeded in chip.styleSheet()
     assert tinted(succeeded, PILL_TINT_ALPHA) in chip.styleSheet()
 
-    # The filter that finds a failed run is drawn in a failed run's colour.
-    filter_chip = window._data_status_chips._buttons["failed"]
-    assert STATUS_COLORS["failed"] in filter_chip.styleSheet()
+    choice = window._data_status_chips
+    assert choice.itemText(choice.findData("failed")).startswith("Failed")
 
 
 def test_session_delete_takes_runs_and_record_together(out_root, make_window, monkeypatch):

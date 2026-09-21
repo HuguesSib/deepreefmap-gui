@@ -133,15 +133,15 @@ _DESTINATION_ICONS = {
 _DESTINATION_LABELS = {
     "transects": "Transects",
     "videos": "Videos",
-    "process": "Cart",
-    "browse": "Browse",
+    "process": "Processing queue",
+    "browse": "Results",
 }
 
 # One line per destination, said in the terms of the work rather than the widget.
 _DESTINATION_TIPS = {
     "transects": "The lines you survey, and what repeat passes of each one found.",
     "videos": "The footage itself: every clip, when it was shot, and what has been cut from it.",
-    "process": "The cart: sections queued for the next session, and the batch as it runs.",
+    "process": "The processing queue: passes queued for the next session, and the batch as it runs.",
     "browse": "Every run so far, grouped however you need to read it.",
 }
 
@@ -170,17 +170,13 @@ _DESTINATION_ICON_PX = 16
 # Not segmented_qss: a joined segmented control is what this app uses for filters
 # and facets, and navigation in that shape reads as another filter.
 _DESTINATION_QSS = utility_button_qss() + (
-    f" QToolButton:disabled {{ color: {DISABLED_FG}; background: transparent;"
-    f" border-color: {BORDER}; }}"
+    f" QToolButton:disabled {{ color: {DISABLED_FG}; background: transparent; border-color: {BORDER}; }}"
 )
 
 # Bars that top a page and are separated from it by a hairline. Object-name
 # scoped: an unscoped `border-bottom` on the container is inherited by every
 # child, which drew a stray underline beneath each label and button in the row.
-_BAR_QSS = (
-    f"QWidget {{ background-color: {CARD_BG}; }}"
-    f" QWidget#simpleBar {{ border-bottom: 1px solid {BORDER}; }}"
-)
+_BAR_QSS = f"QWidget {{ background-color: {CARD_BG}; }} QWidget#simpleBar {{ border-bottom: 1px solid {BORDER}; }}"
 
 
 # Preset key -> run-form widget attribute, one entry per settings widget. The
@@ -273,10 +269,7 @@ class InterfaceShellMixin(MixinBase):
         self._set_machine_view("readiness")
 
     def _idle_status_text(self) -> str:
-        return (
-            "Ready. Add videos under Videos, cut sections to process, and mark "
-            "out transects to compare them against."
-        )
+        return "Ready. Add videos under Videos to start."
 
     def _refresh_browse_state(self) -> None:
         """Cache Browse's count from entries the data manager already scanned."""
@@ -322,18 +315,13 @@ class InterfaceShellMixin(MixinBase):
     def _announce_preset_save(self, result: OverrideResult, org: OrgPreset) -> None:
         """Say what was kept and what was not, naming the settings in plain words."""
         if result.refused and org.locked:
-            self._status_label.setText(
-                f"{org.name} sets {describe_keys(result.refused)}, so that went back to standard."
-            )
+            self._status_label.setText(f"{describe_keys(result.refused)} went back to standard: set by {org.name}.")
         elif result.refused:
             self._status_label.setText(
-                f"{describe_keys(result.refused)} changed for now, but the standard"
-                " settings come back next launch."
+                f"{describe_keys(result.refused)} changed for now, but the standard settings come back next launch."
             )
         elif result.saved:
-            self._status_label.setText(
-                f"Saved for this machine: {describe_keys(result.saved)}."
-            )
+            self._status_label.setText(f"Saved for this machine: {describe_keys(result.saved)}.")
 
     def _survey_deviations(self) -> dict[str, Any]:
         """Form settings that differ from the organisation preset.
@@ -344,9 +332,7 @@ class InterfaceShellMixin(MixinBase):
         """
         if self._active_preset is None:
             return {}
-        return deviations_from_org(
-            self._collect_preset_from_form(), self._active_preset.org
-        )
+        return deviations_from_org(self._collect_preset_from_form(), self._active_preset.org)
 
     def _reload_active_preset(self) -> None:
         """Re-resolve the organisation preset and this machine's changes.
@@ -367,9 +353,7 @@ class InterfaceShellMixin(MixinBase):
             return
         server = self._selected_server_preset()
         if server is not None and not self._active_preset.org.locked:
-            self._active_preset = ActivePreset(
-                org=server, overrides=load_machine_override(server)
-            )
+            self._active_preset = ActivePreset(org=server, overrides=load_machine_override(server))
         self._survey_preset = self._active_preset.settings
 
     def _selected_server_preset(self) -> OrgPreset | None:
@@ -407,9 +391,7 @@ class InterfaceShellMixin(MixinBase):
             logger.info("The selected server preset is no longer on the registry")
             # Kept for the settings label: falling back to the standard is
             # right, doing it without a word is not.
-            self._server_preset_withdrawn = (
-                f"{wanted.get('name')} (v{wanted.get('version')})"
-            )
+            self._server_preset_withdrawn = f"{wanted.get('name')} (v{wanted.get('version')})"
             return None
         self._server_preset_assigned = assigned
         return registry_preset(row.name, row.version, row.settings)
@@ -421,21 +403,15 @@ class InterfaceShellMixin(MixinBase):
             return
         if self._active_preset is not None and self._active_preset.org.locked:
             self._status_label.setText(
-                f"{self._active_preset.org.name} is set by your organisation, "
-                "so server presets cannot replace it."
+                f"{self._active_preset.org.name} is set by your organisation. Server presets cannot replace it."
             )
             return
         store = self._try_survey_store()
         presets = store.list_server_presets() if store is not None else []
         if not presets:
-            self._status_label.setText(
-                "No presets from the server yet. They arrive with a sync once "
-                "the web console publishes one."
-            )
+            self._status_label.setText("No presets from the server yet. They arrive with a sync.")
             return
-        labels = [
-            f"{p.label} · {p.description}" if p.description else p.label for p in presets
-        ]
+        labels = [f"{p.label} · {p.description}" if p.description else p.label for p in presets]
         from PySide6.QtWidgets import QInputDialog
 
         chosen, accepted = QInputDialog.getItem(
@@ -457,9 +433,7 @@ class InterfaceShellMixin(MixinBase):
         if self._survey_preset is not None:
             self._populate_form_from_preset(self._survey_preset)
         self._recompute_survey_start()
-        self._status_label.setText(
-            f"Settings are now {preset.label}, from the server."
-        )
+        self._status_label.setText(f"Settings are now {preset.label}, from the server.")
         self._survey_preset_label.setText(self._survey_preset_summary())
 
     def _restore_standard_settings(self) -> None:
@@ -484,17 +458,11 @@ class InterfaceShellMixin(MixinBase):
             self._reset_form_defaults()
         self._recompute_survey_start()
         if self._active_preset is None:
-            self._status_label.setText(
-                "Settings could not be read. The form has reverted to its defaults."
-            )
+            self._status_label.setText("Settings could not be read. The form has reverted to its defaults.")
         elif had_override or deviated or had_server:
-            self._status_label.setText(
-                f"Settings are back to {self._active_preset.org.label}."
-            )
+            self._status_label.setText(f"Settings are back to {self._active_preset.org.label}.")
         else:
-            self._status_label.setText(
-                f"Already on {self._active_preset.org.label}; nothing to restore."
-            )
+            self._status_label.setText(f"Already on {self._active_preset.org.label}; nothing to restore.")
 
     def _load_standard_into_form(self) -> None:
         """Load the organisation standard into the form without persisting.
@@ -666,7 +634,7 @@ class InterfaceShellMixin(MixinBase):
         # A breadcrumb, not a way out. The header above stays put with Browse
         # lit, so an opened run reads as a place inside Browse rather than a
         # mode that has taken the window; the crumb says where inside.
-        crumb = QPushButton("Browse")
+        crumb = QPushButton("Results")
         crumb.setProperty("quiet", "true")
         crumb.setCursor(Qt.CursorShape.PointingHandCursor)
         crumb.setToolTip("Back to the run list.")
@@ -741,8 +709,7 @@ class InterfaceShellMixin(MixinBase):
             spent += widget.sizeHint().width() + row.spacing()
         facts = self._view_facts
         facts.setVisible(
-            bool(facts.text())
-            and self._view_bar.width() - spent >= facts.sizeHint().width() + row.spacing()
+            bool(facts.text()) and self._view_bar.width() - spent >= facts.sizeHint().width() + row.spacing()
         )
 
     def _view_bar_event_filter(self, obj, event) -> None:
@@ -876,7 +843,8 @@ class InterfaceShellMixin(MixinBase):
         states = {
             "transects": getattr(self, "_plan_state", None) or transects_state(0, False),
             "videos": self._videos_verdict(),
-            "process": getattr(self, "_survey_gate", None) or run_gate(
+            "process": getattr(self, "_survey_gate", None)
+            or run_gate(
                 pass_count=0,
                 unassigned=0,
                 remaining=0,
@@ -1038,9 +1006,7 @@ class InterfaceShellMixin(MixinBase):
         work splitter divides, from (app_mode, section)."""
         if not hasattr(self, "_work_hsplitter"):
             return
-        section = (
-            self._current_section() if hasattr(self, "_simple_stack") else DESTINATIONS[0]
-        )
+        section = self._current_section() if hasattr(self, "_simple_stack") else DESTINATIONS[0]
         # The point cloud gets a destination of its own rather than half of
         # Browse. Browsing wants the whole window for the table, and looking at
         # a cloud wants the whole window for the cloud; sharing served neither.
@@ -1112,6 +1078,22 @@ class InterfaceShellMixin(MixinBase):
     def _reset_form_defaults(self) -> None:
         self._restore_form_settings(self._form_defaults)
 
+    def _write_registry_camera_profiles(self, store: SurveyStore) -> None:
+        """Put the registry's calibrations on disk, where a run resolves them.
+
+        Never raises: a survey that has never synced has none to write, and a
+        profile that could not be written must not stop the window opening.
+        """
+        from deepreefmap_gui.camera.registry import materialise_pulled
+
+        try:
+            written = materialise_pulled(store)
+        except Exception:
+            logger.warning("Could not write the registry's camera profiles", exc_info=True)
+            return
+        if written and hasattr(self, "_profile_combo"):
+            self._reload_camera_profiles()
+
     def _survey_store(self) -> SurveyStore:
         """Store keyed to the current output root; reopened when the root changes.
 
@@ -1145,11 +1127,14 @@ class InterfaceShellMixin(MixinBase):
                     {
                         "fingerprint": "runs.interrupted",
                         "title": f"{store.interrupted_at_open} run(s) were left unfinished",
-                        "body": "The app closed before they finished. They can be started again.",
+                        "body": "The app closed before they finished.",
                         "severity": NOTIFY_WARNING,
                         "section": "browse",
                     }
                 )
+            # What the registry published becomes files a run can resolve, before
+            # the form enumerates profile names from the directory.
+            self._write_registry_camera_profiles(store)
         self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, latest_schema_version())
         return store
 
@@ -1185,11 +1170,7 @@ class InterfaceShellMixin(MixinBase):
             return open_store
         # Only a settled verdict is taken on trust: an unwritable location or a
         # corrupt file can be fixed while the app is open.
-        if (
-            health is not None
-            and health.path == db_path
-            and health.state in SETTLED
-        ):
+        if health is not None and health.path == db_path and health.state in SETTLED:
             return None
         health = inspect_survey_db(db_path)
         if not health.openable:
@@ -1247,8 +1228,8 @@ class InterfaceShellMixin(MixinBase):
                 self._survey_health = health = inspect_survey_db(health.path)
                 if health.openable:
                     self._after_recovery(
-                        "The backup could not be restored, so this is a new "
-                        "survey database. The previous one is kept beside it."
+                        "The backup could not be restored. A new survey database "
+                        "was made; the previous one is kept beside it."
                     )
                     return
             else:
@@ -1268,9 +1249,7 @@ class InterfaceShellMixin(MixinBase):
             message = apply_recovery(option, health, out_root)
         except Exception as exc:
             logger.exception("Survey recovery failed")
-            QMessageBox.critical(
-                self, "Survey database", f"That did not work: {exc}"
-            )
+            QMessageBox.critical(self, "Survey database", f"That did not work: {exc}")
             return
         self._after_recovery(message)
 

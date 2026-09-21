@@ -231,14 +231,17 @@ def redirect_std_streams_to_logging() -> None:
     sys.stderr = _StreamToLogger(logging.getLogger("deepreefmap.stderr"), logging.WARNING)
 
 
-def open_run_log_file(run_dir: Path, level: int = logging.INFO) -> logging.FileHandler:
+def open_run_log_file(
+    run_dir: Path, level: int = logging.INFO, *, filename: str = "run.log"
+) -> logging.FileHandler:
     """Create and attach a FileHandler that captures this run's logs.
 
     The caller is responsible for passing the returned handler back to
-    `close_run_log_file` when the run ends.
+    `close_run_log_file` when the run ends. `filename` names the file: a
+    calibration keeps its own record beside the profile it produced.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = run_dir / "run.log"
+    log_path = run_dir / filename
     # Append: attempts get directories of their own now, but a legacy directory
     # revisited must not lose the log of what happened to it before.
     fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")

@@ -17,7 +17,8 @@ permissions:
 # `uv sync` here, the built wheel, and the PyApp binary all resolve it from GitHub
 # at that commit. The library repo is public, so no token is needed to fetch it.
 env:
-  QT_QPA_PLATFORM: offscreen
+  QT_QPA_PLATFORM: xcb
+  LIBGL_ALWAYS_SOFTWARE: "1"
 
 jobs:
   test:
@@ -45,8 +46,21 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Install virtual display and software OpenGL
+        run: sudo apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri
+
       - name: Install project (dev extra)
         run: uv sync --python ${{ matrix.python-version }} --extra dev
+
+      - name: Check Qt startup under Xvfb
+        env:
+          QT_DEBUG_PLUGINS: "1"
+        run: >
+          xvfb-run -a -s "-screen 0 1920x1200x24"
+          uv run --python ${{ matrix.python-version }} python -c
+          'from PySide6.QtWidgets import QApplication;
+          app = QApplication([]);
+          assert app.platformName() == "xcb", app.platformName()'
 
       - name: Lint (ruff)
         run: uv run --python ${{ matrix.python-version }} ruff check deepreefmap_gui tests
@@ -59,14 +73,14 @@ jobs:
           DEEPREEFMAP_REQUIRE_TORCH: "1"
         # -n 2 over the serial default in pyproject.toml: a worker holds torch
         # and VTK, and the runner has 16 GB for four cores.
-        run: uv run --python ${{ matrix.python-version }} pytest -q -n 2
+        run: xvfb-run -a -s "-screen 0 1920x1200x24" uv run --python ${{ matrix.python-version }} pytest -q -n 2
 
       - name: Coverage
         if: matrix.python-version == '3.12'
         env:
           DEEPREEFMAP_REQUIRE_TORCH: "1"
         run: >
-          uv run --python 3.12 pytest -q -n 2
+          xvfb-run -a -s "-screen 0 1920x1200x24" uv run --python 3.12 pytest -q -n 2
           --cov=deepreefmap_gui --cov-report=term-missing:skip-covered
 
   typecheck:

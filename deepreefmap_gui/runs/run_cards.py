@@ -142,7 +142,7 @@ def format_trim_range(manifest: dict) -> str | None:
         return None
     begin_txt = f"{float(begin):.1f}" if begin is not None else "0"
     end_txt = f"{float(end):.1f}s" if end is not None else "end"
-    return f"{begin_txt}–{end_txt}"
+    return f"{begin_txt}-{end_txt}"
 
 
 def _video_line(entry: RunEntry) -> str:

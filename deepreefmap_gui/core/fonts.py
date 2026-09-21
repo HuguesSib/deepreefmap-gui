@@ -57,3 +57,37 @@ def apply_app_fonts(app: QApplication) -> None:
         logger.warning("No bundled fonts loaded; keeping system default font")
         return
     app.setFont(QFont(UI_FONT_FAMILY, BASE_POINT_SIZE))
+
+
+def tabular(font: QFont) -> QFont:
+    """A copy of ``font`` whose digits are all one width.
+
+    Inter's default figures are proportional: a "1" advances 5px against a "0"'s
+    8px at the base size, so "0:22-0:58" and "11:11-11:59" measure the same and
+    a column of times never lines up. The OpenType `tnum` feature fixes the
+    advance without changing the face. Note it makes strings wider, so a column
+    measured against a specimen must be measured after this is applied.
+    """
+    figures = QFont(font)
+    try:
+        figures.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError):
+        # Qt below 6.7 has no font-feature API; proportional figures are ugly,
+        # not broken.
+        pass
+    return figures
+
+
+def apply_tabular(widget) -> None:
+    """Give one widget tabular figures, in place."""
+    widget.setFont(tabular(widget.font()))
+
+
+def mono_font(point_size: int = BASE_POINT_SIZE) -> QFont:
+    """The bundled monospace face, for text read character by character.
+
+    Coordinates, checksums and viewer readouts. Not for numeric columns: this
+    face is wider than Inter with `tnum`, and mixing two faces inside one row
+    reads worse than either alone.
+    """
+    return QFont(MONO_FONT_FAMILY, point_size)

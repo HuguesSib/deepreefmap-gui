@@ -102,13 +102,13 @@ def test_a_clip_leaves_its_disk_location_behind():
 
 
 def test_a_pass_leaves_its_session_and_its_chapter_columns_behind():
-    pass_ = make_pass(campaign_id=uuid.uuid4(), quality="very_good", upside_down=True, label="swim 1")
+    pass_ = make_pass(campaign_id=uuid.uuid4(), quality="very_good", surveyed_on="2026-07-01", label="swim 1")
 
     row = wire.rows_to_wire("passes", [pass_])[0]
 
     assert {"batch_id", "video_id", "extra_video_ids"}.isdisjoint(row)
     assert row["campaign_id"] == str(pass_.campaign_id)
-    assert (row["quality"], row["upside_down"], row["label"]) == ("very_good", True, "swim 1")
+    assert (row["quality"], row["surveyed_on"], row["label"]) == ("very_good", "2026-07-01", "swim 1")
 
 
 def test_a_transect_carries_its_site_and_both_accuracies():
@@ -120,13 +120,30 @@ def test_a_transect_carries_its_site_and_both_accuracies():
     assert (row["start_accuracy_m"], row["end_accuracy_m"]) == (3.5, 4.0)
 
 
-def test_a_run_leaves_the_session_it_ran_in_behind(tmp_path):
-    run = RunRecord(pass_id=uuid.uuid4(), run_dir_name="t1__p01", batch_id=uuid.uuid4())
+def test_a_run_carries_the_session_it_ran_in(tmp_path):
+    """Which runs went through the pipeline together is provenance, so it travels.
+
+    The session itself does not: it is this workstation's queue and the registry
+    has no table for it. The id goes as a correlation key the console groups by.
+    """
+    batch_id = uuid.uuid4()
+    run = RunRecord(pass_id=uuid.uuid4(), run_dir_name="t1__p01", batch_id=batch_id)
 
     row = wire.run_rows_to_wire([run], tmp_path)[0]
 
-    assert "batch_id" not in row
+    assert row["batch_id"] == str(batch_id)
     assert row["run_dir_name"] == "t1__p01"
+
+
+def test_a_pass_leaves_the_session_it_was_queued_in_behind(tmp_path):
+    """A pass belongs to many sessions over its life, so its batch_id names only
+    the latest -- a fact about this device's cart, not about the survey."""
+    pass_ = make_pass()
+    pass_.batch_id = uuid.uuid4()
+
+    row = wire.rows_to_wire("passes", [pass_])[0]
+
+    assert "batch_id" not in row
 
 
 # --- pass_video ---
@@ -258,7 +275,7 @@ def seed_manifest(tmp_path, **overrides):
     transect = make_transect()
     pass_ = make_pass(transect_id=transect.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", status="succeeded")
-    batch = SurveyBatch(name="Day 1", preset_name="reef_default")
+    batch = SurveyBatch(created_at="2026-07-01T09:00", preset_name="reef_default")
     write_run(
         tmp_path,
         run.run_dir_name,
@@ -322,6 +339,30 @@ def test_the_configuration_a_run_processed_at_comes_out_of_the_manifest(tmp_path
     assert provenance["processing_height"] == 768
     assert provenance["fps"] == 4
     assert provenance["preprocess_batch_size"] == 8
+
+
+def test_the_calibration_a_run_used_travels_with_it(tmp_path):
+    """A run rectified with a profile the registry published names it, so a
+    curator opens the measurement rather than a name that means one thing here."""
+    run = seed_manifest(
+        tmp_path,
+        camera_profile="gopro_hero_10",
+        camera_calibration_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["camera_profile"] == "gopro_hero_10"
+    assert provenance["camera_calibration_id"] == "11111111-1111-4111-8111-111111111111"
+
+
+def test_a_locally_calibrated_run_names_no_calibration(tmp_path):
+    run = seed_manifest(tmp_path, camera_profile="field_cam")
+
+    provenance = wire.run_provenance(tmp_path, run.run_dir_name)
+
+    assert provenance["camera_profile"] == "field_cam"
+    assert provenance["camera_calibration_id"] is None
 
 
 def test_a_manifest_from_before_the_configuration_was_recorded_reads_as_nulls(tmp_path):
@@ -627,7 +668,7 @@ def test_a_section_named_with_nothing_in_it_is_not_data():
 # --- Inbound ---
 
 
-def test_an_inbound_row_drops_the_registrys_cursor_and_keeps_what_it_carried():
+def test_an_inbound_row_keeps_the_registrys_position_and_what_it_carried():
     pulled = {
         "id": str(uuid.uuid4()),
         "file_name": "GX010001.MP4",
@@ -639,14 +680,15 @@ def test_an_inbound_row_drops_the_registrys_cursor_and_keeps_what_it_carried():
     row = wire.rows_from_wire([pulled])[0]
 
     assert "server_seq" not in row
+    assert row["head_seq"] == 4102
     assert row["captured_at"] == "2026-07-01T10:00:00+00:00"
     assert row["updated_at"] == "2026-08-01T00:00:00+00:00"
-    assert set(row) == set(pulled) - {"server_seq"}
+    assert set(row) == (set(pulled) - {"server_seq"}) | {"head_seq"}
 
 
 def test_a_pass_row_survives_the_trip_out_and_back():
     """A pushed pass and the same pass pulled again describe the same swim."""
-    pass_ = make_pass(quality="meh", upside_down=True, campaign_id=uuid.uuid4())
+    pass_ = make_pass(quality="meh", surveyed_on="2026-07-01", campaign_id=uuid.uuid4())
 
     sent = wire.rows_to_wire("passes", [pass_])[0]
     chapters = wire.pass_video_rows(pass_)
@@ -657,7 +699,7 @@ def test_a_pass_row_survives_the_trip_out_and_back():
     assert landed["video_id"] == str(pass_.video_id)
     assert landed["extra_video_ids"] == [str(v) for v in pass_.extra_video_ids]
     assert landed["updated_at"] == pass_.updated_at
-    assert (landed["quality"], landed["upside_down"]) == ("meh", True)
+    assert (landed["quality"], landed["surveyed_on"]) == ("meh", "2026-07-01")
 
 
 def test_a_cover_row_is_json_the_registry_can_check(tmp_path):

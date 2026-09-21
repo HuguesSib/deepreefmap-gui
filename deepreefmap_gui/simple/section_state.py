@@ -43,6 +43,8 @@ CAUSE_FAILED_PASSES = "process.failed_passes"
 CAUSE_UNASSIGNED_PASSES = "process.unassigned_passes"
 CAUSE_UNSCALED_PASSES = "process.unscaled_passes"
 CAUSE_RETIRED_TRANSECT = "process.retired_transect"
+CAUSE_UNREAD_GRAVITY = "process.unread_gravity"
+CAUSE_PROFILE_RESOLUTION = "process.profile_resolution"
 CAUSE_UNMET_REQUIREMENTS = "machine.unmet_requirements"
 CAUSE_MACHINE_ADVISORY = "machine.advisory"
 
@@ -59,6 +61,8 @@ CAUSES = (
     CAUSE_UNASSIGNED_PASSES,
     CAUSE_UNSCALED_PASSES,
     CAUSE_RETIRED_TRANSECT,
+    CAUSE_UNREAD_GRAVITY,
+    CAUSE_PROFILE_RESOLUTION,
     CAUSE_UNMET_REQUIREMENTS,
     CAUSE_MACHINE_ADVISORY,
 )
@@ -91,7 +95,7 @@ def _plural(count: int, singular: str, plural: str = "") -> str:
 
 
 def passes_phrase(count: int) -> str:
-    """"3 passes". Shared so the gate's reason and the button that obeys it
+    """ "3 passes". Shared so the gate's reason and the button that obeys it
     count the same thing in the same words."""
     return _plural(count, "pass", "passes")
 
@@ -123,7 +127,7 @@ def transects_state(transect_count: int, has_draft: bool) -> SectionState:
         return SectionState(
             ATTENTION,
             _plural(transect_count, "transect"),
-            "A transect is half-entered: it needs a name and both endpoints to save.",
+            "A transect draft needs a name and both ends to save.",
             cause=CAUSE_DRAFT_TRANSECT,
             n=1,
         )
@@ -145,8 +149,7 @@ def browse_state(run_count: int, unfiled: int) -> SectionState:
         return SectionState(
             ATTENTION,
             f"{counts} · {unfiled} unfiled",
-            f"{_plural(unfiled, 'run')} belong to no transect. "
-            "Assign them to compare passes of the same transect.",
+            f"{_plural(unfiled, 'run')} belong to no transect. Assign them under Results.",
             cause=CAUSE_UNFILED_RUNS,
             n=unfiled,
         )
@@ -176,7 +179,7 @@ def videos_state(clip_count: int, missing: int) -> SectionState:
 
 
 def _sit_on(count: int) -> str:
-    """"1 pass is on", "2 passes are on". The reasons below name a count and then
+    """ "1 pass is on", "2 passes are on". The reasons below name a count and then
     say something about it, so the verb has to follow the count."""
     return f"{passes_phrase(count)} {'is' if count == 1 else 'are'} on"
 
@@ -187,7 +190,7 @@ def _it_or_they(count: int) -> str:
 
 
 def _lines_phrase(count: int, described_as: str = "") -> str:
-    """"a transect", "2 transects", with the adjective inside the count.
+    """ "a transect", "2 transects", with the adjective inside the count.
 
     Shared, because every clause that names the lines a group of passes sits on
     pluralises the same way, and the count of passes says nothing about it: two
@@ -238,15 +241,10 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
     about, so it is carried here rather than swallowed.
     """
     them = "it" if lines <= 1 else "them"
-    withdrawn = (
-        f"{_sit_on(retired)} {_lines_phrase(lines)} the registry no longer lists"
-    )
+    withdrawn = f"{_sit_on(retired)} {_lines_phrase(lines)} the registry no longer lists"
     ask = f"Ask whoever removed {them} in the web console"
     if not unscaled:
-        scaled = (
-            f"{withdrawn}, and still {'runs' if retired == 1 else 'run'} scaled by "
-            f"the length recorded for {them}"
-        )
+        scaled = f"{withdrawn}, and still {'runs' if retired == 1 else 'run'} scaled by the length recorded for {them}"
         if not elsewhere:
             return f"{scaled}. {ask} whether these results count."
         # The unscaled group leads, because only its half of this is
@@ -256,8 +254,7 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
             f"length under Transects. {ask} whether these results count."
         )
     consequence = (
-        f"and no tape length was recorded for {them}, so {_it_or_they(retired)} "
-        "will run unscaled"
+        f"and no tape length was recorded for {them}, so {_it_or_they(retired)} will run unscaled"
         if unscaled == retired
         # "the line each was swum on" rather than "the line they are on": some
         # of the group kept its scale and some did not, which can only happen
@@ -278,10 +275,7 @@ def _retired_reason(retired: int, unscaled: int, lines: int, elsewhere: int, spr
         return reason
     # The opening sentence already says runs will come out unscaled, so this
     # group follows it rather than displacing it.
-    return (
-        f"{reason} {_unscaled_clause(elsewhere, spread, 'listed')}. Set the length "
-        "under Transects."
-    )
+    return f"{reason} {_unscaled_clause(elsewhere, spread, 'listed')}. Set the length under Transects."
 
 
 def run_gate(
@@ -299,6 +293,8 @@ def run_gate(
     retired_unscaled: int = 0,
     retired_lines: int = 0,
     missing_files: int = 0,
+    unread_gravity: int = 0,
+    profile_resolution: tuple[int, str, str] | None = None,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
 
@@ -316,6 +312,9 @@ def run_gate(
     on, and ``unscaled_lines`` how many still-listed lines the unscaled ones are.
     A caller that does not count them gets the singular, which is what one line
     reads as and what every caller before this said.
+
+    ``profile_resolution`` is (passes, the size they were shot at, the size the
+    camera profile was calibrated at), or None where they agree.
     """
     if pass_count == 0:
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
@@ -338,7 +337,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            "The run settings could not be loaded, so nothing here can be processed.",
+            "The run settings could not be loaded.",
             fix=FIX_SETTINGS,
             cause=CAUSE_NO_PRESET,
         )
@@ -346,8 +345,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            f"The {gpu_only_mapper} processing method requires a graphics card, "
-            "and none was detected.",
+            f"The {gpu_only_mapper} processing method requires a graphics card, and none was detected.",
             fix=FIX_MACHINE,
             cause=CAUSE_NO_GPU,
         )
@@ -355,8 +353,7 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            f"{_plural(len(missing_models), 'required model')} not installed "
-            f"({', '.join(missing_models)}).",
+            f"{_plural(len(missing_models), 'required model')} not installed ({', '.join(missing_models)}).",
             fix=FIX_MACHINE,
             cause=CAUSE_MISSING_MODELS,
             n=len(missing_models),
@@ -386,9 +383,7 @@ def run_gate(
                     ],
                 )
             ),
-            _retired_reason(
-                retired, retired_unscaled, max(retired_lines, 1), elsewhere, unscaled_lines
-            ),
+            _retired_reason(retired, retired_unscaled, max(retired_lines, 1), elsewhere, unscaled_lines),
             cause=CAUSE_RETIRED_TRANSECT,
             n=retired,
         )
@@ -408,8 +403,7 @@ def run_gate(
         return SectionState(
             OK,
             f"{counts} · {unassigned} without a transect",
-            f"{passes_phrase(unassigned)} will run without a transect, so they will not be "
-            "compared against repeat passes.",
+            f"{passes_phrase(unassigned)} will run without a transect: unscaled, not compared.",
             cause=CAUSE_UNASSIGNED_PASSES,
             n=unassigned,
         )
@@ -421,6 +415,33 @@ def run_gate(
             f"{_unscaled_clause(unscaled, unscaled_lines)}. Set the length under Transects.",
             cause=CAUSE_UNSCALED_PASSES,
             n=unscaled,
+        )
+    # The camera recorded a gravity vector this platform cannot read: the
+    # reconstruction still runs, without the alignment the footage would have
+    # given it. Said once here, because the log line it otherwise leaves is the
+    # only other place it shows.
+    if unread_gravity:
+        return SectionState(
+            OK,
+            f"{counts} · {unread_gravity} without gravity",
+            f"{passes_phrase(unread_gravity)} recorded a gravity vector that cannot be read on this "
+            "platform, so the reconstruction is not gravity-aligned.",
+            cause=CAUSE_UNREAD_GRAVITY,
+            n=unread_gravity,
+        )
+    # The camera profile describes a lens at a resolution, and a GoPro changes
+    # its field of view with its mode. Footage shot at another size may have been
+    # shot through another crop, in which case the intrinsics are not this
+    # footage's. Said, not blocked: the same size in another mode is just as
+    # wrong, and only the diver knows which.
+    if profile_resolution:
+        return SectionState(
+            OK,
+            f"{counts} · {profile_resolution[0]} off the profile",
+            f"{passes_phrase(profile_resolution[0])} shot at {profile_resolution[1]}, and the camera "
+            f"profile was calibrated at {profile_resolution[2]}. Check the camera was in the same mode.",
+            cause=CAUSE_PROFILE_RESOLUTION,
+            n=profile_resolution[0],
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")

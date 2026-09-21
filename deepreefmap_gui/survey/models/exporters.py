@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,31 +16,50 @@ if TYPE_CHECKING:
 
 TRANSECT_CSV_COLUMNS = [
     "name",
+    "site",
     "start_lat",
     "start_lon",
+    "start_accuracy_m",
     "end_lat",
     "end_lon",
+    "end_accuracy_m",
     "length_m",
     "depth_m",
+    "start_depth_m",
+    "end_depth_m",
     "description",
     "id",
 ]
 
 
-def save_transects_csv(path: Path, transects: Iterable[Transect]) -> None:
-    """CSV in the shape import_transects_csv reads back, ids included."""
+def _blank(value: float | None) -> float | str:
+    return "" if value is None else value
+
+
+def save_transects_csv(
+    path: Path,
+    transects: Iterable[Transect],
+    site_names: Mapping[uuid.UUID, str] | None = None,
+) -> None:
+    """CSV in the shape import_transects_csv reads back, ids and site names included."""
+    names = site_names or {}
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(TRANSECT_CSV_COLUMNS)
         for t in transects:
             writer.writerow([
                 t.name,
-                t.start_lat,
-                t.start_lon,
-                t.end_lat,
-                t.end_lon,
-                "" if t.length_m is None else t.length_m,
-                "" if t.depth_m is None else t.depth_m,
+                names.get(t.site_id, "") if t.site_id else "",
+                _blank(t.start_lat),
+                _blank(t.start_lon),
+                _blank(t.start_accuracy_m),
+                _blank(t.end_lat),
+                _blank(t.end_lon),
+                _blank(t.end_accuracy_m),
+                _blank(t.length_m),
+                _blank(t.depth_m),
+                _blank(t.start_depth_m),
+                _blank(t.end_depth_m),
                 t.description,
                 str(t.id),
             ])

@@ -1,4 +1,4 @@
-"""The one place a section verdict becomes a message.
+"""The one place a pass verdict becomes a message.
 
 Verdicts are matched on ``SectionState.cause``, never on the sentence they
 carry. The sentence is prose and will be improved; the cause is the identity a

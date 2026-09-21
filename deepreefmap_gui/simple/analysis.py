@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
+from deepreefmap_gui.core.theme import GUTTER, SPACE_SM, SPACE_XS, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     EmptyState,
@@ -30,7 +31,9 @@ from deepreefmap_gui.core.widgets import (
     enable_sorting,
     install_column_sizer,
     muted_label,
+    narrow_combo,
     section_card,
+    tabular_columns,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.cover import COVER_LEVELS, group_color_for_name
@@ -58,12 +61,16 @@ _CHART_MIN_FRACTION = 0.005
 _MODE_POOLED, _MODE_PASSES = "pooled", "passes"
 _CHART_MODES = ((_MODE_POOLED, "Pooled"), (_MODE_PASSES, "Per pass"))
 
-# The class name takes the slack; the five figures beside it are percentages and
-# ratios, which are the same width whatever the pane is.
+# The class name takes the slack; the figures beside it are percentages and
+# ratios, the same width whatever the pane is. Only the class and the cover
+# estimate are mandatory: the spread figures earn their width in the order they
+# are read, and Pass mean goes first because it is a reference for the spread
+# rather than a figure anybody quotes. All of them stay in the CSV either way.
 _STATS_COLUMNS = ColumnSpec(
-    fixed={1: 68, 2: 76, 3: 62, 4: 56, 5: 68},
+    fixed={1: 68},
     weights={0: 1},
-    minimums={0: 120},
+    minimums={0: 110},
+    optional=((3, 68), (4, 56), (5, 68), (2, 84)),
 )
 
 
@@ -85,14 +92,20 @@ class SimpleAnalysisMixin(MixinBase):
         layout.setSpacing(GUTTER)
 
         chart_card, chart_layout = section_card()
-        selector = QHBoxLayout()
-        selector.setSpacing(6)
-        selector.addWidget(QLabel("Transect"))
+        # A grid over two rows rather than one long row: a combo reports its
+        # widest entry as its minimum, and these three controls side by side set a
+        # floor wider than the column this card is given, which carried the chart
+        # and the table below it off the right-hand edge of the page.
+        selector = QGridLayout()
+        selector.setContentsMargins(0, 0, 0, 0)
+        selector.setHorizontalSpacing(SPACE_SM)
+        selector.setVerticalSpacing(SPACE_XS)
+        selector.setColumnStretch(1, 1)
+        selector.addWidget(QLabel("Transect"), 0, 0)
         self._analysis_transect_combo = QComboBox()
-        self._analysis_transect_combo.currentIndexChanged.connect(
-            lambda *_: self._on_analysis_transect_changed()
-        )
-        selector.addWidget(self._analysis_transect_combo, 1)
+        narrow_combo(self._analysis_transect_combo, 12)
+        self._analysis_transect_combo.currentIndexChanged.connect(lambda *_: self._on_analysis_transect_changed())
+        selector.addWidget(self._analysis_transect_combo, 0, 1, 1, 2)
         # "Detail" rather than "Level": the combo picks how finely the classes
         # are grouped, which the old label said nothing about.
         detail_label = QLabel("Detail")
@@ -101,30 +114,27 @@ class SimpleAnalysisMixin(MixinBase):
             "fine is every class on its own, coarse is broad groups."
         )
         detail_label.setToolTip(detail_tip)
-        selector.addWidget(detail_label)
+        selector.addWidget(detail_label, 1, 0)
         self._analysis_level_combo = QComboBox()
         self._analysis_level_combo.addItems(list(COVER_LEVELS))
         self._analysis_level_combo.setCurrentText("intermediate")
+        narrow_combo(self._analysis_level_combo, 10)
         self._analysis_level_combo.setToolTip(detail_tip)
-        self._analysis_level_combo.currentTextChanged.connect(
-            lambda *_: self._refresh_survey_analysis()
-        )
-        selector.addWidget(self._analysis_level_combo)
+        self._analysis_level_combo.currentTextChanged.connect(lambda *_: self._refresh_survey_analysis())
+        selector.addWidget(self._analysis_level_combo, 1, 1)
         # Pooled by default: the estimate is what the page is for, and one bar per
         # pass was four bars saying nothing about which to trust.
-        self._analysis_chart_mode = str(
-            self._settings.value("analysis_chart_mode", _MODE_POOLED)
-        )
+        self._analysis_chart_mode = str(self._settings.value("analysis_chart_mode", _MODE_POOLED))
         if self._analysis_chart_mode not in dict(_CHART_MODES):
             self._analysis_chart_mode = _MODE_POOLED
         self._analysis_mode_chips = FilterChips(_CHART_MODES)
         self._analysis_mode_chips.setToolTip(
             "Pooled is the count-weighted estimate with the spread across passes. "
-            "Per pass draws each pass on its own, and a bar opens its section."
+            "Per pass draws each pass on its own, and a bar opens its pass."
         )
         self._analysis_mode_chips.set_current(self._analysis_chart_mode)
         self._analysis_mode_chips.changed.connect(self._on_analysis_mode_changed)
-        selector.addWidget(self._analysis_mode_chips)
+        selector.addWidget(self._analysis_mode_chips, 1, 2, Qt.AlignmentFlag.AlignRight)
         chart_layout.addLayout(selector)
         # The defensible headline: the count-weighted pool and how many passes
         # it rests on. The per-pass bars below are the spread, not the estimate.
@@ -153,6 +163,8 @@ class SimpleAnalysisMixin(MixinBase):
             ["Class", "Cover", "Pass mean", "Std", "CV", "Range"],
         )
         # Largest cover first, matching how the chart ranks its bars.
+        # Tabular figures on the percentages, not on the class names beside them.
+        tabular_columns(self._analysis_stats_table, range(1, 6))
         enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
         install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS, settings_key="analysis_stats")
         self._analysis_stats_stack = QStackedWidget()
@@ -175,10 +187,10 @@ class SimpleAnalysisMixin(MixinBase):
         layout.addWidget(stats_card, 2)
 
         export_row = QHBoxLayout()
-        self._analysis_export_btn = QPushButton("Export repeatability CSV")
+        self._analysis_export_btn = QPushButton("Export repeatability…")
         self._analysis_export_btn.clicked.connect(self._on_analysis_export_csv)
         export_row.addWidget(self._analysis_export_btn)
-        self._analysis_collated_btn = QPushButton("Export collated cover CSV")
+        self._analysis_collated_btn = QPushButton("Export cover…")
         self._analysis_collated_btn.clicked.connect(self._on_analysis_export_collated)
         export_row.addWidget(self._analysis_collated_btn)
         export_row.addStretch(1)
@@ -197,8 +209,7 @@ class SimpleAnalysisMixin(MixinBase):
         )
         self._analysis_collated_btn.setEnabled(ready)
         self._analysis_collated_btn.setToolTip(
-            "Write one long-format row per transect/pass/class/level, plus the "
-            "count-weighted pooled estimate, with GUI and taxonomy provenance."
+            "Write one row per transect, pass, class and level, plus the pooled estimate."
             if ready
             else "Nothing to export yet: no completed passes."
         )
@@ -269,9 +280,7 @@ class SimpleAnalysisMixin(MixinBase):
         """Pooled with its spread, or one series per pass when asked for."""
         level = self._analysis_level_combo.currentText()
         if self._analysis_chart_mode == _MODE_POOLED:
-            aggregate = aggregated_cover_chart(
-                covers, minimum_fraction=_CHART_MIN_FRACTION, expected_passes=expected
-            )
+            aggregate = aggregated_cover_chart(covers, minimum_fraction=_CHART_MIN_FRACTION, expected_passes=expected)
             self._analysis_chart.set_aggregate(
                 aggregate.labels,
                 aggregate.values,
@@ -304,10 +313,10 @@ class SimpleAnalysisMixin(MixinBase):
         self._refresh_survey_analysis()
 
     def _on_analysis_series_clicked(self, key: str) -> None:
-        """A clicked pass opens where its section is described.
+        """A clicked pass opens where its pass is described.
 
         Inert in pooled mode: a pooled bar is every pass at once, so there is no
-        one section for it to be about.
+        one pass for it to be about.
         """
         if self._analysis_chart_mode != _MODE_PASSES:
             return
@@ -328,17 +337,12 @@ class SimpleAnalysisMixin(MixinBase):
             f"pass{'es' if pooled.expected_passes != 1 else ''}"
         )
         if self._analysis_chart_mode != _MODE_POOLED:
-            tail = "Bars below show each pass, not the estimate."
+            tail = "Bars show each pass, not the estimate."
         elif pooled.contributing_passes < 2:
-            tail = "One pass, so the bars have no spread to show."
+            tail = "One pass, so no spread."
         else:
-            tail = (
-                "Bars below are that pool; each whisker spans the lowest and "
-                "highest single pass."
-            )
-        self._analysis_estimate_label.setText(
-            f"Transect cover estimate: count-weighted pool of {passes}. {tail}"
-        )
+            tail = "Whiskers span the lowest and highest pass."
+        self._analysis_estimate_label.setText(f"Cover estimate: pooled from {passes}. {tail}")
         self._update_analysis_provenance()
 
     def _update_analysis_provenance(self) -> None:
@@ -355,8 +359,7 @@ class SimpleAnalysisMixin(MixinBase):
         """
         label = self._analysis_provenance_label
         entries = {
-            summarise_run_provenance(cover.run_dir_name, self._out_root_input.text())
-            for cover in self._analysis_covers
+            summarise_run_provenance(cover.run_dir_name, self._out_root_input.text()) for cover in self._analysis_covers
         }
         entries.discard("")
         label.setVisible(bool(entries))
@@ -365,17 +368,11 @@ class SimpleAnalysisMixin(MixinBase):
         elif len(entries) == 1:
             label.setText(f"Produced by {next(iter(entries))}.")
         else:
-            label.setText(
-                "Passes were not all produced the same way: "
-                + "; ".join(sorted(entries))
-                + ". Pooling them assumes they are comparable."
-            )
+            label.setText("Passes were produced differently: " + "; ".join(sorted(entries)) + ".")
 
     def _refresh_analysis_empty_states(self) -> None:
         """Show each pane's placeholder while it has nothing to say."""
-        self._analysis_stats_stack.setCurrentIndex(
-            0 if self._analysis_stats_table.rowCount() else 1
-        )
+        self._analysis_stats_stack.setCurrentIndex(0 if self._analysis_stats_table.rowCount() else 1)
         self._update_analysis_export_button()
 
     def _fill_analysis_stats(self, covers: list, pooled: PooledCover) -> None:
@@ -399,9 +396,7 @@ class SimpleAnalysisMixin(MixinBase):
             for column, (text, value) in enumerate(cells):
                 item = SortableItem(text, value)
                 if column > 0:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 table.setItem(row, column, item)
         table.setSortingEnabled(True)
 
@@ -420,9 +415,7 @@ class SimpleAnalysisMixin(MixinBase):
                 f"#{(first.video_hash or '')[:8]} {first.begin_s:.0f}-{first.end_s:.0f}s: "
                 f"{len(group)} runs, max class spread {worst * 100:.1f}%"
             )
-        self._analysis_repro_label.setText(
-            "Reproducibility (identical footage and trim):\n" + "\n".join(lines)
-        )
+        self._analysis_repro_label.setText("Reproducibility (identical footage and trim):\n" + "\n".join(lines))
 
     def _on_analysis_export_csv(self) -> None:
         covers = self._analysis_covers
@@ -437,9 +430,7 @@ class SimpleAnalysisMixin(MixinBase):
         )
         if not path_str:
             return
-        save_repeatability_csv(
-            Path(path_str), cover_labels(covers), repeatability_stats(covers), covers
-        )
+        save_repeatability_csv(Path(path_str), cover_labels(covers), repeatability_stats(covers), covers)
         self._status_label.setText(f"Exported repeatability CSV for {name}.")
 
     def _on_analysis_export_collated(self) -> None:
@@ -457,6 +448,4 @@ class SimpleAnalysisMixin(MixinBase):
         rows = collate_long_format(store, out_root, self._classes_config)
         save_long_format_csv(Path(path_str), rows)
         transects = len({row.transect_id for row in rows})
-        self._status_label.setText(
-            f"Exported collated cover CSV: {len(rows)} rows across {transects} transects."
-        )
+        self._status_label.setText(f"Exported collated cover CSV: {len(rows)} rows across {transects} transects.")

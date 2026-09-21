@@ -1,5 +1,12 @@
+from importlib.resources import files
+
 from deepreefmap.camera.intrinsics import CameraProfile, available_profile_names
 from deepreefmap.config.classes import load_classes
+
+# The profiles the pipeline ships. The registry mirrors this list by hand in
+# `deepreefmap-api/src/contract/preset_schema.rs::CAMERA_PROFILES`, and the
+# library's package data is a glob, so a new one ships in silence otherwise.
+BUNDLED_CAMERA_PROFILES = ("gopro_hero_10",)
 
 
 def test_default_classes_and_camera_profiles_load_outside_repo_root(tmp_path, monkeypatch) -> None:
@@ -37,3 +44,20 @@ def test_bundled_fonts_are_present() -> None:
     fonts_dir = resources.files("deepreefmap_gui.resources").joinpath("fonts")
     for name in _FONT_FILES:
         assert fonts_dir.joinpath(name).is_file(), f"missing bundled font {name}"
+
+
+def test_the_bundled_camera_profiles_are_the_ones_the_registry_mirrors() -> None:
+    """Read from the package rather than `available_profile_names()`, which merges
+    in whatever the machine has calibrated."""
+    shipped = sorted(
+        entry.name.removesuffix(".json")
+        for entry in files("deepreefmap.resources.camera_profiles").iterdir()
+        if entry.name.endswith(".json")
+    )
+
+    assert shipped == sorted(BUNDLED_CAMERA_PROFILES), (
+        "the pipeline's bundled camera profiles changed. "
+        "deepreefmap-api/src/contract/preset_schema.rs::CAMERA_PROFILES hand-lists them "
+        "and reaches contract/preset-schema.json: update it, re-export the contract, "
+        "then update BUNDLED_CAMERA_PROFILES here."
+    )

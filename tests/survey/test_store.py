@@ -9,6 +9,7 @@ import pytest
 from _factories import (
     VIDEO_HASH,
     VIDEO_PATH,
+    as_pushed,
     make_batch,
     make_transect,
     make_video,
@@ -103,11 +104,11 @@ def test_a_pass_names_a_campaign_and_a_quality(store):
     _, _, pass_ = seed_pass(store)
     pass_.campaign_id = campaign.id
     pass_.quality = "very_good"
-    pass_.upside_down = True
+    pass_.surveyed_on = "2026-07-01"
     store.update_pass(pass_)
     stored = store.get_pass(pass_.id)
-    assert (stored.campaign_id, stored.quality, stored.upside_down) == (
-        campaign.id, "very_good", True,
+    assert (stored.campaign_id, stored.quality, stored.surveyed_on) == (
+        campaign.id, "very_good", "2026-07-01",
     )
 
 
@@ -246,7 +247,7 @@ def test_upsert_video_without_hash_falls_back_to_the_path(store):
 
 def test_pass_filters(store):
     transect, video, pass_ = seed_pass(store)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     second = TransectPass(
         transect_id=transect.id,
@@ -379,7 +380,7 @@ def test_json_export_import_round_trip(store, tmp_path):
     pass_.campaign_id = campaign.id
     pass_.quality = "good"
     store.update_pass(pass_)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=batch.id))
@@ -418,7 +419,7 @@ def write_manifest(out_root, run_dir_name, block, video_path="/data/GX010001.MP4
 
 def test_rebuild_from_scan_restores_everything(store, tmp_path):
     transect, video, pass_ = seed_pass(store, direction="reverse")
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
     store.add_run(run)
@@ -544,7 +545,7 @@ def test_delete_pass_removes_it(store):
 def test_deleting_a_pass_takes_its_cart_rows_with_it(store):
     """A cart row is a plan to process the pass, so it goes when the pass does."""
     _transect, _video, pass_ = seed_pass(store)
-    first, second = SurveyBatch(name="Day 1"), SurveyBatch(name="Day 2")
+    first, second = SurveyBatch(created_at="2026-07-01T09:00"), SurveyBatch(created_at="2026-07-02T09:00")
     for batch in (first, second):
         store.add_batch(batch)
         store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
@@ -559,7 +560,7 @@ def test_deleting_a_pass_takes_its_cart_rows_with_it(store):
 def test_deleting_a_pass_with_a_run_says_why_it_cannot(store):
     """A run is history: it holds the pass, and the refusal reads as a sentence."""
     _transect, _video, pass_ = seed_pass(store)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
@@ -702,7 +703,7 @@ def test_a_carried_forward_survey_reaches_the_cart_cascade(tmp_path):
 
 def test_list_passes_combines_both_filters(store):
     """Filtering by transect and batch at once is an AND, not the last one set."""
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     transect_a, video, pass_a = seed_pass(store)
     transect_b = make_transect("T2")
@@ -721,11 +722,29 @@ def test_list_passes_combines_both_filters(store):
 
 
 def test_batches_are_readable_after_being_added(store):
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     assert store.get_batch(batch.id) == batch
-    assert [b.name for b in store.list_batches()] == ["Day 1"]
+    assert [b.label for b in store.list_batches()] == ["2026-07-01 09:00:00"]
     assert store.get_batch(uuid.uuid4()) is None
+
+
+def test_two_sessions_beginning_in_one_second_still_label_themselves_apart(store):
+    """Scenario: passes are queued against a running order, minting a cart in the
+    same second the order started.
+
+    Expected behaviour: the second session is advanced, so the two are not one
+    label between them. The start is the whole of a session's identity, and the
+    Cart page names both at once while an order runs.
+    """
+    first, second = SurveyBatch(created_at="2026-07-01T09:00:00"), SurveyBatch(
+        created_at="2026-07-01T09:00:00"
+    )
+    store.add_batch(first)
+    store.add_batch(second)
+
+    assert first.label != second.label
+    assert store.get_batch(second.id).created_at == "2026-07-01T09:00:01"
 
 
 def test_pass_chapters_round_trip(store):
@@ -900,7 +919,7 @@ def test_current_cart_is_the_newest_batch_only_while_it_has_run_nothing(store):
     assert store.current_cart() is None
 
     _, _, pass_ = seed_pass(store)
-    first = SurveyBatch(name="Day 1")
+    first = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(first)
     assert store.current_cart() == first
 
@@ -908,16 +927,16 @@ def test_current_cart_is_the_newest_batch_only_while_it_has_run_nothing(store):
     assert store.batch_run_count(first.id) == 1
     assert store.current_cart() is None
 
-    second = SurveyBatch(name="Day 2")
+    second = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(second)
     assert store.current_cart() == second
 
 
 def test_an_older_empty_batch_behind_a_started_one_is_not_the_cart(store):
     _, _, pass_ = seed_pass(store)
-    abandoned = SurveyBatch(name="Day 1")
+    abandoned = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(abandoned)
-    started = SurveyBatch(name="Day 2")
+    started = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(started)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=started.id))
     assert store.current_cart() is None
@@ -925,8 +944,8 @@ def test_an_older_empty_batch_behind_a_started_one_is_not_the_cart(store):
 
 def test_a_pass_can_be_a_member_of_two_batches_but_of_one_only_once(store):
     _, _, pass_ = seed_pass(store)
-    first = SurveyBatch(name="Day 1")
-    second = SurveyBatch(name="Day 2")
+    first = SurveyBatch(created_at="2026-07-01T09:00")
+    second = SurveyBatch(created_at="2026-07-02T09:00")
     store.add_batch(first)
     store.add_batch(second)
 
@@ -951,7 +970,7 @@ def test_passes_in_batch_keeps_the_order_the_cart_was_filled_in(store):
     )
     store.add_pass(later)
     store.add_pass(earlier)
-    batch = SurveyBatch(name="Day 1")
+    batch = SurveyBatch(created_at="2026-07-01T09:00")
     store.add_batch(batch)
     for pass_ in (earlier, first, later):
         store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
@@ -1125,7 +1144,7 @@ def test_deleting_a_session_takes_its_records_and_leaves_the_shared(store):
 
 
 def test_deleting_a_session_leaves_other_sessions_runs(store):
-    first, second = make_batch(store, "Day 1"), make_batch(store, "Day 2")
+    first, second = make_batch(store, "2026-07-01 09:00:00"), make_batch(store, "2026-07-02 09:00:00")
     _t, _v, pass_ = seed_pass(store, batch=first)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="one", batch_id=first.id))
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="two", batch_id=second.id))
@@ -1349,6 +1368,7 @@ def test_apply_from_server_keeps_the_newer_of_the_two_copies(store):
 
     stale = {"id": str(site.id), "name": "Stale", "updated_at": "2026-08-01T00:00:00+00:00"}
     same = {"id": str(site.id), "name": "Tied", "updated_at": site.updated_at}
+    as_pushed(store)
     assert store.apply_from_server("sites", [stale, same]).skipped == [site.id, site.id]
     assert store.get_site(site.id).name == "Reef"
 
@@ -1363,6 +1383,7 @@ def test_apply_from_server_lands_a_tombstone(store):
     site = Site(name="Reef", updated_at="2026-08-01T00:00:00+00:00")
     store.add_site(site)
 
+    as_pushed(store)
     store.apply_from_server("sites", [{
         "id": str(site.id),
         "deleted_at": "2026-08-20T00:00:00+00:00",
@@ -1379,6 +1400,7 @@ def test_apply_from_server_leaves_what_only_this_device_knows(store):
     whole row would blank the one thing that finds the file again."""
     video = store.upsert_video(make_video(updated_at="2026-08-10T00:00:00+00:00"))
 
+    as_pushed(store)
     store.apply_from_server("videos", [{
         "id": str(video.id),
         "file_name": "renamed.MP4",
@@ -1654,6 +1676,7 @@ def test_a_pulled_rename_onto_a_taken_name_is_set_aside(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(second.id, "T1", site.id),
     ])
@@ -1704,6 +1727,7 @@ def test_a_name_a_later_row_frees_is_not_set_aside(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(second.id, "T1", site.id),
         _pulled_transect(first.id, "T3", site.id),
@@ -1730,6 +1754,7 @@ def test_two_lines_that_swap_names_both_land(store):
     store.add_transect(first)
     store.add_transect(second)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(first.id, "T2", site.id),
         _pulled_transect(second.id, "T1", site.id),
@@ -1750,6 +1775,7 @@ def test_three_lines_that_rotate_names_all_land(store):
     for line in lines:
         store.add_transect(line)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(lines[0].id, "T2", site.id),
         _pulled_transect(lines[1].id, "T3", site.id),
@@ -1775,6 +1801,7 @@ def test_a_swap_blocked_from_outside_leaves_both_names_as_they_were(store):
     for line in (first, second, make_transect("T9", site_id=site.id)):
         store.add_transect(line)
 
+    as_pushed(store)
     result = store.apply_from_server("transects", [
         _pulled_transect(first.id, "T2", site.id),
         _pulled_transect(second.id, "T9", site.id),
@@ -1921,6 +1948,7 @@ def test_a_retired_transect_still_answers_for_the_passes_swum_on_it(store):
     """
     transect, _video, pass_ = seed_pass(store)
 
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1939,6 +1967,7 @@ def test_a_manifest_records_that_the_line_was_retired(store, tmp_path):
     """A bare run directory is the whole record later, so whether the line was
     live at the time is only ever written here."""
     transect, _video, pass_ = seed_pass(store)
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1959,6 +1988,7 @@ def test_a_rebuild_brings_a_retired_line_back_retired(store, tmp_path):
     """Scanning footage still on disk must not put a withdrawn line back in
     front of whoever withdrew it."""
     transect, _video, pass_ = seed_pass(store)
+    as_pushed(store)
     store.apply_from_server("transects", [{
         "id": str(transect.id),
         "deleted_at": PULLED_AT,
@@ -1995,6 +2025,7 @@ def test_a_retired_line_with_passes_is_still_listed_for_reference(store):
     unused = make_transect("Never used")
     store.add_transect(unused)
     for line in (swum, unused):
+        as_pushed(store)
         store.apply_from_server("transects", [{
             "id": str(line.id),
             "deleted_at": PULLED_AT,
@@ -2022,3 +2053,57 @@ def test_an_exported_document_carries_the_retired_line_its_passes_name(store, tm
 
     assert fresh.get_transect_for_reference(transect.id).length_m == 50.0
     assert fresh.list_passes(transect_id=transect.id)
+
+
+def test_list_passes_narrows_to_one_campaign(store):
+    """Scenario: two trips' work in one survey."""
+    from deepreefmap_gui.survey.models import Campaign, TransectPass, VideoAsset
+
+    fiji = Campaign(name="2026_08_fiji")
+    eritrea = Campaign(name="2025_10_eritrea")
+    store.add_campaign(fiji)
+    store.add_campaign(eritrea)
+    video = store.upsert_video(VideoAsset(file_name="a.mp4", path="/a.mp4", hash="ab" * 16))
+    for campaign in (fiji, fiji, eritrea):
+        store.add_pass(
+            TransectPass(
+                transect_id=None, video_id=video.id, begin_s=0.0, end_s=10.0, campaign_id=campaign.id
+            )
+        )
+
+    assert len(store.list_passes(campaign_id=fiji.id)) == 2
+    assert len(store.list_passes(campaign_id=eritrea.id)) == 1
+    assert len(store.list_passes()) == 3
+
+
+def test_a_withdrawn_campaign_still_answers_for_reference(store):
+    """A pass filed against a trip the registry has retired still names it, the
+    way get_transect_for_reference answers for a retired line.
+
+    Pulled rather than added here: a row this laptop authored and still owes
+    holds its local copy against an incoming tombstone, by design.
+    """
+    import uuid as _uuid
+
+    campaign_id = _uuid.uuid4()
+    for seq, deleted_at in ((5, None), (7, "2026-08-07T00:00:00+00:00")):
+        store.apply_from_server(
+            "campaigns",
+            [
+                {
+                    "id": str(campaign_id),
+                    "name": "2026_08_fiji",
+                    "begin_date": None,
+                    "end_date": None,
+                    "description": "",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "updated_at": f"2026-08-0{seq}T00:00:00+00:00",
+                    "deleted_at": deleted_at,
+                    "device_id": None,
+                    "server_seq": seq,
+                }
+            ],
+        )
+
+    assert store.get_campaign(campaign_id) is None
+    assert store.get_campaign_for_reference(campaign_id).name == "2026_08_fiji"

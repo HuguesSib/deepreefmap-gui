@@ -23,7 +23,7 @@ class CartButton(QToolButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._count = 0
-        self.setText("Cart")
+        self.setText("Processing queue")
         self.setIcon(cart_icon(ICON_SM))
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -40,7 +40,7 @@ class CartButton(QToolButton):
         self._count = max(0, count)
         reserved = SPACE_SM + self._badge_width() + SPACE_XS if self._count else SPACE_SM
         self.setStyleSheet(utility_button_qss(reserved))
-        self.setAccessibleName(f"Cart: {self._count} queued")
+        self.setAccessibleName(f"Processing queue: {self._count} queued")
         self.update()
 
     def paintEvent(self, event) -> None:

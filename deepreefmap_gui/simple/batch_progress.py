@@ -16,7 +16,11 @@ from PySide6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from deepreefmap_gui.core.theme import PRIMARY, TEXT_SECONDARY
 from deepreefmap_gui.core.widgets import secondary_label, section_card
-from deepreefmap_gui.profiling.batch_estimate import BatchEtaTracker, BatchPrediction
+from deepreefmap_gui.profiling.batch_estimate import (
+    BatchEtaTracker,
+    BatchPrediction,
+    coverage_clause,
+)
 from deepreefmap_gui.profiling.eta import format_remaining
 
 
@@ -91,12 +95,12 @@ class BatchProgressCard(QWidget):
         self._pass_percent = max(0, min(100, int(percent)))
         self.pass_percent_changed.emit(self._pass_percent)
         if self._tracker is not None:
-            self._tracker.set_pass_progress(self._pass_percent, None)
+            self._tracker.set_pass_percent(self._pass_percent)
         self._render()
 
     def set_eta_seconds(self, seconds: float | None) -> None:
         if self._tracker is not None:
-            self._tracker.set_pass_progress(self._pass_percent, seconds)
+            self._tracker.set_pass_remaining(seconds)
         self._render()
 
     def set_eta(self, text: str) -> None:
@@ -116,11 +120,29 @@ class BatchProgressCard(QWidget):
 
     # --- Rendering ---
 
+    def _pass_weights(self) -> list[float]:
+        """Each pass's share of the session, by predicted seconds.
+
+        Equal weight only where a pass has no figure. Counting passes instead
+        put a 67% bar above "40m left" on a queue of 120/120/2400s.
+        """
+        prediction = self._prediction
+        if prediction is None or prediction.total_s is None:
+            return [1.0] * self._total
+        weights = [prediction.seconds_for(p.key) for p in prediction.passes]
+        known = [w for w in weights if w]
+        typical = (sum(known) / len(known)) if known else 1.0
+        return [float(w) if w else typical for w in weights]
+
     def _batch_percent(self) -> int:
         if self._total <= 0 or self._index <= 0:
             return 0
-        done = (self._index - 1) + self._pass_percent / 100.0
-        return int(round(100.0 * done / self._total))
+        weights = self._pass_weights()
+        if len(weights) != self._total:
+            weights = [1.0] * self._total
+        total = sum(weights) or 1.0
+        done = sum(weights[: self._index - 1]) + weights[self._index - 1] * self._pass_percent / 100.0
+        return int(round(100.0 * done / total))
 
     def batch_remaining_s(self) -> float | None:
         """Seconds left across every pass still to process, or None if unknown."""
@@ -132,19 +154,20 @@ class BatchProgressCard(QWidget):
         if prediction is None or prediction.total_s is None:
             return ""
         text = f"{format_remaining(prediction.total_s)} for this session"
-        if prediction.unknown_count:
-            # Named rather than folded in: a partial sum shown as the whole
-            # answer reads as a shorter evening than the one ahead.
-            text += (
-                f", covering {prediction.predicted_count} of "
-                f"{len(prediction.passes)} passes"
-            )
-        return text
+        clause = prediction.coverage_clause()
+        return f"{text}, {clause}" if clause else text
 
     def _render(self) -> None:
         self._bar.setValue(self._batch_percent())
         remaining = self.batch_remaining_s()
         if remaining is None:
-            self._eta.setText("Estimating after the first pass.")
-        else:
-            self._eta.setText(f"{format_remaining(remaining)} left for the batch")
+            self._eta.setText("No timings for these models yet.")
+            return
+        text = f"{format_remaining(remaining)} left for the batch"
+        if self._tracker is not None:
+            # The same caveat the planned figure carries: passes with no basis
+            # contribute nothing to this sum and must not read as free.
+            clause = coverage_clause(*self._tracker.pending_coverage())
+            if clause:
+                text = f"{text}, {clause}"
+        self._eta.setText(text)

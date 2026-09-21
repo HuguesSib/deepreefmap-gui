@@ -73,13 +73,65 @@ def seed_from_settings(
     """
     try:
         prep_key = preprocess_key_for_settings(settings, video_paths, begin_s, end_s)
-        seeded = seed_run_dir_from_match(output_dir, search_root, prep_key)
+        seeded = seed_run_dir_from_match(
+            output_dir, search_root, prep_key, settings["camera_profile_name"]
+        )
     except Exception:
         logger.warning("Cache seeding failed; running from scratch", exc_info=True)
         return None
     if seeded is not None:
         logger.info("Seeded cache from %s", seeded)
     return seeded
+
+
+def seeded_stages(output_dir: Path, seeded: Path | None) -> frozenset[str]:
+    """Coarse stages this run will read from cache rather than compute.
+
+    Their durations measure a hard-link, not the work, so they must not be
+    folded into the timing profile that seeds fresh runs. Preprocess always
+    comes across on a hit; the mapping npz only when the source had a sidecar.
+    """
+    if seeded is None:
+        return frozenset()
+    stages = {"preprocess"}
+    if (output_dir / "mapping_outputs.npz").is_file():
+        stages.add("mapping")
+    return frozenset(stages)
+
+
+def _profile_document(name: str) -> dict | None:
+    """The calibration this run will be rectified with, or None where it will not load.
+
+    Read once per seeding: a pull may replace the file mid-scan.
+    """
+    from deepreefmap_gui.camera.profiles import load_profile, profile_payload
+
+    try:
+        return profile_payload(load_profile(name))
+    except Exception:
+        return None
+
+
+def _same_calibration(cand: Path, expected: dict, name: str) -> bool:
+    """Whether a candidate run was rectified with the calibration this run will use.
+
+    Documents rather than digests: a pull and a run copy serialise the same
+    measurement differently. A candidate that recorded none is refused.
+    """
+    from deepreefmap_gui.camera.profiles import run_profile_document
+
+    held = run_profile_document(cand)
+    if held is None:
+        logger.debug("Not seeding from %s: it recorded no camera profile", cand.name)
+        return False
+    if held != expected:
+        logger.info(
+            "Not seeding from %s: it was rectified with a different %s calibration",
+            cand.name,
+            name,
+        )
+        return False
+    return True
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:
@@ -89,9 +141,19 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def seed_run_dir_from_match(output_dir: Path, search_root: Path, prep_key: str) -> Path | None:
-    """Seed a fresh run dir from the newest sibling with a matching preprocess key."""
+def seed_run_dir_from_match(
+    output_dir: Path, search_root: Path, prep_key: str, camera_profile_name: str
+) -> Path | None:
+    """Seed a fresh run dir from the newest sibling with a matching preprocess key.
+
+    The key names the camera profile but not the calibration behind it, so the
+    profile document is checked too.
+    """
     if read_sidecar(output_dir, STAGE_PREPROCESS) is not None:
+        return None
+    expected = _profile_document(camera_profile_name)
+    if expected is None:
+        logger.warning("Not seeding: the camera profile %s did not load", camera_profile_name)
         return None
     try:
         candidates = [d for d in search_root.iterdir() if d.is_dir() and d != output_dir]
@@ -103,6 +165,8 @@ def seed_run_dir_from_match(output_dir: Path, search_root: Path, prep_key: str) 
         if sidecar is None or sidecar.get("key") != prep_key:
             continue
         if not (cand / "frames").is_dir():
+            continue
+        if not _same_calibration(cand, expected, camera_profile_name):
             continue
         matches.append((_sidecar_path(cand, STAGE_PREPROCESS).stat().st_mtime, cand))
     if not matches:

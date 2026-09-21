@@ -190,6 +190,8 @@ def survey_manifest_block(
     provenance: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
     model_versions: dict[str, str] | None = None,
+    site: Site | None = None,
+    campaign: Campaign | None = None,
 ) -> dict[str, Any]:
     """The ``survey`` entry embedded in run_manifest.json.
 
@@ -201,7 +203,10 @@ def survey_manifest_block(
     return {
         "run_id": str(run.id),
         "batch_id": str(batch.id) if batch else None,
-        "batch_name": batch.name if batch else None,
+        # The session's start, not a name: a session is identified by when it
+        # began, and a rebuilt database has to land on the same label the live one
+        # shows. Older manifests carry "batch_name" instead and are read for it.
+        "batch_created_at": batch.created_at if batch else None,
         "preset_name": batch.preset_name if batch else None,
         "provenance": provenance if provenance is not None else run_provenance(config, model_versions),
         "pass": {
@@ -209,6 +214,14 @@ def survey_manifest_block(
             "direction": pass_.direction,
             "begin_s": pass_.begin_s,
             "end_s": pass_.end_s,
+            "surveyed_on": pass_.surveyed_on,
+            "quality": pass_.quality,
+            "campaign": None if campaign is None else {
+                "id": str(campaign.id),
+                "name": campaign.name,
+                "begin_date": campaign.begin_date,
+                "end_date": campaign.end_date,
+            },
         },
         # None for a pass run without one. rebuild_from_scan reads the absence
         # rather than a placeholder, so a copied output folder restores the pass
@@ -221,12 +234,20 @@ def survey_manifest_block(
         "transect": None if transect is None else {
             "id": str(transect.id),
             "name": transect.name,
+            "site": None if site is None else {
+                "id": str(site.id),
+                "name": site.name,
+                "country": site.country,
+                "region": site.region,
+            },
             "start_lat": transect.start_lat,
             "start_lon": transect.start_lon,
             "end_lat": transect.end_lat,
             "end_lon": transect.end_lon,
             "length_m": transect.length_m,
             "depth_m": transect.depth_m,
+            "start_depth_m": transect.start_depth_m,
+            "end_depth_m": transect.end_depth_m,
             "deleted_at": transect.deleted_at,
         },
     }

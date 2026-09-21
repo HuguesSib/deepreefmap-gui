@@ -123,11 +123,25 @@ def test_csv_import_reports_row_number_on_error(tmp_path):
         import_transects_csv(path)
 
 
-def test_csv_import_rejects_missing_columns(tmp_path):
+def test_csv_import_rejects_a_missing_name_column(tmp_path):
+    path = tmp_path / "transects.csv"
+    path.write_text("start_lat,start_lon\n-17.5,177.1\n")
+    with pytest.raises(ValueError, match="name"):
+        import_transects_csv(path)
+
+
+def test_csv_import_rejects_half_an_end_point(tmp_path):
     path = tmp_path / "transects.csv"
     path.write_text("name,start_lat\nT1,-17.5\n")
-    with pytest.raises(ValueError, match="end_lat"):
+    with pytest.raises(ValueError, match="Row 2.*both a latitude"):
         import_transects_csv(path)
+
+
+def test_csv_import_takes_a_line_with_no_end_points(tmp_path):
+    path = tmp_path / "transects.csv"
+    path.write_text("name,length_m\nT1,50\n")
+    [transect] = import_transects_csv(path)
+    assert (transect.name, transect.length_m, transect.end_points()) == ("T1", 50.0, None)
 
 
 def test_csv_round_trip_preserves_ids(tmp_path):
@@ -264,3 +278,31 @@ def test_long_format_csv_with_no_rows_still_writes_a_header(tmp_path):
     path = tmp_path / "long.csv"
     save_long_format_csv(path, [])
     assert path.read_text().strip() == ",".join(LONG_COVER_COLUMNS)
+
+
+def test_build_transect_fills_a_blank_depth_from_the_ends():
+    transect = build_transect("T1", "", "", start_depth_m=5.0, end_depth_m=11.0)
+    assert transect.start_depth_m == 5.0
+    assert transect.end_depth_m == 11.0
+    assert transect.depth_m == 8.0  # (5 + 11) / 2
+
+
+def test_build_transect_keeps_a_typed_depth_over_the_ends():
+    transect = build_transect("T1", "", "", depth_m=7.0, start_depth_m=5.0, end_depth_m=11.0)
+    assert transect.depth_m == 7.0
+
+
+def test_build_transect_leaves_depth_unset_with_one_end():
+    transect = build_transect("T1", "", "", start_depth_m=5.0)
+    assert transect.depth_m is None
+    assert transect.end_depth_m is None
+
+
+def test_transect_csv_round_trips_the_end_depths(tmp_path):
+    original = Transect(name="T2", depth_m=8.0, start_depth_m=5.0, end_depth_m=11.0)
+    path = tmp_path / "transects.csv"
+    save_transects_csv(path, [original])
+    imported = import_transects_csv(path)[0]
+    assert imported.start_depth_m == 5.0
+    assert imported.end_depth_m == 11.0
+    assert imported.depth_m == 8.0

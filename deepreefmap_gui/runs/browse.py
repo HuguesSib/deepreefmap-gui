@@ -12,12 +12,14 @@ from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -45,9 +47,9 @@ from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     EmptyState,
     FilterChips,
+    FilterChoice,
     secondary_label,
     section_column,
-    segmented_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.io.video_files import find_videos, is_run_dir
@@ -70,7 +72,7 @@ from deepreefmap_gui.survey.catalogue import (
     FacetGroup,
     RunEntry,
 )
-from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
+from deepreefmap_gui.survey.models.transect_pass import DIRECTION_UNRECORDED, PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +87,20 @@ _FACETS = (
     ("runs", "All runs"),
     ("sessions", "By session"),
     ("transects", "By transect"),
+    ("sites", "By site"),
+    ("campaigns", "By campaign"),
 )
 
 # Facets whose left rail groups runs into a tree. "runs" has no grouping, so its
 # rail is hidden.
-_GROUPED_FACETS = ("sessions", "transects")
+_GROUPED_FACETS = ("sessions", "transects", "sites", "campaigns")
 
-_RAIL_TITLES = {"sessions": "Sessions", "transects": "Transects"}
+_RAIL_TITLES = {
+    "sessions": "Sessions",
+    "transects": "Transects",
+    "sites": "Sites",
+    "campaigns": "Campaigns",
+}
 
 # Outcome filters over the listed runs. Counts come from the scan, so a chip
 # reading "Failed 3" answers the question without being clicked.
@@ -115,10 +124,9 @@ _STATUS_FILTERS = (
 )
 
 _SCOPE_TOOLTIP = (
-    "In view lists only the runs assigned to a transect the map is showing, "
-    "and follows the map as it is panned and zoomed. Runs with no transect are "
-    "not on the map, so they appear under All transects. Either chip releases a "
-    "transect picked in the list."
+    "• In view: runs on the transects the map shows\n"
+    "• All transects: every run, unfiled included\n"
+    "• Either chip releases the picked transect"
 )
 
 # Right-pane pages inside the runs stack.
@@ -137,7 +145,9 @@ _RAIL_WIDTH = 240
 
 # Below this the rail is not showing names any more, so a remembered width this
 # small is a layout artefact rather than a choice the user made.
-_RAIL_MIN_WIDTH = 200
+# Wide enough for a group name beside its count, which is what the 8px
+# indentation below is chosen against.
+_RAIL_MIN_WIDTH = 240
 
 # Tall enough to hold a transect and the water around it; the list below it is
 # what grows when the rail is dragged wider.
@@ -212,6 +222,7 @@ class BrowseMixin(MixinBase):
         # known number stays on screen while the new one is being counted.
         self._run_size_stale: set[str] = set()
         self._data_sizes_scan_running = False
+        self._data_transect_sites: dict[str, str | None] = {}
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -222,36 +233,31 @@ class BrowseMixin(MixinBase):
         # with the rail when a facet has no grouping to show.
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
-        facet_row = QHBoxLayout()
-        facet_row.setSpacing(0)
+        self._data_facet_choice = FilterChoice(_FACETS)
+        self._data_facet_choice.setAccessibleName("Group results by")
+        self._data_facet_choice.changed.connect(self._on_data_facet_changed)
+        self._data_facet_buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(panel)
         group.setExclusive(True)
-        self._data_facet_buttons: dict[str, QToolButton] = {}
-        for index, (name, title) in enumerate(_FACETS):
-            btn = QToolButton()
-            btn.setText(title)
-            btn.setCheckable(True)
-            # One joined control, so it reads as three views of the same data
-            # rather than three unrelated buttons.
-            btn.setStyleSheet(
-                segmented_qss(first=index == 0, last=index == len(_FACETS) - 1)
+        for name, _title in _FACETS:
+            button = QToolButton(panel)
+            button.setCheckable(True)
+            button.hide()
+            group.addButton(button)
+            button.toggled.connect(
+                lambda checked, key=name: self._data_facet_choice.set_current(key) if checked else None
             )
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            group.addButton(btn)
-            facet_row.addWidget(btn)
-            btn.toggled.connect(
-                lambda checked, n=name: self._on_data_facet_changed(n) if checked else None
-            )
-            self._data_facet_buttons[name] = btn
-        top_row.addWidget(QLabel("Group"))
-        top_row.addLayout(facet_row)
+            self._data_facet_buttons[name] = button
+        top_row.addWidget(QLabel("Group by"))
+        top_row.addWidget(self._data_facet_choice)
         self._data_search = QLineEdit()
         self._data_search.setPlaceholderText("Search runs…")
         self._data_search.setClearButtonEnabled(True)
         self._data_search.setMaximumWidth(240)
         self._data_search.textChanged.connect(lambda *_: self._rebuild_data_run_list())
         top_row.addWidget(self._data_search)
-        self._data_status_chips = FilterChips(_STATUS_FILTERS)
+        self._data_status_chips = FilterChoice(_STATUS_FILTERS)
+        self._data_status_chips.setAccessibleName("Filter results by outcome")
         self._data_status_chips.changed.connect(self._on_data_status_filter_changed)
         top_row.addWidget(self._data_status_chips)
         # Last on the row, because it only means something where there is a map
@@ -262,8 +268,35 @@ class BrowseMixin(MixinBase):
         self._data_scope_chips.changed.connect(self._on_data_scope_filter_changed)
         self._data_scope_chips.setVisible(False)
         top_row.addWidget(self._data_scope_chips)
+        self._data_map_toggle = QCheckBox("Show map")
+        self._data_map_toggle.toggled.connect(self._toggle_results_map)
+        top_row.addWidget(self._data_map_toggle)
         top_row.addStretch(1)
         layout.addLayout(top_row)
+        metadata_row = QHBoxLayout()
+        self._data_campaign_filter = QComboBox()
+        self._data_site_filter = QComboBox()
+        for label, combo in (("Campaign", self._data_campaign_filter), ("Site", self._data_site_filter)):
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setAccessibleName(f"Filter results by {label.lower()}")
+            metadata_row.addWidget(QLabel(label))
+            metadata_row.addWidget(combo)
+            combo.currentIndexChanged.connect(lambda *_: self._rebuild_data_run_list())
+        metadata_row.addStretch(1)
+        self._data_columns_btn = QToolButton()
+        self._data_columns_btn.setText("Columns")
+        self._data_columns_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        columns_menu = QMenu(self._data_columns_btn)
+        self._data_technical_action = columns_menu.addAction("Show technical columns")
+        self._data_technical_action.setCheckable(True)
+        self._data_technical_action.setChecked(bool(self._settings.value("result_technical_columns", False, type=bool)))
+        self._data_technical_action.toggled.connect(self._set_result_columns)
+        self._data_columns_btn.setMenu(columns_menu)
+        metadata_row.addWidget(self._data_columns_btn)
+        layout.addLayout(metadata_row)
 
         # Disk sits with the group header rather than on the filter row: the
         # filters already fill that row, and squeezing a growing byte count in
@@ -288,8 +321,21 @@ class BrowseMixin(MixinBase):
         # leaves the disclosure arrow a readable offset.
         self._data_tree.setIndentation(SPACE_SM)
         self._data_tree.setUniformRowHeights(True)
-        self._data_tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        # Two columns, the count sized to itself and the name taking the rest.
+        self._data_tree.setColumnCount(2)
+        self._data_tree.header().setStretchLastSection(False)
+        self._data_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._data_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        # Right, not middle: a transect or a session is identified by the start
+        # of its name, and eliding from the middle took out the part that said
+        # which one it was. File names, whose two ends discriminate, keep the
+        # middle elide on the tables that hold them.
+        self._data_tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
+        # A pass is the one group in this rail that is a row somebody can
+        # edit, and its name is what the console shows.
+        self._data_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._data_tree.customContextMenuRequested.connect(self._on_data_group_menu)
         # Clicks as well as selection changes: clicking the row that is already
         # selected changes no selection and emits nothing, so a run picked in
         # the table since could not be got out of the detail pane by pointing at
@@ -315,6 +361,7 @@ class BrowseMixin(MixinBase):
         rail_split = QSplitter(Qt.Orientation.Vertical)
         rail_split.setHandleWidth(SPACE_SM)
         rail_split.addWidget(self._data_map)
+        self._data_map.hide()
         rail_split.addWidget(self._data_tree_stack)
         rail_split.setStretchFactor(0, 0)
         rail_split.setStretchFactor(1, 1)
@@ -333,6 +380,7 @@ class BrowseMixin(MixinBase):
         runs_layout.addLayout(header_row)
 
         self._data_run_table = RunTable()
+        self._data_run_table.set_technical_columns(self._data_technical_action.isChecked())
         self._data_run_table.itemDoubleClicked.connect(self._on_data_run_activated)
         self._data_run_table.itemSelectionChanged.connect(self._update_data_actions)
         self._data_run_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -349,7 +397,7 @@ class BrowseMixin(MixinBase):
         # rest are occasional housekeeping.
         actions = QHBoxLayout()
         actions.setSpacing(SPACE_SM)
-        self._data_open_btn = QPushButton("Open")
+        self._data_open_btn = QPushButton("Open result")
         self._data_open_btn.clicked.connect(self._on_data_open_clicked)
         actions.addWidget(self._data_open_btn)
         self._data_show_btn = QPushButton("Show in folder")
@@ -385,9 +433,7 @@ class BrowseMixin(MixinBase):
         # analysis lives here rather than under the list, so nothing
         # transect-shaped appears while you are grouped by run.
         self._data_detail_stack = QStackedWidget()
-        self._data_detail_stack.addWidget(
-            EmptyState("Nothing selected", "Pick a run or a transect to see its detail.")
-        )
+        self._data_detail_stack.addWidget(EmptyState("Nothing selected", "Pick a run or a transect to see its detail."))
         self._run_detail = RunDetailPanel()
         self._run_detail.cover.set_classes_config(self._classes_config)
         # Opening the selected run is the pane's own primary action, beside the
@@ -460,14 +506,10 @@ class BrowseMixin(MixinBase):
                     self._data_map_fitted = False
                 # Crashed runs never wrote a manifest, so scan_out_root skips
                 # them; surface them here so they can be seen and cleared.
-                entries += catalogue.scan_incomplete_runs(
-                    root, store, {e.dir_name for e in entries}
-                )
+                entries += catalogue.scan_incomplete_runs(root, store, {e.dir_name for e in entries})
                 # And the inverse: records whose folder is gone. The history
                 # outlives the outputs, so these still earn a row.
-                entries += catalogue.missing_run_entries(
-                    root, store, {e.dir_name for e in entries}
-                )
+                entries += catalogue.missing_run_entries(root, store, {e.dir_name for e in entries})
                 entries.sort(key=lambda e: e.sort_key, reverse=True)
                 catalogue.reconcile(entries, store)
             except Exception:
@@ -525,9 +567,7 @@ class BrowseMixin(MixinBase):
                 for facet_group in self._data_facet_groups():
                     self._add_tree_group(facet_group, None)
                 self._restore_tree_selection()
-                self._data_tree_stack.setCurrentIndex(
-                    0 if tree.topLevelItemCount() else 1
-                )
+                self._data_tree_stack.setCurrentIndex(0 if tree.topLevelItemCount() else 1)
         finally:
             tree.blockSignals(False)
         self._set_rail_visible(grouped)
@@ -543,7 +583,7 @@ class BrowseMixin(MixinBase):
         """
         if not hasattr(self, "_data_map"):
             return
-        shown = self._data_facet == "transects"
+        shown = self._data_facet == "transects" and self._data_map_toggle.isChecked()
         self._data_map.setVisible(shown)
         if not shown or not getattr(self, "_data_store_ok", False):
             return
@@ -552,9 +592,7 @@ class BrowseMixin(MixinBase):
             store = self._survey_store()
             # Browse is a record of work, not a chooser: a run filed against a
             # line the registry retired still has a place on the map.
-            overlays = transect_overlays(
-                store, selected, store.list_transects_for_reference()
-            )
+            overlays = transect_overlays(store, selected, store.list_transects_for_reference())
         except Exception:
             logger.exception("Could not build the Browse transect overlays")
             return
@@ -666,7 +704,7 @@ class BrowseMixin(MixinBase):
         """Queue the selected runs' passes for the next session.
 
         The pass carries trim, direction and transect already; reruns of one
-        pass collapse to one cart item.
+        pass collapse to one queue item.
         """
         entries = [e for e in self._data_selected_entries() if not e.incomplete]
         if not entries:
@@ -693,9 +731,9 @@ class BrowseMixin(MixinBase):
             self._refresh_survey_batch_tab()
             self._refresh_data_manager()
         message = (
-            f"Added {len(added)} pass{'' if len(added) == 1 else 'es'} to the cart."
+            f"Added {len(added)} pass{'' if len(added) == 1 else 'es'} to the queue."
             if added
-            else "Nothing was added to the cart."
+            else "Nothing was added to the queue."
         )
         if skipped:
             message += f" Skipped {skipped} with no recoverable time range."
@@ -738,7 +776,26 @@ class BrowseMixin(MixinBase):
                 except Exception:
                     logger.exception("Could not list transects")
             return catalogue.transects_facet(self._data_entries, transects)
+        if self._data_facet == "sites":
+            return catalogue.sites_facet(self._data_entries, self._known_catalogue("sites"))
+        if self._data_facet == "campaigns":
+            return catalogue.campaigns_facet(self._data_entries, self._known_catalogue("campaigns"))
         return []
+
+    def _known_catalogue(self, which: str) -> list:
+        """The sites or campaigns the survey knows, so empty ones still group.
+
+        Empty rather than raising where there is no store: the rail is a view of
+        work, and a laptop with no survey open has none to show.
+        """
+        if not getattr(self, "_data_store_ok", False):
+            return []
+        try:
+            store = self._survey_store()
+            return store.list_sites() if which == "sites" else store.list_campaigns()
+        except Exception:
+            logger.exception("Could not list the %s", which)
+            return []
 
     def _selected_session_group(self) -> FacetGroup | None:
         """The session the tree has selected, or None if that is not what is.
@@ -792,7 +849,12 @@ class BrowseMixin(MixinBase):
 
     def _add_tree_group(self, group: FacetGroup, parent: QTreeWidgetItem | None) -> None:
         count = len(group.all_entries())
-        item = QTreeWidgetItem([f"{group.title}  ({count})"])
+        # The count in a column of its own: joined onto the title it was part of
+        # the string that elided, so a narrow rail ate the name and left the
+        # number, which is the half that says least.
+        item = QTreeWidgetItem([group.title, str(count)])
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setToolTip(0, f"{group.title}  ({count} run{'s' if count != 1 else ''})")
         item.setData(0, _GROUP_KEY_ROLE, group.key)
         self._data_groups[group.key] = group
         if parent is None:
@@ -806,9 +868,7 @@ class BrowseMixin(MixinBase):
     def _restore_tree_selection(self) -> None:
         if self._data_selected_key is None:
             return
-        matches = self._data_tree.findItems(
-            "", Qt.MatchFlag.MatchContains | Qt.MatchFlag.MatchRecursive
-        )
+        matches = self._data_tree.findItems("", Qt.MatchFlag.MatchContains | Qt.MatchFlag.MatchRecursive)
         for item in matches:
             if item.data(0, _GROUP_KEY_ROLE) == self._data_selected_key:
                 self._data_tree.setCurrentItem(item)
@@ -853,9 +913,7 @@ class BrowseMixin(MixinBase):
             self._data_tree.blockSignals(False)
         self._rebuild_data_tree()
 
-    def _set_scope_transect(
-        self, transect_id: uuid.UUID | None, focus: bool = True
-    ) -> None:
+    def _set_scope_transect(self, transect_id: uuid.UUID | None, focus: bool = True) -> None:
         """One transect in focus across every widget that has an opinion.
 
         The Browse page carries a browser tree and an analysis combo that both
@@ -902,6 +960,31 @@ class BrowseMixin(MixinBase):
         self._data_show_btn.setEnabled(current is not None)
         self._gate_data_row_actions(self._data_more_actions)
         self._refresh_data_detail()
+
+    def _on_data_group_menu(self, pos) -> None:
+        """The rail's own menu, which only a pass group has anything to put in."""
+        from deepreefmap_gui.runs.pass_rename import RENAME_ACTION, rename_pass, renamed_note
+
+        item = self._data_tree.itemAt(pos)
+        key = item.data(0, _GROUP_KEY_ROLE) if item is not None else None
+        if not key or key[0] != "pass":
+            return
+        store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
+        if store is None:
+            return
+        pass_id = uuid.UUID(str(key[1]))
+        if store.get_pass(pass_id) is None:
+            return
+        menu = QMenu(self._data_tree)
+        menu.addAction(RENAME_ACTION)
+        if menu.exec(self._data_tree.viewport().mapToGlobal(pos)) is None:
+            return
+        said = rename_pass(self, store, pass_id)
+        renamed = store.get_pass(pass_id)
+        self._status_label.setText(
+            said or (renamed_note(renamed.label) if renamed is not None else "")
+        )
+        self._refresh_data_manager()
 
     def _refresh_data_detail(self) -> None:
         """Show the selected run, else the selected transect, else nothing.
@@ -965,6 +1048,11 @@ class BrowseMixin(MixinBase):
             self._apply_data_split_sizes(rail_visible=bool(self._data_rail_shown))
 
     def _on_data_facet_changed(self, name: str) -> None:
+        self._data_facet_buttons[name].setChecked(True)
+        if name != "transects":
+            self._data_map_toggle.blockSignals(True)
+            self._data_map_toggle.setChecked(False)
+            self._data_map_toggle.blockSignals(False)
         # _focus_data_on_transect sets the facet and the key together and then
         # checks the button; without this the check would land here first and
         # throw the key away, rebuilding the tree twice for one selection.
@@ -1021,7 +1109,7 @@ class BrowseMixin(MixinBase):
         choice of what to look at, and panning off it afterwards should not
         empty the list underneath.
         """
-        return self._data_scope_offered() and self._data_selected_key is None
+        return self._data_scope_offered() and self._data_map_toggle.isChecked() and self._data_selected_key is None
 
     def _data_visible_transect_ids(self) -> frozenset[str] | None:
         """Transects the Browse map is showing, or None when it cannot say."""
@@ -1038,17 +1126,51 @@ class BrowseMixin(MixinBase):
             return entries
         return _entries_in_view(entries, visible)
 
+    def _set_result_columns(self, visible: bool) -> None:
+        self._settings.setValue("result_technical_columns", visible)
+        self._data_run_table.set_technical_columns(visible)
+
+    def _toggle_results_map(self, checked: bool) -> None:
+        if checked and self._data_facet != "transects":
+            self._data_facet_choice.set_current("transects")
+        self._data_visible_ids = None
+        self._refresh_data_map()
+        self._apply_data_view_change()
+        self._rebuild_data_run_list()
+
+    def _refresh_result_metadata(self) -> None:
+        self._data_transect_sites = {}
+        store = self._try_survey_store()
+        if store is None:
+            return
+        self._data_transect_sites = {str(t.id): str(t.site_id) if t.site_id else None for t in store.list_transects()}
+        for combo, records in (
+            (self._data_campaign_filter, store.list_campaigns()),
+            (self._data_site_filter, store.list_sites()),
+        ):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            for record in records:
+                combo.addItem(record.name, str(record.id))
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
     def _data_listed_entries(self) -> list[RunEntry]:
         """What the list shows: the group, narrowed by map, outcome and search."""
         entries = self._data_scoped_entries()
         if self._data_status_filter != "all":
-            entries = [
-                e for e in entries if catalogue.entry_outcome(e) == self._data_status_filter
-            ]
+            entries = [e for e in entries if catalogue.entry_outcome(e) == self._data_status_filter]
         needle = self._data_search.text().strip().lower()
         if needle:
             entries = [e for e in entries if needle in self._entry_search_text(e)]
-        return entries
+        campaign = self._data_campaign_filter.currentData()
+        site = self._data_site_filter.currentData()
+        return [entry for entry in entries if
+                campaign in {"all", str(entry.campaign_id) if entry.campaign_id else "unassigned"}
+                and site in {"all", self._data_transect_sites.get(str(entry.transect_id)) or "unassigned"}]
 
     @staticmethod
     def _entry_search_text(entry: RunEntry) -> str:
@@ -1108,7 +1230,9 @@ class BrowseMixin(MixinBase):
         say what pressing one would list, not what is listed now.
         """
         offered = self._data_scope_offered()
-        self._data_scope_chips.setVisible(offered)
+        self._data_scope_chips.setVisible(
+            offered and (self._data_map_toggle.isChecked() or self._data_selected_key is not None)
+        )
         if not offered:
             return
         entries = self._data_entries
@@ -1129,6 +1253,7 @@ class BrowseMixin(MixinBase):
     def _rebuild_data_run_list(self) -> None:
         # The rebuild is the point at which the list catches up with the map, so
         # this is also where the view the change detector compares against is set.
+        self._refresh_result_metadata()
         self._data_visible_ids = self._data_visible_transect_ids()
         self._refresh_data_scope_chips()
         self._refresh_data_status_counts()
@@ -1149,9 +1274,7 @@ class BrowseMixin(MixinBase):
             # A section that has never run.
             self._data_empty_state.set_text(
                 "Not processed yet",
-                "It is in the cart."
-                if self._pass_in_current_cart(key[1])
-                else "Add it to the cart to process it.",
+                "It is in the queue." if self._pass_in_current_cart(key[1]) else "Add it to the queue to process it.",
             )
         elif not listed and not scoped and self._data_grouped_entries():
             self._data_empty_state.set_text(
@@ -1174,16 +1297,11 @@ class BrowseMixin(MixinBase):
         bits = [f"{stats.run_count} run{'s' if stats.run_count != 1 else ''}"]
         if stats.duration_range:
             lo, hi = stats.duration_range
-            bits.append(
-                f"runtime {format_duration(lo)}"
-                + (f" – {format_duration(hi)}" if hi != lo else "")
-            )
+            bits.append(f"runtime {format_duration(lo)}" + (f" to {format_duration(hi)}" if hi != lo else ""))
         if stats.point_range:
             lo_p, hi_p = stats.point_range
             bits.append(
-                f"{points_label(lo_p)}–{points_label(hi_p)} points"
-                if hi_p != lo_p
-                else f"{points_label(hi_p)} points"
+                f"{points_label(lo_p)}-{points_label(hi_p)} points" if hi_p != lo_p else f"{points_label(hi_p)} points"
             )
         # Disk is deliberately absent: the label at the other end of this row
         # already carries it, and printing it twice on one line read as two
@@ -1228,9 +1346,7 @@ class BrowseMixin(MixinBase):
         if self._run_in_flight():
             self._status_label.setText("Wait for processing to finish before opening a run.")
             return
-        path = QFileDialog.getExistingDirectory(
-            self, "Open run folder", self._out_root_input.text()
-        )
+        path = QFileDialog.getExistingDirectory(self, "Open run folder", self._out_root_input.text())
         if path:
             self._load_run_from_dir(Path(path))
 
@@ -1269,7 +1385,7 @@ class BrowseMixin(MixinBase):
             ("show", "Show in folder", self._on_data_show_in_folder_clicked),
             ("rename", "Rename…", self._on_data_rename_clicked),
             ("assign", "Assign to transect…", self._on_data_assign_clicked),
-            ("cart", "Add to cart", self._on_data_add_to_cart_clicked),
+            ("cart", "Add to queue", self._on_data_add_to_cart_clicked),
             ("copy", "Copy run command", self._on_data_copy_command_clicked),
             (None, "", None),
             ("delete", "Delete…", self._on_data_delete_clicked),
@@ -1358,11 +1474,7 @@ class BrowseMixin(MixinBase):
                 return True
             return False
         if etype == QEvent.Type.Drop and event.mimeData().hasUrls():
-            paths = [
-                Path(url.toLocalFile())
-                for url in event.mimeData().urls()
-                if url.isLocalFile()
-            ]
+            paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
             self._handle_data_drop(paths)
             event.acceptProposedAction()
             return True
@@ -1408,9 +1520,7 @@ class BrowseMixin(MixinBase):
     def _taken_run_names(self, keep: RunEntry) -> set[str]:
         """What the other runs are called, so no two arrive with one name between them."""
         return {
-            e.display_name.strip()
-            for e in self._data_entries
-            if e.run_dir != keep.run_dir and e.display_name.strip()
+            e.display_name.strip() for e in self._data_entries if e.run_dir != keep.run_dir and e.display_name.strip()
         }
 
     def _ask_run_name(self, entry: RunEntry) -> str | None:
@@ -1426,9 +1536,7 @@ class BrowseMixin(MixinBase):
         proposed = (entry.manifest.get("name") or "").strip() or entry.dir_name
         prompt = "Run name:"
         while True:
-            text, ok = QInputDialog.getText(
-                self, "Rename run", prompt, text=proposed
-            )
+            text, ok = QInputDialog.getText(self, "Rename run", prompt, text=proposed)
             if not ok:
                 return None
             wanted = " ".join(text.split())
@@ -1481,9 +1589,7 @@ class BrowseMixin(MixinBase):
         cart = store.list_batch_items(batch_id)
         root = self._data_out_root()
         with_data = [r for r in runs if (root / r.run_dir_name).is_dir()]
-        if self._active_run_dir is not None and any(
-            root / r.run_dir_name == self._active_run_dir for r in with_data
-        ):
+        if self._active_run_dir is not None and any(root / r.run_dir_name == self._active_run_dir for r in with_data):
             QMessageBox.information(
                 self,
                 "Delete session",
@@ -1491,9 +1597,7 @@ class BrowseMixin(MixinBase):
             )
             return
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
-            QMessageBox.information(
-                self, "Delete session", "Wait for the current run to finish."
-            )
+            QMessageBox.information(self, "Delete session", "Wait for the current run to finish.")
             return
         sizes = [self._run_size_cache.get(r.run_dir_name) for r in with_data]
         known = [s for s in sizes if s is not None]
@@ -1501,27 +1605,23 @@ class BrowseMixin(MixinBase):
         if len(known) not in (0, len(with_data)):
             size_txt = f"at least {size_txt}"
         counts = (
-            f"{len(runs)} run{'s' if len(runs) != 1 else ''} and "
-            f"{len(cart)} cart item{'s' if len(cart) != 1 else ''}"
+            f"{len(runs)} run{'s' if len(runs) != 1 else ''} and {len(cart)} queue item{'s' if len(cart) != 1 else ''}"
         )
         choice = DeleteDataDialog.ask(
             DeleteScope(
                 title="Delete session",
-                subject=f"Delete from session '{batch.name}' ({counts})?",
+                subject=f"Delete from session '{batch.label}' ({counts})?",
                 data_detail=(
                     f"The output folders of its {len(with_data)} "
                     f"run{'s' if len(with_data) != 1 else ''} on disk, {size_txt}. "
-                    "The records stay, so the session still shows here."
+                    "The records stay."
                 ),
                 metadata_detail=(
-                    f"The session, its cart items and its {len(runs)} run "
+                    f"The session and its {len(runs)} run "
                     f"record{'s' if len(runs) != 1 else ''}, a few kilobytes. "
-                    "Removing records forgets the session ever ran; it frees no "
-                    "disk space worth naming."
+                    "Frees no disk space."
                     if not with_data
-                    else "Available once the output data is removed: while the "
-                    "data exists, a rescan would rebuild the records from their "
-                    "manifests."
+                    else "Available once the output data is removed."
                 ),
                 keeps=(
                     "Sections and their trims",
@@ -1549,11 +1649,10 @@ class BrowseMixin(MixinBase):
                 data_gone += 1
         if choice is not DeleteChoice.DATA:
             store.delete_batch(batch_id)
-            self._status_label.setText(f"Deleted session '{batch.name}'.")
+            self._status_label.setText(f"Deleted session '{batch.label}'.")
         elif data_gone:
             self._status_label.setText(
-                f"Deleted the data of {data_gone} run{'s' if data_gone != 1 else ''} "
-                f"from '{batch.name}'."
+                f"Deleted the data of {data_gone} run{'s' if data_gone != 1 else ''} from '{batch.label}'."
             )
         self._refresh_data_manager()
 
@@ -1561,17 +1660,11 @@ class BrowseMixin(MixinBase):
         entries = self._data_selected_entries()
         if not entries:
             return
-        if self._active_run_dir is not None and any(
-            e.run_dir == self._active_run_dir for e in entries
-        ):
-            QMessageBox.information(
-                self, "Delete run", "One of these runs is open. Close it first with the + button."
-            )
+        if self._active_run_dir is not None and any(e.run_dir == self._active_run_dir for e in entries):
+            QMessageBox.information(self, "Delete run", "One of these runs is open. Close it first with the + button.")
             return
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
-            QMessageBox.information(
-                self, "Delete run", "Wait for the current run to finish."
-            )
+            QMessageBox.information(self, "Delete run", "Wait for the current run to finish.")
             return
         choice = DeleteDataDialog.ask(self._delete_scope(entries), self)
         if choice is None:
@@ -1619,16 +1712,13 @@ class BrowseMixin(MixinBase):
             title="Delete run",
             subject=subject,
             data_detail=(
-                f"The output folder{'s' if len(with_data) != 1 else ''} on disk, "
-                f"{size_txt}. The record stays, so the run still shows here."
+                f"The output folder{'s' if len(with_data) != 1 else ''} on disk, {size_txt}. The record stays."
             ),
             metadata_detail=(
                 f"{records} record{'s' if records != 1 else ''} in the survey "
-                "database, a few kilobytes. Removing a record forgets the run "
-                "ever happened; it frees no disk space worth naming."
+                "database, a few kilobytes. Frees no disk space."
                 if not with_data
-                else "Available once the output data is removed: while the data "
-                "exists, a rescan would rebuild the record from its manifest."
+                else "Available once the output data is removed."
             ),
             data_present=bool(with_data),
             metadata_present=bool(records) and not with_data,
@@ -1651,7 +1741,7 @@ class BrowseMixin(MixinBase):
             return []
         return [e for e in group.all_entries() if not e.incomplete]
 
-    def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str] | None:
+    def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str | None] | None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Assign to transect")
         form = QFormLayout(dialog)
@@ -1663,9 +1753,8 @@ class BrowseMixin(MixinBase):
             # The lowercase vocabulary as the item's data: the store's CHECK
             # constraint is what the capitalised label would fail.
             direction_combo.addItem(direction_arrow_icon(name), name.capitalize(), name)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        direction_combo.addItem(DIRECTION_UNRECORDED, None)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow("Transect", transect_combo)
@@ -1688,9 +1777,7 @@ class BrowseMixin(MixinBase):
         # line the registry retired is not one anybody may file against now.
         transects = store.list_transects()
         if not transects:
-            QMessageBox.information(
-                self, "Assign to transect", "Create a transect under Transects first."
-            )
+            QMessageBox.information(self, "Assign to transect", "Create a transect under Transects first.")
             return
         target = self._ask_assign_target(transects)
         if target is None:
@@ -1720,8 +1807,7 @@ class BrowseMixin(MixinBase):
         todo = [
             (e.dir_name, e.run_dir)
             for e in self._data_entries
-            if not e.data_missing
-            and (e.dir_name not in self._run_size_cache or e.dir_name in self._run_size_stale)
+            if not e.data_missing and (e.dir_name not in self._run_size_cache or e.dir_name in self._run_size_stale)
         ]
         if not todo:
             return

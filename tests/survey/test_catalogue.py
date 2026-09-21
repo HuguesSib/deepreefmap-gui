@@ -77,19 +77,19 @@ def test_transects_facet_lists_transects_without_runs(out_root, store):
 def test_sessions_facet_gathers_a_day_across_transects(out_root, store):
     """The session is the only container that spans transects, which is the
     whole reason it earns a facet of its own."""
-    batch = make_batch(store, "2026-07-01")
+    batch = make_batch(store, "2026-07-01 09:00:00")
     seed_survey_run(store, out_root, "north", transect=make_transect("North"), batch=batch)
     seed_survey_run(store, out_root, "south", transect=make_transect("South"), batch=batch)
 
     groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
-    assert [g.title for g in groups] == ["2026-07-01"]
+    assert [g.title for g in groups] == ["2026-07-01 09:00:00"]
     assert sorted(e.dir_name for e in groups[0].all_entries()) == ["north", "south"]
     assert catalogue.session_summary(groups[0]) == "2 runs · 2 transects"
 
 
 def test_sessions_facet_orders_newest_first(out_root, store):
-    older = make_batch(store, "2026-06-01")
-    newer = make_batch(store, "2026-07-01")
+    older = make_batch(store, "2026-06-01 09:00:00")
+    newer = make_batch(store, "2026-07-01 09:00:00")
     seed_survey_run(
         store, out_root, "old_run", batch=older, run_timestamp="2026-06-01T10:00:00+00:00"
     )
@@ -102,7 +102,7 @@ def test_sessions_facet_orders_newest_first(out_root, store):
         run_timestamp="2026-07-01T10:00:00+00:00",
     )
     groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
-    assert [g.title for g in groups] == ["2026-07-01", "2026-06-01"]
+    assert [g.title for g in groups] == ["2026-07-01 09:00:00", "2026-06-01 09:00:00"]
 
 
 def test_sessions_facet_surfaces_runs_with_no_session_first(out_root, store):
@@ -116,9 +116,9 @@ def test_sessions_facet_surfaces_runs_with_no_session_first(out_root, store):
 
 
 def test_sessions_facet_lists_a_session_with_no_runs(out_root, store):
-    make_batch(store, "Empty day")
+    make_batch(store, "2026-06-15 09:00:00")
     groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
-    assert [g.title for g in groups] == ["Empty day"]
+    assert [g.title for g in groups] == ["2026-06-15 09:00:00"]
     assert groups[0].all_entries() == []
 
 
@@ -140,9 +140,9 @@ def test_session_key_agrees_from_the_manifest_and_the_database(out_root, store):
 def test_a_rerun_in_a_later_session_files_under_that_session(out_root, store):
     """The run's own session outranks the pass's: a rerun is the same pass
     ordered again, so its attempt belongs to the day it was placed."""
-    first = make_batch(store, "2026-07-01")
+    first = make_batch(store, "2026-07-01 09:00:00")
     transect, pass_, _run = seed_survey_run(store, out_root, "attempt1", batch=first)
-    second = make_batch(store, "2026-07-02")
+    second = make_batch(store, "2026-07-02 09:00:00")
     rerun = RunRecord(
         pass_id=pass_.id, run_dir_name="attempt2", status="succeeded", batch_id=second.id
     )
@@ -155,15 +155,14 @@ def test_a_rerun_in_a_later_session_files_under_that_session(out_root, store):
 
     groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
     by_title = {g.title: [e.dir_name for e in g.all_entries()] for g in groups}
-    assert by_title == {"2026-07-01": ["attempt1"], "2026-07-02": ["attempt2"]}
+    assert by_title == {"2026-07-01 09:00:00": ["attempt1"], "2026-07-02 09:00:00": ["attempt2"]}
 
 
 def test_run_entry_carries_its_session_name(out_root, store):
-    batch = make_batch(store, "Day 1")
+    batch = make_batch(store, "2026-07-01 09:00:00")
     seed_survey_run(store, out_root, "run_a", batch=batch)
     entry = scan(out_root, store)[0]
-    assert entry.db_session_name == "Day 1"
-    assert entry.session_name == "Day 1"
+    assert entry.session_name == "2026-07-01 09:00:00"
 
 
 @pytest.mark.parametrize(

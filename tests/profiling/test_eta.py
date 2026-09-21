@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepreefmap_gui.profiling.eta import RunEtaEstimator, stage_for_phase
+from deepreefmap_gui.profiling.eta import STAGES, RunEtaEstimator, stage_for_phase
 
 
 def test_no_estimate_before_any_signal() -> None:
@@ -16,11 +16,21 @@ def test_running_stage_extrapolates_from_live_rate() -> None:
     est = RunEtaEstimator(frames=100)
     est.update("preprocess", current=1, total=100, now=0.0)
     est.update("preprocess", current=50, total=100, now=50.0)
-    # Half done in 50s → roughly 50s left for preprocess. Other stages have no
-    # signal yet, so the total is at least the running-stage remainder.
-    remaining = est.total_remaining_s(now=50.0)
+    # Half done in 50s → roughly 50s left for preprocess, measured from this run
+    # alone.
+    remaining = est.current_stage_remaining(now=50.0)
     assert remaining is not None
     assert 40.0 <= remaining <= 70.0
+
+
+def test_total_is_withheld_while_a_pending_stage_has_no_basis() -> None:
+    # The running stage is measured, but nothing seeds the six after it. Summing
+    # only the one that spoke would read as the whole run.
+    est = RunEtaEstimator(frames=100)
+    est.update("preprocess", current=1, total=100, now=0.0)
+    est.update("preprocess", current=50, total=100, now=50.0)
+    assert est.total_remaining_s(now=50.0) is None
+    assert est.current_stage_remaining(now=50.0) is not None
 
 
 def test_running_stage_shows_prior_before_live_is_reliable() -> None:
@@ -390,3 +400,102 @@ def test_mapping_stage_not_marked_done_by_align_or_save() -> None:
     # Only the cloud starting ends mapping.
     est.update("outputs", current=1, total=10, now=50.0)
     assert {r.key: r for r in est.stage_rows(now=50.0)}["mapping"].state == "done"
+
+
+def test_overrun_withholds_the_total_rather_than_dropping_a_term() -> None:
+    # Scenario: a stage runs well past what its prior predicted with no further
+    # progress. Its own remainder is withheld, and the total must be withheld
+    # too -- counting the missing term as zero is how the headline falls by
+    # minutes with nothing having happened.
+    priors = {s.key: 1.0 for s in STAGES}
+    est = RunEtaEstimator(frames=100, priors=priors, expected_points=1000)
+    est.update("preprocess", current=100, total=100, now=1.0)
+    est.update("ortho_pca", current=1, total=100, now=2.0)
+    before = est.total_remaining_s(now=3.0)
+    assert before is not None
+    # Far past the ortho prior, still at 1%.
+    assert est.total_remaining_s(now=100_000.0) is None
+
+
+def test_finished_run_reads_as_finishing_not_estimating() -> None:
+    priors = {s.key: 0.001 for s in STAGES}
+    est = RunEtaEstimator(frames=10, priors=priors, expected_points=10)
+    for spec in STAGES:
+        est.update(spec.key if spec.key != "cloud" else "outputs", 100, 100, now=1.0)
+    est.update("scene_save", current=100, total=100, now=2.0)
+    assert est.total_remaining_s(now=2.0) == 0.0
+    assert est.is_finishing(now=2.0)
+
+
+def test_a_stage_the_run_never_reports_is_skipped_not_pending() -> None:
+    # A geometry-only pass reports no ortho at all; its prior must not sit in the
+    # total, and the breakdown must not offer a figure for work that never runs.
+    priors = {s.key: 1.0 for s in STAGES}
+    est = RunEtaEstimator(frames=100, priors=priors, expected_points=1000)
+    est.update("preprocess", current=50, total=100, now=1.0)
+    est.update("scene_save", current=50, total=100, now=2.0)
+    rows = {r.key: r for r in est.stage_rows(now=2.0)}
+    assert rows["ortho"].state == "skipped"
+    assert rows["ortho"].seconds is None
+
+
+def test_a_late_viewer_event_reopens_the_stage_it_belongs_to() -> None:
+    est = RunEtaEstimator(frames=100, priors={s.key: 1.0 for s in STAGES}, expected_points=1000)
+    est.update("viewer_upload", current=10, total=100, now=1.0)
+    est.update("scene_save", current=10, total=100, now=2.0)
+    est.update("viewer_upload", current=60, total=100, now=3.0)
+    rows = {r.key: r for r in est.stage_rows(now=3.0)}
+    assert rows["save_view"].state == "running"
+
+
+def test_the_live_rate_is_refitted_only_on_decile_crossings() -> None:
+    # Two reports inside the same decile must not move the rate the estimate is
+    # built on; crossing into the next one does.
+    est = RunEtaEstimator(frames=100)
+    est.update("mapping", current=1, total=100, now=0.0)
+    est.update("mapping", current=25, total=100, now=25.0)
+    latched = est.current_stage_remaining(now=25.0)
+    est.update("mapping", current=29, total=100, now=25.0)  # same decile
+    assert est.current_stage_remaining(now=25.0) == pytest.approx(latched, rel=0.2)
+    est.update("mapping", current=50, total=100, now=50.0)  # crosses
+    assert est.current_stage_remaining(now=50.0) == pytest.approx(50.0, rel=0.3)
+
+
+def test_a_slow_machine_does_not_show_a_rising_total() -> None:
+    # Running at half the stored rate. The stages still to come must be corrected
+    # by what this run is measuring, so the headline falls as work completes.
+    priors = {s.key: 1.0 for s in STAGES}
+    est = RunEtaEstimator(frames=100, priors=priors, expected_points=1000)
+    est.update("preprocess", current=10, total=100, now=20.0)
+    est.update("mapping", current=10, total=100, now=200.0)
+    first = est.total_remaining_s(now=200.0)
+    est.update("mapping", current=90, total=100, now=340.0)
+    second = est.total_remaining_s(now=340.0)
+    assert first is not None and second is not None
+    assert second < first
+
+
+def test_an_indeterminate_head_is_not_charged_to_the_fraction_after_it() -> None:
+    # 40s of indeterminate saves, then a counted loop that runs quickly. The
+    # remainder must reflect the loop's own rate, not the head plus the loop.
+    est = RunEtaEstimator(frames=100)
+    est.update("viewer_upload", current=0, total=0, now=0.0)
+    est.update("viewer_upload", current=10, total=100, now=40.0)
+    est.update("viewer_upload", current=50, total=100, now=45.0)
+    remaining = est.current_stage_remaining(now=45.0)
+    assert remaining is not None
+    assert remaining < 20.0
+
+
+def test_a_geometry_only_run_is_not_charged_for_the_ortho_it_never_builds() -> None:
+    # Its stages are absent from history because they never ran, and the weight
+    # fallback then manufactures minutes for work the pass does not do.
+    priors = {"preprocess": 1.0, "mapping": 2.0}
+    semantic = RunEtaEstimator(frames=100, priors=priors, expected_points=1_000_000)
+    geometry = RunEtaEstimator(
+        frames=100, priors=priors, expected_points=1_000_000, mode="geometry_only"
+    )
+    rows = {r.key: r for r in geometry.stage_rows(now=0.0)}
+    assert rows["ortho"].seconds == 0.0
+    assert rows["save_view"].seconds == 0.0
+    assert geometry.total_remaining_s(0.0) < semantic.total_remaining_s(0.0)

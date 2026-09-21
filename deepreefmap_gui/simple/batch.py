@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QPushButton,
     QStackedWidget,
@@ -63,6 +62,8 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
+from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 from deepreefmap_gui.simple.section_state import (
     ATTENTION,
@@ -83,6 +84,7 @@ from deepreefmap_gui.survey.models import (
     Transect,
     TransectPass,
     VideoAsset,
+    direction_phrase,
 )
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
@@ -135,22 +137,17 @@ _GROUP_TITLES = {
     NEXT: "Next session",
 }
 _GROUP_HINTS = {
-    QUEUED: "Processing works these, top to bottom. Drag a row to change the order.",
+    QUEUED: "Processed top to bottom. Drag a row to reorder.",
     DONE: "Succeeded once. Process again queues it for the next session.",
     NEXT: "Queued for the next session. Starts once the current one finishes.",
 }
-# A cart row is either in the session or out of it, so the button on the row is
-# the one that takes it out. Nothing is held back any more: a pass you do not
-# want processed is one you take out of the cart, and the pass itself, its clip
-# and its runs all stay.
-_DELETE_HINT = (
-    "Take this pass out of the session. The section and its video are kept, "
-    "and it can be added to a cart again."
-)
+# A cart row is either in the session or out of it; the row's button takes it out.
+_DELETE_HINT = "Take this pass out of the session."
 
 # Button text per fix destination, so the strip names the place it goes rather
 # than describing the journey. The header entry point uses the same words.
 _FIX_ACTIONS = {FIX_MACHINE: "Open Setup", FIX_SETTINGS: "Edit settings…"}
+
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
@@ -171,10 +168,7 @@ def _diagnose_failure(text: str) -> str:
     """
     low = (text or "").lower()
     if "out of memory" in low or "cuda" in low and "memory" in low:
-        return (
-            "Out of graphics memory. Retry with a smaller processing size, or a "
-            "lower batch size."
-        )
+        return "Out of graphics memory. Retry with a smaller processing size, or a lower batch size."
     if "no space left" in low or "disk" in low and "full" in low:
         return "Out of disk space. Free space and process the pass again."
     if "not found" in low and ("model" in low or "checkpoint" in low or ".pt" in low):
@@ -184,31 +178,14 @@ def _diagnose_failure(text: str) -> str:
     return _one_sentence(text) or "The run failed. No cause was recorded."
 
 
-_SESSION_NAME_TOOLTIP = (
-    "What to call this set of passes, usually a dive or a day. Every run records "
-    "it, so Browse can group them and a copied output folder can be traced back."
-)
-
-
-def _unused_batch_name(wanted: str, taken: set[str]) -> str:
-    """`wanted`, or the first "(2)", "(3)"… nobody else has.
-
-    Sessions are told apart by name on the page and in the run archive, so two
-    of them called the same thing cannot be told apart at all.
-    """
-    if wanted not in taken:
-        return wanted
-    n = 2
-    while f"{wanted} ({n})" in taken:
-        n += 1
-    return f"{wanted} ({n})"
+_SESSION_NAME_TOOLTIP = "When this session started. Recorded on every run it makes."
 
 
 def _rough_batch_time(total_seconds: float | None) -> str | None:
     """A plain "about N hours" for a session that has not started yet.
 
     Takes the predicted total rather than a pass count: a queue of thirty-second
-    sections and a queue of ten-minute ones are not the same evening, and
+    passes and a queue of ten-minute ones are not the same evening, and
     counting passes said they were.
     """
     if not total_seconds:
@@ -235,6 +212,17 @@ def _pass_number(run_dir_name: str) -> int | None:
         if len(token) > 1 and token[0] == "p" and token[1:].isdigit():
             return int(token[1:])
     return None
+
+
+def _filed_note(changed: int, locked: int) -> str:
+    """One line for a whole selection, rather than a dialog per refused row."""
+    if not changed and not locked:
+        return "Nothing to change; those passes were already filed that way."
+    said = f"Filed {passes_phrase(changed)} under the campaign." if changed else ""
+    if locked:
+        skipped = f"Left {passes_phrase(locked)} alone: made on another laptop."
+        return f"{said} {skipped}".strip()
+    return said
 
 
 def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
@@ -309,24 +297,14 @@ def _style_missing_cell(button: QPushButton) -> None:
 
 
 def _probe_video(path: str) -> tuple[float, float] | None:
-    """(duration_s, fps) via cv2, or None when the file cannot be decoded.
+    """(duration_s, fps) by decoding, or None when the file cannot be read.
 
     Opening and measuring a 4 GB clip off an SD card takes long enough to freeze
     the window, which is why _add_video_paths hands this to a worker thread.
     """
-    import cv2
+    from deepreefmap_gui.io.video_length import decoded_length
 
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        return None
-    try:
-        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-    finally:
-        cap.release()
-    if not fps or fps <= 0 or not frames or frames <= 0:
-        return None
-    return float(frames) / float(fps), float(fps)
+    return decoded_length(path)
 
 
 def _clip_time(mtime: str | None) -> str:
@@ -377,8 +355,7 @@ def _clip_tooltip(videos: list[VideoAsset]) -> str:
     if len(videos) == 1:
         return paths
     return (
-        f"One recording the camera split into {len(videos)} files. The pass "
-        f"covers them played back to back.\n{paths}"
+        f"One recording the camera split into {len(videos)} files. The pass covers them played back to back.\n{paths}"
     )
 
 
@@ -394,7 +371,7 @@ class _PassRow:
     videos: list[VideoAsset]
     begin_s: float
     end_s: float
-    direction: str = "forward"
+    direction: str | None = None
     transect_id: uuid.UUID | None = None
     pass_id: uuid.UUID | None = None
     # The section's own name. Empty means it has never been renamed, and the
@@ -471,9 +448,7 @@ class PassTable(QTableWidget):
             self.status_hovered.emit(-1, None)
             return
         rect = self.visualRect(index)
-        self.status_hovered.emit(
-            index.row(), QRect(self.viewport().mapToGlobal(rect.topLeft()), rect.size())
-        )
+        self.status_hovered.emit(index.row(), QRect(self.viewport().mapToGlobal(rect.topLeft()), rect.size()))
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
@@ -539,18 +514,15 @@ class SimpleBatchMixin(MixinBase):
         name_row = QHBoxLayout()
         name_row.setSpacing(SPACE_SM)
         name_row.addWidget(QLabel("Session"))
-        self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        # Defaulting to today's date makes this look like decoration, so the
-        # tooltip says what the name is actually for. It is written into every
-        # run's manifest, which is what lets a copied output folder rebuild the
-        # session it came from, and it is what groups those runs in Browse.
+        # A session is this workstation's queue: it never reaches the registry
+        # and nothing outside the cart reads it, so it is identified by when it
+        # began rather than by a name somebody has to invent before any work can
+        # start. Shown, not typed.
+        self._survey_batch_name = QLabel("")
         self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
         name_row.addWidget(self._survey_batch_name, 1)
-        self._survey_clear_cart_btn = QPushButton("Clear cart")
-        self._survey_clear_cart_btn.setToolTip(
-            "Take every pass out of this session's cart. The passes and their "
-            "video files are kept and can be added to a cart again."
-        )
+        self._survey_clear_cart_btn = QPushButton("Clear queue")
+        self._survey_clear_cart_btn.setToolTip("Take every pass out of this session's queue.")
         self._survey_clear_cart_btn.clicked.connect(self._on_survey_clear_cart)
         name_row.addWidget(self._survey_clear_cart_btn)
         header_layout.addLayout(name_row)
@@ -577,16 +549,13 @@ class SimpleBatchMixin(MixinBase):
         # want to know whether this machine is still on the standard.
         self._survey_restore_btn = QPushButton("Restore standard settings")
         self._survey_restore_btn.setProperty("quiet", "true")
-        self._survey_restore_btn.setToolTip(
-            "Discard this machine's changes and return to the standard settings."
-        )
+        self._survey_restore_btn.setToolTip("Discard this machine's changes and return to the standard settings.")
         self._survey_restore_btn.clicked.connect(self._restore_standard_settings)
         preset_row.addWidget(self._survey_restore_btn)
         self._survey_server_preset_btn = QPushButton("Server presets…")
         self._survey_server_preset_btn.setProperty("quiet", "true")
         self._survey_server_preset_btn.setToolTip(
-            "Use a preset your organisation published on the registry. "
-            "Additional to the standard settings, never a replacement."
+            "Apply a preset published on the registry, on top of the standard settings."
         )
         self._survey_server_preset_btn.clicked.connect(self._on_choose_server_preset)
         preset_row.addWidget(self._survey_server_preset_btn)
@@ -611,7 +580,7 @@ class SimpleBatchMixin(MixinBase):
             "Clip",
             "Recorded",
             "Length",
-            "Transect + section",
+            "Transect + pass",
             "Settings",
             "Status",
             "",
@@ -680,7 +649,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_table_stack.addWidget(
             EmptyState(
                 "No videos in this session",
-                "Cut sections from your clips in Browse to queue them here.",
+                "Cut passes from your clips under Videos.",
             )
         )
         passes_card, passes_layout = section_card("Passes")
@@ -713,33 +682,23 @@ class SimpleBatchMixin(MixinBase):
         self._survey_selection_label = muted_label("With the selected rows")
         selection_row.addWidget(self._survey_selection_label)
         self._survey_bulk_settings_btn = QPushButton("Settings…")
-        self._survey_bulk_settings_btn.setToolTip(
-            "Change the run settings for every selected pass, leaving the rest "
-            "of the session on its own settings."
-        )
+        self._survey_bulk_settings_btn.setToolTip("Change the run settings for the selected passes only.")
         self._survey_bulk_settings_btn.clicked.connect(self._on_survey_bulk_settings)
         selection_row.addWidget(self._survey_bulk_settings_btn)
         self._survey_copy_settings_btn = QPushButton("Copy settings from…")
         self._survey_copy_settings_btn.setToolTip(
-            "Give the selected passes the settings another pass or an earlier "
-            "run used."
+            "Give the selected passes the settings another pass or an earlier run used."
         )
         self._survey_copy_settings_btn.clicked.connect(self._on_survey_copy_settings)
         selection_row.addWidget(self._survey_copy_settings_btn)
         self._survey_remove_btn = QPushButton("Remove from session")
-        self._survey_remove_btn.setToolTip(
-            "Take every selected pass out of this session's cart. The passes "
-            "and their video files are kept."
-        )
+        self._survey_remove_btn.setToolTip("Take the selected passes out of this session's queue.")
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
         selection_row.addWidget(self._survey_remove_btn)
         selection_row.addStretch(1)
         self._survey_sort_btn = QPushButton("Sort by time")
         self._survey_sort_btn.setProperty("quiet", "true")
-        self._survey_sort_btn.setToolTip(
-            "Put every row in the order its clip was recorded, which a dragged "
-            "row then departs from."
-        )
+        self._survey_sort_btn.setToolTip("Order the rows by recording time.")
         self._survey_sort_btn.clicked.connect(self._on_survey_sort_by_time)
         selection_row.addWidget(self._survey_sort_btn)
         passes_layout.addLayout(selection_row)
@@ -779,8 +738,8 @@ class SimpleBatchMixin(MixinBase):
         re-reads the cart between passes, so a row removed before it starts is
         one the session no longer processes.
 
-        The three section cells never freeze. They edit nothing here: they open
-        the section under Videos, which is worth doing while a batch runs.
+        The three pass cells never freeze. They edit nothing here: they open
+        the pass under Videos, which is worth doing while a batch runs.
         """
         for widget in (
             self._survey_batch_name,
@@ -922,10 +881,7 @@ class SimpleBatchMixin(MixinBase):
         if machine:
             lines.append(f"Changed on this machine: {describe_keys(machine)}.")
         if organisation:
-            lines.append(
-                f"Changed for this session only: {describe_keys(organisation)}."
-                f" {org.name} sets these, so they go back to standard next launch."
-            )
+            lines.append(f"Changed for this session only: {describe_keys(organisation)}. Back to standard next launch.")
         # What a registry preset named and this build ignored: the value that
         # was dropped is the one the author meant, so applying the rest without
         # saying so would misdescribe the batch.
@@ -933,15 +889,9 @@ class SimpleBatchMixin(MixinBase):
             lines.append(org.dropped_summary)
         withdrawn = getattr(self, "_server_preset_withdrawn", "")
         if withdrawn:
-            lines.append(
-                f"The selected server preset {withdrawn} is no longer on the "
-                "registry, so the standard settings are in force."
-            )
+            lines.append(f"Server preset {withdrawn} is no longer on the registry. Standard settings apply.")
         s = self._collect_run_settings()
-        lines.append(
-            f"{s['segmentation_name']} + {s['mapping_name']}"
-            f" @ {s['fps']} fps, {s['camera_profile_name']}"
-        )
+        lines.append(f"{s['segmentation_name']} + {s['mapping_name']} @ {s['fps']} fps, {s['camera_profile_name']}")
         return "\n".join(lines)
 
     def _on_show_config_audit(self) -> None:
@@ -969,19 +919,10 @@ class SimpleBatchMixin(MixinBase):
         batch = self._survey_batch
         if batch is not None:
             running = self._survey_running_batch
-            started = store.batch_run_count(batch.id) > 0 or (
-                running is not None and batch.id == running.id
-            )
+            started = store.batch_run_count(batch.id) > 0 or (running is not None and batch.id == running.id)
             if not started:
                 return batch
-        name = self._survey_batch_name.text().strip()
-        # A cart minted under a started order must not inherit its name.
-        if not name or (batch is not None and name == batch.name):
-            name = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        # The date fallback is what the running order was probably named after,
-        # so uniqueness is enforced against every session rather than one.
-        name = _unused_batch_name(name, {b.name for b in store.list_batches()})
-        cart = SurveyBatch(name=name)
+        cart = SurveyBatch()
         # Name the configuration on the batch too, so a folder rebuilt from
         # manifests alone still knows which settings the day was run under.
         if self._active_preset is not None:
@@ -989,7 +930,7 @@ class SimpleBatchMixin(MixinBase):
         store.add_batch(cart)
         self._survey_batch = cart
         if not self._survey_worker_running:
-            self._survey_batch_name.setText(cart.name)
+            self._survey_batch_name.setText(cart.label)
         return cart
 
     def _update_cart_button(self) -> None:
@@ -1007,11 +948,7 @@ class SimpleBatchMixin(MixinBase):
         else:
             store = self._try_survey_store()
             batch = self._survey_batch
-            is_cart = (
-                batch is not None
-                and store is not None
-                and store.batch_run_count(batch.id) == 0
-            )
+            is_cart = batch is not None and store is not None and store.batch_run_count(batch.id) == 0
             count = states.count(QUEUED) if is_cart else 0
         button.set_count(count)
 
@@ -1034,7 +971,7 @@ class SimpleBatchMixin(MixinBase):
         """
         self._cart_add(pass_id)
         self._refresh_survey_batch_tab()
-        self._status_label.setText("Added to the cart.")
+        self._status_label.setText("Added to the queue.")
 
     def _take_pass_out_of_cart(self, pass_id: uuid.UUID) -> None:
         """Un-cart a pass from anywhere in the app.
@@ -1064,21 +1001,18 @@ class SimpleBatchMixin(MixinBase):
             return
         items = store.list_batch_items(batch.id)
         if not items:
-            self._status_label.setText("The cart is already empty.")
+            self._status_label.setText("The queue is already empty.")
             return
         if not confirm(
             self,
-            "Clear the cart?",
-            f"Take {passes_phrase(len(items))} out of '{batch.name}'? The "
-            "passes are kept and can be added to a cart again.",
+            "Clear the queue?",
+            f"Take {passes_phrase(len(items))} out of '{batch.label}'?",
         ):
             return
         for item in items:
             store.remove_batch_item(batch.id, item.pass_id)
         self._refresh_survey_batch_tab()
-        self._status_label.setText(
-            f"Cleared {passes_phrase(len(items))} from the cart."
-        )
+        self._status_label.setText(f"Cleared {passes_phrase(len(items))} from the queue.")
 
     def _refresh_survey_batch_tab(self) -> None:
         """Rebuild the pass table from the store.
@@ -1105,11 +1039,9 @@ class SimpleBatchMixin(MixinBase):
             if self._survey_batch is None:
                 cart = store.current_cart()
                 batches = store.list_batches() if cart is None else []
-                self._survey_batch = cart if cart is not None else (
-                    batches[0] if batches else None
-                )
+                self._survey_batch = cart if cart is not None else (batches[0] if batches else None)
                 if self._survey_batch is not None:
-                    self._survey_batch_name.setText(self._survey_batch.name)
+                    self._survey_batch_name.setText(self._survey_batch.label)
             shown = self._survey_batch
             cart = None  # no divider when nothing is running
         self._survey_rows = []
@@ -1130,9 +1062,7 @@ class SimpleBatchMixin(MixinBase):
 
     def _rows_for_batch(self, store: SurveyStore, batch: SurveyBatch) -> list[_PassRow]:
         """The session's worklist as table rows, in the order it will be processed."""
-        overrides = {
-            item.pass_id: item.overrides for item in store.list_batch_items(batch.id)
-        }
+        overrides = {item.pass_id: item.overrides for item in store.list_batch_items(batch.id)}
         rows = []
         for pass_ in store.passes_in_batch(batch.id):
             # A chapter the library has lost is dropped rather than faked, so
@@ -1140,16 +1070,18 @@ class SimpleBatchMixin(MixinBase):
             videos = [store.get_video(video_id) for video_id in pass_.video_ids()]
             if any(video is None for video in videos):
                 continue
-            rows.append(_PassRow(
-                videos=[video for video in videos if video is not None],
-                begin_s=pass_.begin_s,
-                end_s=pass_.end_s,
-                direction=pass_.direction,
-                transect_id=pass_.transect_id,
-                pass_id=pass_.id,
-                label=pass_.label,
-                overrides=dict(overrides.get(pass_.id, {})),
-            ))
+            rows.append(
+                _PassRow(
+                    videos=[video for video in videos if video is not None],
+                    begin_s=pass_.begin_s,
+                    end_s=pass_.end_s,
+                    direction=pass_.direction,
+                    transect_id=pass_.transect_id,
+                    pass_id=pass_.id,
+                    label=pass_.label,
+                    overrides=dict(overrides.get(pass_.id, {})),
+                )
+            )
         return rows
 
     def _refresh_next_cart_label(self, cart: SurveyBatch | None) -> None:
@@ -1160,22 +1092,15 @@ class SimpleBatchMixin(MixinBase):
         """
         if cart is None:
             self._survey_next_cart_label.setVisible(False)
-            self._survey_batch_name.setReadOnly(False)
             self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
             return
         count = len(self._survey_store().list_batch_items(cart.id))
         self._survey_next_cart_label.setText(
-            f"Adding to <b>{cart.name}</b>, which starts once this session "
+            f"Adding to <b>{cart.label}</b>, which starts once this session "
             f"finishes. {passes_phrase(count)} queued so far."
         )
         self._survey_next_cart_label.setVisible(True)
-        # The field names the session being processed, and editing it while
-        # additions go to a different one renames the wrong thing.
-        self._survey_batch_name.setReadOnly(True)
-        self._survey_batch_name.setToolTip(
-            "The session being processed. The next one is named when this "
-            "finishes."
-        )
+        self._survey_batch_name.setToolTip("The session being processed. Additions go to the next one.")
 
     def _refresh_survey_transect_names(self) -> None:
         """Re-read the transects and repaint the names the rows show.
@@ -1240,11 +1165,7 @@ class SimpleBatchMixin(MixinBase):
         # Succeeded within the shown session only: a pass re-ordered in a new
         # cart has succeeded before, but not yet in that session, and DONE
         # would silently drop it from the next batch.
-        succeeded = (
-            store.succeeded_pass_ids(shown.id)
-            if store is not None and shown is not None
-            else set()
-        )
+        succeeded = store.succeeded_pass_ids(shown.id) if store is not None and shown is not None else set()
         states = []
         for row in self._survey_rows:
             if row.in_cart:
@@ -1331,19 +1252,21 @@ class SimpleBatchMixin(MixinBase):
         table.setSpan(index, 0, 1, table.columnCount())
 
     def _section_cell_text(self, row: _PassRow) -> str:
-        """The section on one line: where it was swum, which way, and what of it.
+        """The pass on one line: where it was swum, which way, and what of it.
 
         One button rather than three, because the three are one thing and they
         go to one place. Split across three cells the window was also the one
         that ended up too narrow to read.
         """
-        return " · ".join((
-            self._transect_cell_text(row.transect_id),
-            f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}",
-        ))
+        return " · ".join(
+            (
+                self._transect_cell_text(row.transect_id),
+                f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}",
+            )
+        )
 
     def _section_cell(self, row: _PassRow) -> QPushButton:
-        """The section, as a cell that opens the section rather than editing it.
+        """The pass, as a cell that opens the pass rather than editing it.
 
         A transect, a direction and a window are facts about the swim, and the
         swim is described under Videos.
@@ -1381,13 +1304,14 @@ class SimpleBatchMixin(MixinBase):
         # Carries the name, and the two facts whose own columns drop on a narrow
         # window, so nothing is only reachable through a column that may be gone.
         video_item.setToolTip(
-            "\n".join((
-                f"{self._row_label(row)}. Right-click the row to rename it.",
-                _clip_tooltip(row.videos),
-                f"Recorded {_clip_time(row.video.mtime)}",
-                f"Section runs {_span_length(row.end_s - row.begin_s)} of "
-                f"{_span_length(row.total_duration_s())}",
-            ))
+            "\n".join(
+                (
+                    f"{self._row_label(row)}. Right-click the row to rename it.",
+                    _clip_tooltip(row.videos),
+                    f"Recorded {_clip_time(row.video.mtime)}",
+                    f"Pass runs {_span_length(row.end_s - row.begin_s)} of {_span_length(row.total_duration_s())}",
+                )
+            )
         )
         video_item.setFlags(video_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(index, _COL_VIDEO, video_item)
@@ -1402,10 +1326,7 @@ class SimpleBatchMixin(MixinBase):
         length_item = QTableWidgetItem(_span_length(row.end_s - row.begin_s))
         length_item.setFlags(length_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         length_item.setForeground(QColor(TEXT_MUTED))
-        length_item.setToolTip(
-            f"Section length. The clip it is cut from runs "
-            f"{_span_length(row.total_duration_s())}."
-        )
+        length_item.setToolTip(f"Pass length. The clip it is cut from runs {_span_length(row.total_duration_s())}.")
         table.setItem(index, _COL_LENGTH, length_item)
 
         table.setCellWidget(index, _COL_SECTION, self._section_cell(row))
@@ -1492,13 +1413,10 @@ class SimpleBatchMixin(MixinBase):
         if imported:
             parts.append(
                 f"Imported {len(imported)} clip{'' if len(imported) == 1 else 's'}. "
-                "Cut sections from them in Browse to process them."
+                "Cut passes from them under Videos to process them."
             )
         if relinked:
-            parts.append(
-                f"Relinked {relinked} known clip{'' if relinked == 1 else 's'} "
-                "to where they live now."
-            )
+            parts.append(f"Relinked {relinked} known clip{'' if relinked == 1 else 's'} to where they live now.")
         if imported or relinked:
             self._refresh_data_manager()
         skipped = len(probed) - len(readable)
@@ -1619,7 +1537,7 @@ class SimpleBatchMixin(MixinBase):
         if not carted:
             return
         self._refresh_survey_batch_tab()
-        self._status_label.setText(f"Added {passes_phrase(carted)} to the cart.")
+        self._status_label.setText(f"Added {passes_phrase(carted)} to the queue.")
 
     # --- Settings for one pass ---
 
@@ -1644,7 +1562,7 @@ class SimpleBatchMixin(MixinBase):
         warning belongs on the settings that caused it.
         """
         from deepreefmap_gui.profiling.memory_estimate import fit_for_pass
-        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
+        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks, seg_key
         from deepreefmap_gui.profiling.system_probe import probe_system
 
         seconds = row.end_s - row.begin_s
@@ -1657,10 +1575,13 @@ class SimpleBatchMixin(MixinBase):
         width = int(settings.get("processing_width") or self._proc_width_spin.value())
         height = int(settings.get("processing_height") or self._proc_height_spin.value())
         mapping = str(settings.get("mapping_name") or self._map_combo.currentText())
-        seg = str(settings.get("segmentation_name") or self._seg_combo.currentText())
-        batch_size = int(
-            settings.get("preprocess_batch_size") or self._batch_size_spin.value()
+        # Spelled the way a finished run is recorded, so the memory grade and the
+        # time estimate read the same history key.
+        seg = seg_key(
+            settings.get("segmentation_name") or self._seg_combo.currentText(),
+            bool(settings.get("skip_segmentation")),
         )
+        batch_size = int(settings.get("preprocess_batch_size") or self._batch_size_spin.value())
         try:
             machine = probe_system(wait_for_gpu=False) if profile is None else profile
             return fit_for_pass(
@@ -1687,7 +1608,7 @@ class SimpleBatchMixin(MixinBase):
         return next((row for row in self._survey_rows if row.pass_id == pass_id), None)
 
     def _row_label(self, row: _PassRow) -> str:
-        """What this section is called: its own name, or the generated default.
+        """What this pass is called: its own name, or the generated default.
 
         The default is produced on read, so an unnamed row follows the current
         generator rather than carrying an older one.
@@ -1698,9 +1619,11 @@ class SimpleBatchMixin(MixinBase):
         if stored:
             return stored
         subject = row.transect_id
-        peers = [r for r in self._survey_rows if r.transect_id == subject] if subject else [
-            r for r in self._survey_rows if r.transect_id is None and r.video.id == row.video.id
-        ]
+        peers = (
+            [r for r in self._survey_rows if r.transect_id == subject]
+            if subject
+            else [r for r in self._survey_rows if r.transect_id is None and r.video.id == row.video.id]
+        )
         number = next((i for i, r in enumerate(peers, start=1) if r is row), 1)
         return pass_label(
             row,
@@ -1710,46 +1633,44 @@ class SimpleBatchMixin(MixinBase):
         )
 
     def _on_survey_rename(self, index: int) -> None:
-        """Rename a section from the row's menu.
-
-        Empty means the derived name back, and a name another section already has
-        is refused with the one it got instead.
-        """
-        from PySide6.QtWidgets import QInputDialog
-
-        from deepreefmap_gui.survey.labels import taken_labels, unique_label
+        """Rename a pass from the row's menu."""
+        from deepreefmap_gui.runs.pass_rename import rename_pass
 
         row = self._survey_rows[index]
         store = self._try_survey_store()
         if store is None or row.pass_id is None:
             return
-        pass_ = store.get_pass(row.pass_id)
-        if pass_ is None:
+        said = rename_pass(self, store, row.pass_id, shown=self._row_label(row))
+        if said:
+            self._status_label.setText(said)
+        renamed = store.get_pass(row.pass_id)
+        if renamed is not None:
+            row.label = renamed.label
+        self._rebuild_survey_table()
+
+    def _on_survey_campaign(self, indices: list[int]) -> None:
+        """File every selected pass under one campaign."""
+        from deepreefmap_gui.runs.pass_campaign import CampaignChoiceDialog, file_pass
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
+
+        store = self._try_survey_store()
+        if store is None:
             return
-        typed, accepted = QInputDialog.getText(
-            self,
-            "Rename section",
-            "What this section is called. Clear it for the derived name.",
-            text=self._row_label(row),
-        )
-        if not accepted:
+        passes = [p for p in (store.get_pass(self._survey_rows[i].pass_id) for i in indices if
+                              self._survey_rows[i].pass_id is not None) if p is not None]
+        if not passes:
             return
-        wanted = typed.strip()
-        if not wanted:
-            # An emptied field is a request for the default back, not a request
-            # for a nameless section.
-            pass_.label = ""
-        else:
-            pass_.label = unique_label(
-                wanted, taken_labels(store.list_passes(), exclude=row.pass_id)
-            )
-            if pass_.label != wanted:
-                self._status_label.setText(
-                    f"Another section is already called {wanted!r}; "
-                    f"this one is {pass_.label!r}."
-                )
-        store.update_pass(pass_)
-        row.label = pass_.label
+        # Opened on what the selection already agrees on, so confirming does not
+        # silently rewrite a pass whose trip was already right.
+        agreed = {p.campaign_id for p in passes}
+        dialog = CampaignChoiceDialog(self, store, agreed.pop() if len(agreed) == 1 else None)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = dialog.chosen()
+        mine = own_device_id()
+        locked = [p for p in passes if read_only(p, mine)]
+        changed = [p for p in passes if p not in locked and file_pass(store, p, chosen) is not None]
+        self._status_label.setText(_filed_note(len(changed), len(locked)))
         self._rebuild_survey_table()
 
     def _pass_spec(self, row: _PassRow):
@@ -1759,6 +1680,7 @@ class SimpleBatchMixin(MixinBase):
         memory grade are answering about the same run.
         """
         from deepreefmap_gui.profiling.batch_estimate import PassSpec
+        from deepreefmap_gui.profiling.run_history import seg_key
 
         seconds = row.end_s - row.begin_s
         settings = self._row_settings(row)
@@ -1769,7 +1691,10 @@ class SimpleBatchMixin(MixinBase):
             key=str(row.pass_id),
             frames=int(max(0.0, seconds) * max(1, fps)),
             mapping_backend=str(settings.get("mapping_name") or self._map_combo.currentText()),
-            seg_model=str(settings.get("segmentation_name") or self._seg_combo.currentText()),
+            seg_model=seg_key(
+                settings.get("segmentation_name") or self._seg_combo.currentText(),
+                bool(settings.get("skip_segmentation")),
+            ),
             width=int(settings.get("processing_width") or self._proc_width_spin.value()),
             height=int(settings.get("processing_height") or self._proc_height_spin.value()),
             fps=max(1, fps),
@@ -1813,10 +1738,7 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.profiling.batch_estimate import predict_batch
 
         specs = self._survey_pass_specs(rows)
-        signature = tuple(
-            (s.key, s.frames, s.mapping_backend, s.seg_model, s.width, s.height, s.fps)
-            for s in specs
-        )
+        signature = tuple((s.key, s.frames, s.mapping_backend, s.seg_model, s.width, s.height, s.fps) for s in specs)
         cached = getattr(self, "_batch_prediction_cache", None)
         if cached is not None and cached[0] == signature:
             return cached[1]
@@ -1840,11 +1762,7 @@ class SimpleBatchMixin(MixinBase):
     def _paint_settings_cell(self, index: int, profile=None) -> None:
         """Say what this row changes, and warn when what it will run does not fit."""
         table_row = self._table_row_of(index)
-        button = (
-            self._survey_pass_table.cellWidget(table_row, _COL_SETTINGS)
-            if table_row >= 0
-            else None
-        )
+        button = self._survey_pass_table.cellWidget(table_row, _COL_SETTINGS) if table_row >= 0 else None
         if not isinstance(button, QPushButton):
             return
         row = self._survey_rows[index]
@@ -1872,9 +1790,7 @@ class SimpleBatchMixin(MixinBase):
         amber variant brings its own padding with it. Routed through the sizer
         rather than set directly, or a repaint would read as a dragged column.
         """
-        self._pass_column_sizer.widen_fixed(
-            _COL_SETTINGS, button.sizeHint().width() + SPACE_SM
-        )
+        self._pass_column_sizer.widen_fixed(_COL_SETTINGS, button.sizeHint().width() + SPACE_SM)
 
     def _rows_over_memory(self) -> int:
         """How many queued passes this machine cannot give what they ask for."""
@@ -1930,9 +1846,7 @@ class SimpleBatchMixin(MixinBase):
             accepted = dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             dialog.restore_form()
-        overrides = (
-            override_diff(self._collect_preset_from_form(), session) if accepted else None
-        )
+        overrides = override_diff(self._collect_preset_from_form(), session) if accepted else None
         # Always: the session's settings are not what was being edited here.
         self._restore_form_settings(before)
         if overrides is not None:
@@ -1976,9 +1890,7 @@ class SimpleBatchMixin(MixinBase):
             self._status_label.setText("Select the rows you want to change first.")
             return
         menu = QMenu(self)
-        menu.addAction(
-            "The session's settings", partial(self._write_overrides, indices, {})
-        )
+        menu.addAction("The session's settings", partial(self._write_overrides, indices, {}))
         session = self._session_settings()
         # A source already in the selection is offered like any other: giving
         # its settings to the rest is the common move, and it keeps its own.
@@ -2010,9 +1922,7 @@ class SimpleBatchMixin(MixinBase):
         if self._active_preset is None:
             return []
         try:
-            rows = audit_out_root(
-                Path(self._out_root_input.text()).expanduser(), self._active_preset.org
-            )
+            rows = audit_out_root(Path(self._out_root_input.text()).expanduser(), self._active_preset.org)
         except OSError:
             return []
         offered: list[tuple[str, dict]] = []
@@ -2021,9 +1931,7 @@ class SimpleBatchMixin(MixinBase):
             if not row.deviations or row.deviations in seen:
                 continue
             seen.append(row.deviations)
-            offered.append(
-                (f"{row.display_name}: {row.changed_summary}", dict(row.deviations))
-            )
+            offered.append((f"{row.display_name}: {row.changed_summary}", dict(row.deviations)))
             if len(offered) == 5:
                 break
         return offered
@@ -2040,7 +1948,7 @@ class SimpleBatchMixin(MixinBase):
         """
         directions: dict[uuid.UUID, list[str]] = {}
         for row in self._survey_rows:
-            if row.transect_id is not None:
+            if row.transect_id is not None and row.direction:
                 directions.setdefault(row.transect_id, []).append(row.direction)
         flagged = {}
         for transect_id, values in directions.items():
@@ -2063,14 +1971,10 @@ class SimpleBatchMixin(MixinBase):
         about yet counts as present, since "not checked" is not evidence of
         absence.
         """
-        return {
-            clip.video.path
-            for clip in getattr(self, "_video_entries", [])
-            if clip.link_state == LINK_MISSING
-        }
+        return {clip.video.path for clip in getattr(self, "_video_entries", []) if clip.link_state == LINK_MISSING}
 
     def _refresh_row_notices(self) -> None:
-        """Say what is worth a second look about each section, on its own cell.
+        """Say what is worth a second look about each pass, on its own cell.
 
         Three marks, in one place because they compete for the same cell. Red
         and dashed for footage that is not there, which cannot run at all; amber
@@ -2091,30 +1995,75 @@ class SimpleBatchMixin(MixinBase):
             missing = [v.file_name for v in row.videos if v.path in missing_paths]
             # Names the direction the arrow icon shows, so it reaches a reader who
             # sees neither the glyph nor its colour.
-            notes = [
-                f"Swum {row.direction} along the transect, "
-                "and what part of the clip that was."
-            ]
+            notes = [f"Swum {direction_phrase(row.direction)} along the transect."]
             if missing:
                 _style_missing_cell(cell)
                 notes.append(
-                    f"{', '.join(missing)} cannot be found, so this pass cannot "
-                    "run. Plug the drive back in, or add the footage again from "
-                    "where it lives now."
+                    f"{', '.join(missing)} cannot be found. Plug the drive back in, "
+                    "or add the footage again from where it lives now."
                 )
             else:
                 _style_warning_cell(cell, ok=row.transect_id is not None, filled=False)
                 if row.transect_id is None:
-                    notes.append(
-                        "Filed against no transect, so it runs unscaled and is "
-                        "left out of the repeatability comparison."
-                    )
+                    notes.append("No transect: runs unscaled and is not compared.")
             if row.transect_id in one_way:
                 notes.append(one_way[row.transect_id])
-            notes.append("Click to open this section under Videos.")
+            notes.append("Click to open this pass under Videos.")
             cell.setToolTip("\n".join(notes))
 
     # --- Run gating and execution ---
+
+    def _survey_unread_gravity(self) -> int:
+        """Queued passes whose clip recorded gravity that this platform cannot read."""
+        from deepreefmap_gui.survey.video_probe import YES, gravity_telemetry_available
+
+        if gravity_telemetry_available():
+            return 0
+        store = self._survey_store()
+        count = 0
+        for row in self._survey_rows:
+            pass_ = store.get_pass(row.pass_id)
+            video = store.get_video(pass_.video_id) if pass_ is not None else None
+            if video is not None and video.gravity == YES:
+                count += 1
+        return count
+
+    def _survey_profile_resolution(self) -> tuple[int, str, str] | None:
+        """Queued passes shot at a size the chosen camera profile was not calibrated at.
+
+        Reported, never blocked: the same size in another field of view is just
+        as wrong and nothing here can tell, so the diver is told what the two
+        sizes are and left to decide.
+        """
+        from deepreefmap_gui.camera.profiles import load_profile
+
+        name = self._profile_combo.currentText() if hasattr(self, "_profile_combo") else ""
+        if not name:
+            return None
+        try:
+            profile = load_profile(name)
+        except Exception:
+            logger.debug("Could not read the camera profile %s", name, exc_info=True)
+            return None
+        calibrated = (int(profile.image_size[0]), int(profile.image_size[1]))
+        # The tolerant accessor: a database this build cannot open is a verdict
+        # of its own, and a note about a lens must not be what raises instead.
+        store = self._try_survey_store()
+        if store is None:
+            return None
+        sizes: dict[tuple[int, int], int] = {}
+        for row in self._survey_rows:
+            pass_ = store.get_pass(row.pass_id)
+            video = store.get_video(pass_.video_id) if pass_ is not None else None
+            if video is None or not video.width or not video.height:
+                continue
+            shot = (int(video.width), int(video.height))
+            if shot != calibrated:
+                sizes[shot] = sizes.get(shot, 0) + 1
+        if not sizes:
+            return None
+        shot, count = max(sizes.items(), key=lambda item: item[1])
+        return count, f"{shot[0]}x{shot[1]}", f"{calibrated[0]}x{calibrated[1]}"
 
     def _survey_missing_models(self) -> list[str]:
         """Required-but-uncached models, judged against what the run will load.
@@ -2136,10 +2085,7 @@ class SimpleBatchMixin(MixinBase):
         if self._survey_preset is None:
             return []
         required = self._required_model_names()
-        return sorted(
-            info.name for info, cached in self._last_model_states
-            if info.name in required and not cached
-        )
+        return sorted(info.name for info, cached in self._last_model_states if info.name in required and not cached)
 
     def _simple_peak_seconds(self) -> float | None:
         """Length of the longest pass still to run, for the memory grade.
@@ -2198,11 +2144,7 @@ class SimpleBatchMixin(MixinBase):
         missing = self._missing_clip_paths()
         if not missing:
             return 0
-        return sum(
-            1
-            for row in self._survey_rows
-            if any(video.path in missing for video in row.videos)
-        )
+        return sum(1 for row in self._survey_rows if any(video.path in missing for video in row.videos))
 
     def _recompute_survey_start(self) -> None:
         """The Run step's one verdict, applied through a single exit.
@@ -2260,15 +2202,11 @@ class SimpleBatchMixin(MixinBase):
         # Counted separately because the retired warning outranks and hides the
         # unscaled one, so it is the only place these passes can be told which
         # of the two they are.
-        retired_unscaled = sum(
-            1 for line in lines if line is not None and line.deleted_at and line.length_m is None
-        )
+        retired_unscaled = sum(1 for line in lines if line is not None and line.deleted_at and line.length_m is None)
         # Distinct lines, not passes: two passes of one withdrawn line is the
         # ordinary case, and the sentence has to say "a transect" for that and
         # "2 transects" when they were swum on different ones.
-        retired_lines = len(
-            {line.id for line in lines if line is not None and line.deleted_at}
-        )
+        retired_lines = len({line.id for line in lines if line is not None and line.deleted_at})
         # The same count for the unscaled clause, which the retired verdict
         # carries as well as raising on its own. Withdrawn lines are left out:
         # they are the other half of that sentence and are counted above.
@@ -2282,6 +2220,8 @@ class SimpleBatchMixin(MixinBase):
         remaining = self._survey_remaining_rows() if self._survey_rows else []
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
+            unread_gravity=self._survey_unread_gravity(),
+            profile_resolution=self._survey_profile_resolution(),
             pass_count=len(self._survey_rows),
             missing_files=self._rows_without_footage(),
             unassigned=unassigned,
@@ -2368,20 +2308,14 @@ class SimpleBatchMixin(MixinBase):
         verb = "Continue processing" if self._survey_processed_count() else "Start processing"
         # No count on an empty session: "(0 passes)" reads as a quantity when
         # what it means is that nothing has been queued yet.
-        self._survey_start_btn.setText(
-            f"{verb} ({passes_phrase(count)})" if count else verb
-        )
+        self._survey_start_btn.setText(f"{verb} ({passes_phrase(count)})" if count else verb)
 
     def _survey_processed_count(self) -> int:
         """Passes in this batch that have already been through a run of any outcome."""
         store = self._try_survey_store()
         if store is None:
             return 0
-        return sum(
-            1
-            for row in self._survey_rows
-            if row.pass_id is not None and store.runs_for_pass(row.pass_id)
-        )
+        return sum(1 for row in self._survey_rows if row.pass_id is not None and store.runs_for_pass(row.pass_id))
 
     def _refresh_batch_standing(self) -> None:
         """Say how much of the batch is behind you, so stopping is safe to do.
@@ -2424,21 +2358,27 @@ class SimpleBatchMixin(MixinBase):
 
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
-        time_str = _rough_batch_time(self._survey_batch_prediction().total_s)
+        prediction = self._survey_batch_prediction()
+        time_str = _rough_batch_time(prediction.total_s)
         opening = f"{pass_count} pass{'' if pass_count == 1 else 'es'} queued"
-        opening += f", {time_str}." if time_str else "."
+        if time_str:
+            # The count is the whole queue but the time covers only the passes
+            # there is a basis for; pairing them bare in one sentence reads as a
+            # figure for all of them.
+            clause = prediction.coverage_clause()
+            opening += f", {time_str}{f' ({clause})' if clause else ''}."
+        else:
+            opening += "."
         return confirm(
             self,
             "Insufficient disk space",
             f"{opening}\n\n"
-            f"Estimated {format_bytes(estimate.need_bytes)} required against "
-            f"{format_bytes(estimate.free_bytes)} free. Processing may stop part "
-            "way and leave passes unfinished.\n\nStart anyway?",
+            f"Estimated {format_bytes(estimate.need_bytes)} required, "
+            f"{format_bytes(estimate.free_bytes)} free. Processing may stop "
+            "part way.\n\nStart anyway?",
         )
 
-    def _pass_dir_name(
-        self, pass_: TransectPass, transect: Transect | None, store: SurveyStore
-    ) -> str:
+    def _pass_dir_name(self, pass_: TransectPass, transect: Transect | None, store: SurveyStore) -> str:
         """A directory of its own for every attempt at a pass.
 
         The first attempt is named ``{stem}__pNN__{passid8}``. A later attempt
@@ -2500,25 +2440,23 @@ class SimpleBatchMixin(MixinBase):
             # Resolved retired lines included: the length is what scales the run
             # and the identity is what the manifest records, and a line the
             # registry withdrew after the swim changes neither.
-            transect = (
-                store.get_transect_for_reference(pass_.transect_id)
-                if pass_.transect_id is not None
-                else None
-            )
+            transect = store.get_transect_for_reference(pass_.transect_id) if pass_.transect_id is not None else None
             dir_name = self._pass_dir_name(pass_, transect, store)
             run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name, batch_id=batch.id)
             store.add_run(run)
             settings, config = self._checkout_settings(row, session_settings)
-            jobs.append(_SurveyJob(
-                run=run,
-                pass_=pass_,
-                transect=transect,
-                videos=list(row.videos),
-                dir_name=dir_name,
-                label=self._row_label(row),
-                settings=settings,
-                config=config,
-            ))
+            jobs.append(
+                _SurveyJob(
+                    run=run,
+                    pass_=pass_,
+                    transect=transect,
+                    videos=list(row.videos),
+                    dir_name=dir_name,
+                    label=self._row_label(row),
+                    settings=settings,
+                    config=config,
+                )
+            )
         # Whatever each row's settings were read through, the form goes back to
         # the session's own values before anything else looks at it.
         self._restore_form_settings(form_before)
@@ -2586,7 +2524,7 @@ class SimpleBatchMixin(MixinBase):
 
         from deepreefmap_gui.models.cache import resolve_model_versions
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
-        from deepreefmap_gui.runs.seeding import seed_from_settings
+        from deepreefmap_gui.runs.seeding import seed_from_settings, seeded_stages
         from deepreefmap_gui.simple.setup import ROUGH_PASS_BYTES
         from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
@@ -2617,7 +2555,8 @@ class SimpleBatchMixin(MixinBase):
                 current = store.get_pass(job.pass_.id)
                 if current is None or not store.has_batch_item(batch.id, job.pass_.id):
                     store.set_run_status(
-                        job.run.id, "cancelled",
+                        job.run.id,
+                        "cancelled",
                         error="Taken out of the session before this pass started.",
                     )
                     continue
@@ -2631,9 +2570,10 @@ class SimpleBatchMixin(MixinBase):
                     # is freed. The reason goes on each row: cancelled evades
                     # the failure count, so the rows must say it themselves.
                     disk_stopped = True
-                    for pending in jobs[index - 1:]:
+                    for pending in jobs[index - 1 :]:
                         store.set_run_status(
-                            pending.run.id, "cancelled",
+                            pending.run.id,
+                            "cancelled",
                             error="Ran out of disk space before this pass started.",
                         )
                     break
@@ -2675,10 +2615,10 @@ class SimpleBatchMixin(MixinBase):
                         # Say the afternoon is not being spent again, so a diver
                         # watching a retry knows preparation was skipped.
                         self._sig_status_text.emit(
-                            f"Pass {index} of {len(jobs)}: reusing prepared frames "
-                            "from an earlier attempt."
+                            f"Pass {index} of {len(jobs)}: reusing prepared frames from an earlier attempt."
                         )
                     instrumented_reconstruction(
+                        cached_stages=seeded_stages(out_dir, seeded),
                         video_paths=[video.path for video in job.videos],
                         output_dir=out_dir,
                         transect_length=job.transect.length_m if job.transect else None,
@@ -2694,8 +2634,18 @@ class SimpleBatchMixin(MixinBase):
                         on_failure=measured.update,
                         manifest_extra={
                             "survey": survey_manifest_block(
-                                job.run, job.pass_, job.transect, batch,
-                                config=job.config, model_versions=model_versions,
+                                job.run,
+                                job.pass_,
+                                job.transect,
+                                batch,
+                                config=job.config,
+                                model_versions=model_versions,
+                                site=(
+                                    store.get_site(job.transect.site_id)
+                                    if job.transect is not None and job.transect.site_id
+                                    else None
+                                ),
+                                campaign=(store.get_campaign(job.pass_.campaign_id) if job.pass_.campaign_id else None),
                             )
                         },
                         **settings,
@@ -2703,9 +2653,7 @@ class SimpleBatchMixin(MixinBase):
                     store.set_run_status(job.run.id, "succeeded")
                     # The manifest is complete now, timings included, so this is
                     # the one moment its provenance can be copied onto the row.
-                    store.record_run_provenance(
-                        job.run.id, wire.run_provenance(out_root, job.dir_name)
-                    )
+                    store.record_run_provenance(job.run.id, wire.run_provenance(out_root, job.dir_name))
                     ok += 1
                     # Only a pass that ran to the end says anything about what
                     # the rest of the batch will cost.
@@ -2722,9 +2670,7 @@ class SimpleBatchMixin(MixinBase):
                     # provenance lands on is already the failed one. Partial:
                     # nothing past the stage it died in was ever measured.
                     if measured:
-                        store.record_run_provenance(
-                            job.run.id, wire.provenance_from_manifest(measured)
-                        )
+                        store.record_run_provenance(job.run.id, wire.provenance_from_manifest(measured))
                 finally:
                     # Closed per pass, not per batch: the next pass opens its
                     # own, and a handler left attached would keep writing into
@@ -2750,15 +2696,16 @@ class SimpleBatchMixin(MixinBase):
         """
         from deepreefmap_gui.runs.loaded_run import write_scene_file_from_run_data
 
-        write_scene_file_from_run_data(
-            output_dir, data, manifest, progress_cb=self._sig_load_progress.emit
-        )
+        write_scene_file_from_run_data(output_dir, data, manifest, progress_cb=self._sig_load_progress.emit)
 
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
         self._status_label.setText(f"Processing pass {index} of {total}: {name}")
         # Fresh estimator per pass so the ETA does not blend across passes. The
-        # batch card spans them instead, from the median of past runs.
-        self._begin_progress(self._recon_model)
+        # batch card spans them instead, from the median of past runs. Seeded
+        # from this row's own spec: the form has already been restored to the
+        # session's settings, so an overridden row would otherwise be estimated
+        # from a config it is not running.
+        self._begin_progress(self._recon_model, self._running_pass_spec(index - 1))
         # `_on_load_progress` drops every report while this is set, which would
         # stall each pass at the last percent through its scene write.
         self._load_cancelled = False
@@ -2766,6 +2713,15 @@ class SimpleBatchMixin(MixinBase):
             sink.set_batch_context(index, total, name)
         self._survey_running_index = index - 1
         self._refresh_survey_pass_statuses()
+
+    def _running_pass_spec(self, index: int):
+        """The spec of the queued pass at `index`, or None if it cannot be built."""
+        try:
+            pass_id = self._survey_job_pass_ids[index]
+            row = self._row_for_pass(pass_id)
+            return self._pass_spec(row) if row is not None else None
+        except Exception:
+            return None
 
     def _on_survey_pass_done(self, index: int, seconds: float) -> None:
         """Fold a finished pass's real cost into the session estimate."""
@@ -2799,25 +2755,21 @@ class SimpleBatchMixin(MixinBase):
         failed = self._failed_pass_labels()
         summary = f"{ok} of {total} pass{'' if total == 1 else 'es'} succeeded"
         if failed:
-            summary += " · Failed: " + ", ".join(failed)
+            summary += ". Failed: " + ", ".join(failed)
         elif last_error:
             # A batch-level stop (e.g. ran out of disk) leaves the remaining
             # passes cancelled, with no failed row to carry the reason.
-            summary += " · " + last_error
+            summary += ". " + last_error
         if ok:
-            summary += " · double-click a row to open its run"
+            summary += ". Double-click a row to open its run."
         self._survey_summary_label.setText(summary)
         self._survey_summary_label.setVisible(True)
         if ok == total:
             self._status_label.setText(f"Session complete: {ok}/{total} pass(es) succeeded.")
         elif failed:
-            self._status_label.setText(
-                f"Session finished: {ok}/{total} succeeded. Failed: {', '.join(failed)}."
-            )
+            self._status_label.setText(f"Session finished: {ok}/{total} succeeded. Failed: {', '.join(failed)}.")
         elif last_error:
-            self._status_label.setText(
-                f"Session finished: {ok}/{total} succeeded. {last_error}"
-            )
+            self._status_label.setText(f"Session finished: {ok}/{total} succeeded. {last_error}")
         else:
             self._status_label.setText(f"Session finished: {ok}/{total} succeeded.")
         # The same sentence the page carries, kept where it survives the next
@@ -2983,7 +2935,10 @@ class SimpleBatchMixin(MixinBase):
                 partial(self._process_rows_again, done),
             )
         # One row at a time: a name identifies one section.
-        menu.addAction("Rename section…", partial(self._on_survey_rename, index))
+        menu.addAction(RENAME_ACTION, partial(self._on_survey_rename, index))
+        # The whole selection: a trip is what a run of rows has in common, and
+        # answering it once is the point of asking it here rather than per pass.
+        menu.addAction(CAMPAIGN_ACTION, partial(self._on_survey_campaign, selected))
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))

@@ -229,7 +229,8 @@ def test_the_run_the_viewer_is_holding_is_offered_no_tiers(window, out_root) -> 
 
     (row,) = [window._storage_runs.topLevelItem(0)]
     assert row.childCount() == 0
-    assert "viewer" in row.text(rows_mod.COL_DETAIL)
+    assert row.text(rows_mod.COL_DETAIL) == rows_mod.OPEN_IN_VIEWER_STATUS
+    assert "viewer" in row.toolTip(rows_mod.COL_DETAIL)
 
 
 def test_a_drive_that_has_gone_leaves_the_lists_saying_so(window, out_root) -> None:
@@ -242,3 +243,42 @@ def test_a_drive_that_has_gone_leaves_the_lists_saying_so(window, out_root) -> N
 
     assert window._storage_runs_stack.currentIndex() == 1
     assert window._storage_clips_stack.currentIndex() == 1
+
+
+def test_an_empty_list_stops_reserving_a_share_of_the_page(window, out_root) -> None:
+    """Expected behaviour: a drive with runs but no clips gives the whole page to
+    the runs, and the clip card shrinks to its message.
+
+    Both cards used to claim a fixed share whatever they held, and a stacked
+    layout takes its minimum from its tallest page, so "No clips on this drive"
+    was drawn down half the window.
+    """
+    out_root.mkdir(exist_ok=True)
+    show_drive(window, str(out_root))
+    seed_page(window, out_root)
+    layout = window._storage_lists_layout
+
+    assert layout.stretch(layout.indexOf(window._storage_runs_card)) > 0
+    assert layout.stretch(layout.indexOf(window._storage_clips_card)) == 0
+
+
+def test_a_drive_with_nothing_on_it_reserves_nothing_for_either_list(window, out_root) -> None:
+    out_root.mkdir(exist_ok=True)
+    show_drive(window, str(out_root))
+    window._storage_inventory = MountInventory(root=str(out_root), holds_out_root=True)
+    window._fill_storage_lists()
+    layout = window._storage_lists_layout
+
+    assert layout.stretch(layout.indexOf(window._storage_runs_card)) == 0
+    assert layout.stretch(layout.indexOf(window._storage_clips_card)) == 0
+
+
+def test_the_grave_warning_is_hidden_until_there_is_one(window, out_root) -> None:
+    """It is the longest sentence on the page, so it wraps onto its own line and
+    is not drawn at all until the selection has earned it."""
+    out_root.mkdir(exist_ok=True)
+    show_drive(window, str(out_root))
+    seed_page(window, out_root)
+
+    assert not window._storage_warning.isVisibleTo(window)
+    assert window._storage_warning.wordWrap()

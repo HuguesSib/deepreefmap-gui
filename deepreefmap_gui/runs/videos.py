@@ -1,12 +1,12 @@
 """Videos: the footage itself, grouped by the day it was shot.
 
 The destination a dive day starts and ends at. Clips arrive here, are cut into
-sections, get a transect, and go in the cart; afterwards the same rows show what
+passes, get a transect, and go in the cart; afterwards the same rows show what
 came of them. Browse is for finished runs, so a clip appears in exactly one
 place in the app and this is it.
 
 The library it lists comes from ``survey/catalogue.py::video_library``, the
-grouping and the section strips from ``survey/video_groups.py``, and the widgets
+grouping and the pass strips from ``survey/video_groups.py``, and the widgets
 from ``runs/video_rows.py``. What lives here is the page: which clips are shown,
 what the buttons do, and keeping the answers off the thread that paints them.
 """
@@ -21,14 +21,17 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +51,6 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.core.widgets import (
     EmptyState,
     FilterChips,
-    clip_outcome_color,
     confirm,
     muted_label,
     section_column,
@@ -62,8 +64,9 @@ from deepreefmap_gui.runs.video_rows import (
     VideoLibraryList,
     VideoListHeader,
 )
-from deepreefmap_gui.survey import catalogue, statuses
+from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
+from deepreefmap_gui.survey.jobs import job_filters
 from deepreefmap_gui.survey.models import TransectPass
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
@@ -82,8 +85,12 @@ logger = logging.getLogger(__name__)
 # finished. "All" first so the unfiltered view is where the eye starts.
 _CLIP_FILTERS = (
     ("all", "All", PRIMARY),
-    *((spec.key, spec.label, clip_outcome_color(spec.key)) for spec in statuses.CLIP_OUTCOMES),
+    ("organise", "To organise", PRIMARY),
+    ("process", "To process", PRIMARY),
+    ("attention", "Needs attention", ERROR),
+    ("complete", "Complete", PRIMARY),
 )
+
 
 _SEARCH_WIDTH = 240
 
@@ -91,35 +98,28 @@ _SEARCH_WIDTH = 240
 _DETAIL_SHARE = 0.30
 _DETAIL_MIN_WIDTH = 260
 
-_PERIOD_TOOLTIP = (
-    "How far apart two clips have to be shot to be filed separately. A card off "
-    "one dive day reads as one group by day."
-)
+_PERIOD_TOOLTIP = "The gap between clips that starts a new group."
 
 # The sort order lands in QSettings as one of these words rather than a bool:
 # some backends hand a stored bool back as the string "false", which is truthy.
 _ORDER_ASCENDING, _ORDER_DESCENDING = "ascending", "descending"
 
-_HIDDEN_TOOLTIP = (
-    "Clips hidden on this machine. Hiding is a view of the library rather than a "
-    "fact about it, so nothing is removed and nobody else sees the difference."
-)
+_HIDDEN_TOOLTIP = "Show clips hidden on this machine."
 
 
-# The two bulk actions ask in the button, the way a clip row's own trash does:
-# one press arms, the second acts, and DELETE_ARM_MS stands it back down. A
-# whole library is more than a gesture is worth, so above this many clips the
-# question goes back into a dialog.
+# Bulk actions arm in the button up to this many clips; above it a dialog asks.
 _BULK_CONFIRM_ABOVE = 20
 
-# There is no tick column and no select mode, so the bar says how to pick more
-# than one clip. Nothing else on the page does.
+# There is no tick column and no select mode.
 _PICK_HINT = "Ctrl-click or shift-click to pick more than one clip."
 
-# Named for what it does rather than for the "Not processed" chip, whose count
-# is wider: a clip cut into sections and never run reads as part processed and
-# is not swept, because re-importing the file does not bring its trims back.
-_SWEEP_IDLE = "Remove clips with no sections"
+# A clip with passes is not swept: re-importing the file does not bring trims back.
+_SWEEP_IDLE = "Remove clips with no passes"
+
+
+def captured_day(stamp: str | None) -> str | None:
+    """The day out of a capture stamp, which is the day the swim happened."""
+    return (stamp or "").split("T")[0] or None
 
 
 def _sections_phrase(count: int) -> str:
@@ -138,7 +138,7 @@ def _delete_label(count: int) -> str:
 
 
 def _sweep_label(count: int) -> str:
-    return _SWEEP_IDLE if count < 1 else f"Remove {_clips_phrase(count)} with no sections"
+    return _SWEEP_IDLE if count < 1 else f"Remove {_clips_phrase(count)} with no passes"
 
 
 def _delete_report(deleted: list[VideoLibraryEntry], refused: int) -> str:
@@ -149,7 +149,7 @@ def _delete_report(deleted: list[VideoLibraryEntry], refused: int) -> str:
     """
     kept = (
         f" {_clips_phrase(refused)} kept: a run was made from "
-        f"{'it' if refused == 1 else 'them'}, so delete those in Browse first."
+        f"{'it' if refused == 1 else 'them'}, so delete those in Results first."
         if refused
         else ""
     )
@@ -184,13 +184,9 @@ class VideoLibraryMixin(MixinBase):
         # Paths a single-clip recheck is already asking about, so a double click
         # on a sleeping drive queues one stat rather than two.
         self._clip_link_rechecking: set[str] = set()
-        self._video_period = str(
-            self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD
-        )
+        self._video_period = str(self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD)
         stored_column = str(self._settings.value("video_sort_column", DEFAULT_SORT_COLUMN) or "")
-        self._video_sort_column = (
-            stored_column if stored_column in SORT_COLUMNS else DEFAULT_SORT_COLUMN
-        )
+        self._video_sort_column = stored_column if stored_column in SORT_COLUMNS else DEFAULT_SORT_COLUMN
         stored_order = str(self._settings.value("video_sort_order", "") or "")
         if stored_order in (_ORDER_ASCENDING, _ORDER_DESCENDING):
             self._video_sort_descending = stored_order == _ORDER_DESCENDING
@@ -203,7 +199,7 @@ class VideoLibraryMixin(MixinBase):
 
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
-        top_row.addWidget(QLabel("Group"))
+        top_row.addWidget(QLabel("Group by"))
         self._video_period_chips = FilterChips(PERIODS)
         self._video_period_chips.setToolTip(_PERIOD_TOOLTIP)
         self._video_period_chips.set_current(self._video_period)
@@ -212,16 +208,18 @@ class VideoLibraryMixin(MixinBase):
         self._video_search = QLineEdit()
         self._video_search.setPlaceholderText("Search clips…")
         self._video_search.setClearButtonEnabled(True)
-        self._video_search.setMaximumWidth(_SEARCH_WIDTH)
+        self._video_search.setMinimumWidth(160)
         self._video_search.textChanged.connect(lambda *_: self._rebuild_video_list())
         top_row.addWidget(self._video_search)
         self._video_chips = FilterChips(_CLIP_FILTERS)
-        self._video_chips.setToolTip(
-            "Where each clip stands: whether every section cut from it has been "
-            "processed, and whether any of them failed."
-        )
+        self._video_chips.setToolTip("Filter clips by processing outcome.")
+        saved_filter = str(self._settings.value("video_job_filter", "all"))
+        self._video_clip_filter = saved_filter if saved_filter in {k: v for k, v, *_ in _CLIP_FILTERS} else "all"
+        self._video_chips.set_current(self._video_clip_filter)
         self._video_chips.changed.connect(self._on_video_filter_changed)
-        top_row.addWidget(self._video_chips)
+        jobs_row = QHBoxLayout()
+        jobs_row.addWidget(self._video_chips)
+        jobs_row.addStretch(1)
         # Only there when something is hidden: a checkbox offering to reveal
         # nothing is a control that has to be read to be dismissed.
         self._video_hidden_check = QCheckBox()
@@ -232,19 +230,25 @@ class VideoLibraryMixin(MixinBase):
         top_row.addStretch(1)
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
+        self._video_add_btn.setProperty("cta", "true")
         top_row.addWidget(self._video_add_btn)
         layout.addLayout(top_row)
+        layout.addLayout(jobs_row)
+        self._build_video_options(jobs_row, top_row)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(SPACE_SM)
 
-        column, column_layout = section_column("Footage")
+        column, column_layout = section_column()
         self._video_header = VideoListHeader()
         self._video_header.set_sort(self._video_sort_column, self._video_sort_descending)
         self._video_header.sort_changed.connect(self._on_video_sort_changed)
         column_layout.addWidget(self._video_header)
         self._video_list = VideoLibraryList()
         self._video_list.follow_header(self._video_header)
+        for column_key in ("size", "gravity"):
+            visible = bool(self._settings.value(f"video_column_{column_key}", False, type=bool))
+            self._video_list.set_column_visible(column_key, visible)
         self._video_list.activated.connect(self._on_video_activated)
         self._video_list.play_requested.connect(self._on_video_play)
         self._video_list.reveal_requested.connect(self._on_video_reveal)
@@ -253,18 +257,20 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.hide_requested.connect(self._on_video_hide)
         self._video_list.delete_unused_requested.connect(self._on_video_delete_unused)
         self._video_list.delete_requested.connect(self._on_video_delete)
+        self._video_list.archive_requested.connect(self._archive_video)
         self._video_list.section_activated.connect(self._select_section)
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
         self._video_list.section_reassign.connect(self._on_section_reassign)
+        self._video_list.section_rename.connect(self._on_section_rename)
+        self._video_list.section_campaign.connect(self._on_section_campaign)
         self._video_list.section_delete.connect(self._on_section_delete)
         self._video_list.section_open_transect.connect(self._open_transect_page)
         self._video_list.selection_changed.connect(self._refresh_video_actions)
         self._video_stack = QStackedWidget()
         self._video_stack.addWidget(self._video_list)
-        self._video_stack.addWidget(
-            EmptyState("No footage yet", "Drop clips here, or use Add videos…")
-        )
+        self._video_stack.addWidget(EmptyState("No footage yet", "Drop clips here, or use Add videos…"))
+        self._video_stack.addWidget(EmptyState("No videos match", "Change the search or filters to see more footage."))
         # The stack, not the list inside it: Qt finds a drop target by walking up
         # from the widget under the cursor, and an empty library hides the list
         # behind the empty state that advertises the drop.
@@ -274,42 +280,39 @@ class VideoLibraryMixin(MixinBase):
         column_layout.addWidget(self._build_video_actions())
         split.addWidget(column)
 
-        # The clip above the section it holds, so drilling in never costs sight
-        # of what was drilled into: the cut list stays on screen beside the runs
-        # made from the cut.
-        detail = QSplitter(Qt.Orientation.Vertical)
-        detail.setHandleWidth(SPACE_SM)
+        # The inspector shows one selected video or pass in a stable space.
+        detail = QStackedWidget()
         detail.setMinimumWidth(_DETAIL_MIN_WIDTH)
 
         self._video_detail = VideoDetailPanel()
+        self._video_detail.play_requested.connect(self._on_video_play)
         self._video_detail.queue_requested.connect(self._on_video_new_section)
-        self._video_detail.pass_activated.connect(self._select_section)
-        self._video_detail.add_to_cart_requested.connect(self._on_video_pass_to_cart)
-        self._video_detail.retrim_requested.connect(self._on_section_retrim)
-        self._video_detail.reassign_requested.connect(self._on_section_reassign)
-        self._video_detail.delete_requested.connect(self._on_section_delete)
-        self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
         self._video_detail.archive_requested.connect(self._archive_video)
+        self._video_detail.details_requested.connect(self._on_clip_details)
         # The pane keeps its place with nothing selected: a right half that
         # disappears re-lays the page every time a clip is picked or dropped.
         self._video_detail_stack = QStackedWidget()
-        self._video_detail_stack.addWidget(
-            EmptyState("No clip selected", "Pick a clip to see its sections and runs.")
-        )
+        self._video_detail_stack.addWidget(EmptyState("No clip selected", "Pick a clip to see its passes and runs."))
         self._video_detail_stack.addWidget(self._video_detail)
         detail.addWidget(self._video_detail_stack)
 
         self._section_detail = SectionDetailPanel()
+        self._section_detail.back_to_video_requested.connect(self._back_to_clip)
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
+        self._section_detail.campaign_requested.connect(self._on_section_campaign)
+        self._section_detail.rename_requested.connect(self._on_section_rename)
         self._section_detail.delete_requested.connect(self._on_section_delete)
         self._section_detail.run_activated.connect(self._on_section_run_activated)
         # Same handler as the run card in Browse, so the press lands on the
         # Server view with its progress and summary showing.
         self._section_detail.archive_run_requested.connect(self._archive_run)
-        self._section_detail.setVisible(False)
         detail.addWidget(self._section_detail)
+        self._video_inspector = detail
+        self._section_detail.add_to_queue_requested.connect(self._on_video_pass_to_cart)
+        self._section_detail.campaign_selected.connect(self._set_pass_campaign)
+        self._section_detail.open_transect_requested.connect(self._open_transect_page)
         split.addWidget(detail)
 
         split.setStretchFactor(0, 1)
@@ -322,12 +325,89 @@ class VideoLibraryMixin(MixinBase):
         layout.addWidget(split, 1)
         return page
 
+    def _build_video_options(self, filters: QHBoxLayout, title: QHBoxLayout) -> None:
+        self._video_campaign_filter = QComboBox()
+        self._video_site_filter = QComboBox()
+        for label, combo in (("Campaign", self._video_campaign_filter), ("Site", self._video_site_filter)):
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            combo.setMinimumContentsLength(6)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setAccessibleName(f"Filter by {label.lower()}")
+            filters.addWidget(QLabel(label))
+            filters.addWidget(combo)
+            combo.currentIndexChanged.connect(lambda *_: self._rebuild_video_list())
+        self._video_columns = QToolButton()
+        self._video_columns.setText("Columns")
+        self._video_columns.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._video_columns)
+        for column, label in (("size", "Size"), ("gravity", "Gravity")):
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bool(self._settings.value(f"video_column_{column}", False, type=bool)))
+            action.toggled.connect(lambda checked, key=column: self._set_video_column(key, checked))
+        self._video_columns.setMenu(menu)
+        title.addWidget(self._video_columns)
+
+    def _set_video_column(self, column: str, visible: bool) -> None:
+        self._settings.setValue(f"video_column_{column}", visible)
+        self._video_list.set_column_visible(column, visible)
+
+    def _refresh_video_metadata(self) -> None:
+        store = self._try_survey_store()
+        self._video_transect_sites = {}
+        if store is None:
+            return
+        self._video_transect_sites = {str(t.id): str(t.site_id) if t.site_id else None for t in store.list_transects()}
+        for combo, records in (
+            (self._video_campaign_filter, store.list_campaigns()),
+            (self._video_site_filter, store.list_sites()),
+        ):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            for record in records:
+                combo.addItem(record.name, str(record.id))
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
+    def _matches_video_metadata(self, clip: VideoLibraryEntry) -> bool:
+        campaign = self._video_campaign_filter.currentData()
+        site = self._video_site_filter.currentData()
+        if campaign == "all" and site == "all":
+            return True
+        passes: list[TransectPass | None] = list(clip.passes) or [None]
+        for pass_ in passes:
+            campaign_id = str(pass_.campaign_id) if pass_ and pass_.campaign_id else "unassigned"
+            site_id = self._video_transect_sites.get(str(pass_.transect_id)) if pass_ else None
+            if campaign in {"all", campaign_id} and site in {"all", site_id or "unassigned"}:
+                return True
+        return False
+
+    def _set_pass_campaign(self, pass_id: str, campaign_id: str) -> None:
+        from deepreefmap_gui.runs.pass_campaign import file_pass
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            self._refresh_video_detail()
+            return
+        note = file_pass(store, pass_, uuid.UUID(campaign_id) if campaign_id else None)
+        if note:
+            self._status_label.setText(note)
+        self._refresh_video_library(store)
+        self._refresh_survey_batch_tab()
+
     def _apply_video_split_sizes(self) -> None:
         """Divide the page between the clip list and the detail pane.
 
         Set outright rather than left to stretch factors: a splitter only
         shares out the space above each pane's minimum, so the detail pane sat
-        at its 260px floor however wide the window got, and the section card's
+        at its 260px floor however wide the window got, and the pass card's
         buttons truncated to fit it.
         """
         if getattr(self, "_video_split_user_sized", False):
@@ -366,10 +446,7 @@ class VideoLibraryMixin(MixinBase):
         """
         bar = QWidget()
         bar.setObjectName("videoActionBar")
-        bar.setStyleSheet(
-            f"QWidget#videoActionBar {{ border: 1px solid {BORDER};"
-            f" border-radius: {RADIUS_SM}px; }}"
-        )
+        bar.setStyleSheet(f"QWidget#videoActionBar {{ border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px; }}")
         row = QHBoxLayout(bar)
         row.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_SM)
         row.setSpacing(SPACE_MD)
@@ -380,7 +457,15 @@ class VideoLibraryMixin(MixinBase):
         self._video_clear_btn = QPushButton(_SWEEP_IDLE)
         self._video_clear_btn.setEnabled(False)
         self._video_clear_btn.clicked.connect(self._on_video_sweep_clicked)
-        row.addWidget(self._video_clear_btn)
+        self._video_clear_btn.hide()
+        self._video_library_menu = QToolButton()
+        self._video_library_menu.setText("Library")
+        self._video_library_menu.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._video_library_menu)
+        self._video_cleanup_action = menu.addAction("Remove clips with no passes…")
+        self._video_cleanup_action.triggered.connect(self._video_clear_btn.click)
+        self._video_library_menu.setMenu(menu)
+        row.addWidget(self._video_library_menu)
 
         self._video_delete_btn = QPushButton(_delete_label(0))
         self._video_delete_btn.setEnabled(False)
@@ -405,7 +490,7 @@ class VideoLibraryMixin(MixinBase):
         """The clips on screen with nothing cut from them and nothing made from them.
 
         Orphans only. Deleting is records-only and adding the file again mints a
-        fresh clip, so a swept orphan is recoverable; the sections cut from a
+        fresh clip, so a swept orphan is recoverable; the passes cut from a
         clip are not, and those trim windows are the user's own work.
 
         Drawn from what is listed, so the count is what is on screen and a
@@ -440,14 +525,13 @@ class VideoLibraryMixin(MixinBase):
             ("delete", self._video_delete_btn),
             ("sweep", self._video_clear_btn),
         ):
-            button.setStyleSheet(
-                f"color: {ERROR}; font-weight: {WEIGHT_SEMIBOLD};" if armed == name else ""
-            )
+            button.setStyleSheet(f"color: {ERROR}; font-weight: {WEIGHT_SEMIBOLD};" if armed == name else "")
+        self._video_delete_btn.setVisible(bool(picked))
+        self._video_cleanup_action.setText(self._video_clear_btn.text())
+        self._video_cleanup_action.setEnabled(bool(sweepable))
         self._video_delete_btn.setEnabled(bool(picked))
         self._video_clear_btn.setEnabled(bool(sweepable))
-        self._video_finding.setText(
-            _PICK_HINT if not picked else f"{_clips_phrase(picked)} picked."
-        )
+        self._video_finding.setText(_PICK_HINT if not picked else f"{_clips_phrase(picked)} picked.")
 
     def _video_action_armed(self, name: str) -> bool:
         """True on the second press of an action, arming it on the first."""
@@ -486,8 +570,7 @@ class VideoLibraryMixin(MixinBase):
             if confirm(
                 self,
                 "Remove clips",
-                f"Remove {_clips_phrase(len(clips))} with no sections from the "
-                f"library? {KEEPS_FILE_NOTE}",
+                f"Remove {_clips_phrase(len(clips))} with no passes from the library? {KEEPS_FILE_NOTE}",
             ):
                 self._delete_clips(clips)
             return
@@ -512,9 +595,7 @@ class VideoLibraryMixin(MixinBase):
         if store is None:
             return []
         try:
-            return catalogue.video_library(
-                store.list_videos(), store.list_passes(), store.list_runs()
-            )
+            return catalogue.video_library(store.list_videos(), store.list_passes(), store.list_runs())
         except Exception:
             logger.exception("Could not list the video library")
             return []
@@ -569,16 +650,20 @@ class VideoLibraryMixin(MixinBase):
         if self._hidden_clip_ids and not self._video_hidden_check.isChecked():
             clips = [c for c in clips if str(c.video.id) not in self._hidden_clip_ids]
         if self._video_clip_filter != "all":
-            clips = [c for c in clips if c.outcome == self._video_clip_filter]
+            clips = [c for c in clips if self._video_clip_filter in job_filters(c)]
         needle = self._video_search.text().strip().lower()
         if needle:
             clips = [c for c in clips if needle in c.video.file_name.lower()]
-        return clips
+        return [clip for clip in clips if self._matches_video_metadata(clip)]
 
     def _rebuild_video_list(self) -> None:
         if getattr(self, "_video_list", None) is None:
             return
         self._refresh_hidden_control()
+        queued = self._cart_pass_ids()
+        for entry in self._video_entries:
+            entry.queued_pass_ids = set(queued)
+        self._refresh_video_metadata()
         clips = self._visible_clips()
         groups = sort_groups(
             group_by_period(clips, self._video_period),
@@ -588,10 +673,14 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.set_groups(
             groups,
             self._transect_name_for,
+            campaign_name=self._campaign_name_for,
             in_cart=self._cart_pass_ids().__contains__,
             hidden=self._hidden_clip_ids.__contains__,
         )
-        self._video_stack.setCurrentIndex(0 if clips else 1)
+        if self._selected_pass_id and self._selected_pass_id not in self._video_list.sections():
+            self._selected_pass_id = None
+        self._video_stack.setCurrentIndex(0 if clips else (2 if self._video_entries else 1))
+        self._refresh_archive_affordances()
         self._refresh_video_chips()
         self._refresh_video_actions()
         self._refresh_video_detail()
@@ -602,7 +691,8 @@ class VideoLibraryMixin(MixinBase):
         counts = {option[0]: 0 for option in _CLIP_FILTERS}
         counts["all"] = len(clips)
         for clip in clips:
-            counts[clip.outcome] = counts.get(clip.outcome, 0) + 1
+            for key in job_filters(clip) - {"all"}:
+                counts[key] += 1
         self._video_chips.set_counts(counts)
 
     def _refresh_video_detail(self) -> None:
@@ -610,49 +700,41 @@ class VideoLibraryMixin(MixinBase):
             clip = self._clip_for_pass(self._selected_pass_id)
             if clip is not None:
                 self._show_clip_detail(clip)
-                self._video_detail.select_section(self._selected_pass_id)
                 self._fill_section_detail(clip, self._selected_pass_id)
                 return
             # The cut it was showing is gone, so nothing below the clip stands.
             self._selected_pass_id = None
-        self._section_detail.setVisible(False)
+        self._video_inspector.setCurrentIndex(0)
         clip = self._selected_clip()
         if clip is None:
             self._video_detail.clear()
             self._video_detail_stack.setCurrentIndex(0)
             return
         self._show_clip_detail(clip)
-        self._video_detail.select_section(None)
 
     def _show_clip_detail(self, clip: VideoLibraryEntry) -> None:
         self._video_detail_stack.setCurrentIndex(1)
-        self._video_detail.show_entry(
-            clip,
-            self._transect_name_for,
-            in_cart=self._cart_pass_ids().__contains__,
-            # Hidden clips included: a chapter being out of the list does not
-            # stop the section that spans it wanting a frame from it.
-            assets={
-                entry.video.id: entry.video
-                for entry in getattr(self, "_video_entries", [])
-            },
-        )
+        self._video_detail.show_entry(clip)
         self._video_detail.set_archive_state(self._archive_state_for_video(clip.video.id))
         # First card of the session asks the registry; the answer repaints it.
         self._maybe_refresh_archive_badges()
 
     def _paint_archive_badges(self) -> None:
         """Repaint the archive badges from a fresh probe, on the cards showing."""
+        self._paint_clip_row_archive_buttons()
         detail = getattr(self, "_video_detail", None)
         if detail is not None and detail.entry is not None:
             detail.set_archive_state(self._archive_state_for_video(detail.entry.video.id))
         run_detail = getattr(self, "_run_detail", None)
         entry = run_detail.entry if run_detail is not None else None
         if run_detail is not None and entry is not None and entry.db_run is not None:
-            run_detail.set_archive_state(self._archive_state_for_run(entry.db_run.id))
+            run_detail.set_archive_state(
+                self._archive_state_for_run(entry.db_run.id),
+                self._archive_note_for_run(entry.db_run.id),
+            )
         section_detail = getattr(self, "_section_detail", None)
         if section_detail is not None:
-            section_detail.paint_archive_states(self._archive_state_for_run)
+            section_detail.paint_archive_states(self._archive_state_for_run, self._archive_note_for_run)
 
     def _selected_clip(self) -> VideoLibraryEntry | None:
         return self._clip_by_id(self._video_list.selected)
@@ -676,9 +758,24 @@ class VideoLibraryMixin(MixinBase):
             # swim that already happened, not a line anybody is choosing.
             transect = store.get_transect_for_reference(transect_id)
         except Exception:
-            logger.exception("Could not read the transect for a section")
+            logger.exception("Could not read the transect for a pass")
             return None
         return transect.name if transect is not None else None
+
+    def _campaign_name_for(self, campaign_id) -> str | None:
+        if campaign_id is None:
+            return None
+        store = self._try_survey_store()
+        if store is None:
+            return None
+        try:
+            # The trip the swim belongs to, withdrawn or not, for the reason
+            # _transect_name_for gives.
+            campaign = store.get_campaign_for_reference(campaign_id)
+        except Exception:
+            logger.exception("Could not read the campaign for a pass")
+            return None
+        return campaign.name if campaign is not None else None
 
     def _start_clip_link_scan(self) -> None:
         """Ask, off the paint path, whether each clip's file is still there.
@@ -777,6 +874,7 @@ class VideoLibraryMixin(MixinBase):
 
     def _on_video_filter_changed(self, key: str) -> None:
         self._video_clip_filter = key
+        self._settings.setValue("video_job_filter", key)
         self._rebuild_video_list()
 
     def _on_video_sort_changed(self, column: str, descending: bool) -> None:
@@ -784,14 +882,13 @@ class VideoLibraryMixin(MixinBase):
         self._video_sort_descending = descending
         # A reader's preference on this machine, beside the grouping period.
         self._settings.setValue("video_sort_column", column)
-        self._settings.setValue(
-            "video_sort_order", _ORDER_DESCENDING if descending else _ORDER_ASCENDING
-        )
+        self._settings.setValue("video_sort_order", _ORDER_DESCENDING if descending else _ORDER_ASCENDING)
         self._rebuild_video_list()
 
     # --- one clip ------------------------------------------------------------
 
     def _on_video_activated(self, video_id: str) -> None:
+        self._video_list.expand(video_id)
         self._video_list.set_selected(video_id)
         self._selected_pass_id = None
         self._section_detail.setVisible(False)
@@ -800,13 +897,18 @@ class VideoLibraryMixin(MixinBase):
         # relocate, so its link state is worth a fresh stat.
         self._recheck_clip_link(video_id)
 
+    def _back_to_clip(self) -> None:
+        clip = self._clip_for_pass(self._selected_pass_id) if self._selected_pass_id else None
+        if clip is not None:
+            self._on_video_activated(str(clip.video.id))
+
     def _select_section(self, pass_id: str) -> bool:
         """Show one cut, wherever it was picked: the tree, the clip card, the strip.
 
         One entry point for all three so they cannot disagree about what is
         selected, and so a span click opens the clip it belongs to.
 
-        Answers False for a section that is no longer there, which is how going
+        Answers False for a pass that is no longer there, which is how going
         back to a deleted one is told from going back to a live one.
         """
         clip = self._clip_for_pass(pass_id)
@@ -818,13 +920,12 @@ class VideoLibraryMixin(MixinBase):
         # Through the one filler, so the pane highlights the same row the list
         # does and reads the cart the same way it does.
         self._show_clip_detail(clip)
-        self._video_detail.select_section(pass_id)
         self._fill_section_detail(clip, pass_id)
         self._video_list.reveal(pass_id)
         return True
 
     def _open_section_in_videos(self, pass_id: uuid.UUID) -> None:
-        """Edit a section where a section is defined.
+        """Edit a pass where a pass is defined.
 
         The cart shows a pass's transect, direction and trim but no longer edits
         any of them: they describe the swim, not the plan to process it, and
@@ -834,10 +935,10 @@ class VideoLibraryMixin(MixinBase):
         if not self._select_section(str(pass_id)):
             # The section has gone since whatever offered it was drawn, which a
             # chart or a cart row outliving a delete is how it happens.
-            self._status_label.setText("That section is no longer in the survey.")
+            self._status_label.setText("That pass is no longer in the survey.")
 
     def _pass_by_id(self, store, pass_id: str):
-        """The section an id names, and None when the id names nothing.
+        """The pass an id names, and None when the id names nothing.
 
         The ids come off row widgets, which is a wide enough door that a
         malformed one has to be an answer of None rather than an exception in
@@ -866,15 +967,69 @@ class VideoLibraryMixin(MixinBase):
             pass_,
             clip_name=clip.video.file_name,
             transect_name=self._transect_name_for(pass_.transect_id),
-            status=pass_status(runs),
+            status=pass_status(runs, queued=self._pass_in_current_cart(pass_id)),
             runs=runs,
             session_name=self._session_name_for,
             in_cart=self._pass_in_current_cart(pass_id),
+            campaign_name=self._campaign_name_for(pass_.campaign_id),
             output_bytes=sum(sizes.get(r.run_dir_name, 0) for r in runs),
         )
-        self._section_detail.paint_archive_states(self._archive_state_for_run)
-        self._section_detail.setVisible(True)
+        self._section_detail.paint_archive_states(self._archive_state_for_run, self._archive_note_for_run)
+        store = self._try_survey_store()
+        if store is not None:
+            self._section_detail.set_campaigns(store.list_campaigns(), pass_.campaign_id)
+            transect = store.get_transect(pass_.transect_id) if pass_.transect_id else None
+            site = store.get_site(transect.site_id) if transect and transect.site_id else None
+            self._section_detail.set_site(site.name if site else None, pass_.transect_id)
+        self._video_inspector.setCurrentIndex(1)
         self._maybe_refresh_archive_badges()
+
+    def _refresh_archive_affordances(self, connected: bool | None = None) -> None:
+        """Offer the archive controls only once there is a registry to send to.
+
+        Every pane that carries one, together: the clip rows, the clip and pass
+        detail panes, the run card's menu, and the Cameras page's publish
+        buttons. A control that sends footage nowhere is worse than no control.
+
+        `connected` is passed by a caller that has just read the server state,
+        so the status bar's own refresh does not pay for a second read.
+        """
+        if connected is None:
+            connected = self._server_is_connected()
+        listing = getattr(self, "_video_list", None)
+        if listing is not None:
+            listing.set_server_connected(connected)
+            self._paint_clip_row_archive_buttons()
+        for name in ("_video_detail", "_section_detail", "_run_detail", "_cameras_panel"):
+            pane = getattr(self, name, None)
+            if pane is not None:
+                pane.set_server_connected(connected)
+
+    def _server_is_connected(self) -> bool:
+        from deepreefmap_gui.server import state as server_state
+
+        try:
+            return server_state.read_state(self._try_survey_store()).connected
+        except Exception:
+            logger.exception("Could not read the server state")
+            return False
+
+    def _paint_clip_row_archive_buttons(self) -> None:
+        """Dress every clip row's archive glyph as what the registry holds of it."""
+        from deepreefmap_gui.runs.video_rows import ARCHIVE_CLIP_TOOLTIP, paint_archive_button
+
+        listing = getattr(self, "_video_list", None)
+        if listing is None:
+            return
+        for row in listing.rows().values():
+            entry = row.entry
+            if entry is None:
+                continue
+            paint_archive_button(
+                row.archive_btn,
+                self._archive_state_for_video(entry.video.id),
+                ARCHIVE_CLIP_TOOLTIP,
+            )
 
     def _session_name_for(self, batch_id) -> str | None:
         if batch_id is None:
@@ -887,7 +1042,7 @@ class VideoLibraryMixin(MixinBase):
         except Exception:
             logger.exception("Could not read the session for a run")
             return None
-        return batch.name if batch is not None else None
+        return batch.label if batch is not None else None
 
     def _on_video_add_clicked(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -913,14 +1068,14 @@ class VideoLibraryMixin(MixinBase):
             self._new_section_from_clip(clip)
 
     def _new_section_from_clip(self, clip: VideoLibraryEntry) -> None:
-        """Cut a section from a clip and file it against a transect.
+        """Cut a pass from a clip and file it against a transect.
 
-        The cart is not touched: making a section and choosing to run it are two
+        The cart is not touched: making a pass and choosing to run it are two
         decisions, and the cart control on the row is where the second is made.
 
-        Scrub first (the window is the section's identity), then the assign step,
+        Scrub first (the window is the pass's identity), then the assign step,
         where a transect is a choice rather than a requirement. A clip that
-        cannot be scrubbed cuts nothing: a section is a window the user chose,
+        cannot be scrubbed cuts nothing: a pass is a window the user chose,
         never a whole clip queued on their behalf.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
@@ -928,29 +1083,20 @@ class VideoLibraryMixin(MixinBase):
         duration = clip.video.duration_s or 0.0
         if clip.link_state == LINK_MISSING:
             self._status_label.setText(
-                "Cannot cut a section: the video file is missing. Add it again "
-                "from where it lives now."
+                "Cannot cut a pass: the video file is missing. Add it again from where it lives now."
             )
             return
         if clip.link_state != LINK_LINKED:
-            self._status_label.setText(
-                "Cannot cut a section: the video file has not been checked yet."
-            )
+            self._status_label.setText("Cannot cut a pass: the video file has not been checked yet.")
             return
         if duration <= 0.0:
-            self._status_label.setText(
-                "Cannot cut a section: the clip's length is unknown."
-            )
+            self._status_label.setText("Cannot cut a pass: the clip's length is unknown.")
             return
         store = self._try_survey_store()
         if store is None:
-            self._status_label.setText(
-                "Cannot cut a section: the survey database is unavailable."
-            )
+            self._status_label.setText("Cannot cut a pass: the survey database is unavailable.")
             return
-        scrub = VideoScrubDialog(
-            clip.video.path, duration, 0.0, duration, parent=self, fps=clip.video.fps
-        )
+        scrub = VideoScrubDialog(clip.video.path, duration, 0.0, duration, parent=self, fps=clip.video.fps)
         if scrub.exec() != QDialog.DialogCode.Accepted:
             return
         begin_s, end_s = scrub.time_range()
@@ -959,9 +1105,7 @@ class VideoLibraryMixin(MixinBase):
         # whole-length section beside the real one.
         already = store.pass_with_window(clip.video.id, begin_s, end_s)
         if already is not None:
-            self._status_label.setText(
-                f"{clip.video.file_name} already has a section over that window."
-            )
+            self._status_label.setText(f"{clip.video.file_name} already has a pass over that window.")
             self._select_section(str(already.id))
             return
         assign = self._transect_picker(store)
@@ -970,7 +1114,7 @@ class VideoLibraryMixin(MixinBase):
         # chosen, so the section is written unfiled and filed later.
         if not accepted and not assign.left_for_page:
             return
-        transect_id, direction = assign.choice() if accepted else (None, "forward")
+        transect_id, direction = assign.choice() if accepted else (None, None)
         # The dialog's pick when it was answered; the survey's remembered
         # default when the section is written unfiled on the way out.
         campaign_id = assign.campaign_choice() if accepted else store.default_campaign_id()
@@ -981,6 +1125,8 @@ class VideoLibraryMixin(MixinBase):
             end_s=end_s,
             direction=direction,
             campaign_id=campaign_id,
+            quality=assign.quality_choice() if accepted else None,
+            surveyed_on=captured_day(clip.video.captured_at),
         )
         store.add_pass(pass_)
         self._refresh_video_library()
@@ -990,7 +1136,7 @@ class VideoLibraryMixin(MixinBase):
     def _cart_pass_ids(self) -> set[str]:
         """The current cart's passes, read once per repaint.
 
-        Asked per row it was two queries a section, which is a query per section
+        Asked per row it was two queries a pass, which is a query per pass
         of the whole library every time the page repaints.
         """
         store = self._try_survey_store()
@@ -1002,14 +1148,14 @@ class VideoLibraryMixin(MixinBase):
                 return set()
             return {str(item.pass_id) for item in store.list_batch_items(cart.id)}
         except Exception:
-            logger.exception("Could not read the cart")
+            logger.exception("Could not read the queue")
             return set()
 
     def _pass_in_current_cart(self, pass_id_str: object) -> bool:
         return str(pass_id_str) in self._cart_pass_ids()
 
     def _missing_clips_for(self, pass_) -> list[str]:
-        """The chapters of a section whose files the last scan could not find.
+        """The chapters of a pass whose files the last scan could not find.
 
         Read off the library's cached link states rather than by stat'ing here:
         the answer is already known, and a drive that has gone to sleep must not
@@ -1025,7 +1171,7 @@ class VideoLibraryMixin(MixinBase):
     def _refresh_cart_marks(self) -> None:
         """Repaint the Videos page after the cart changed somewhere else.
 
-        The cart is shown on every section row, so a pass taken out of it on the
+        The cart is shown on every pass row, so a pass taken out of it on the
         Process page has to stop claiming to be in it here. Cheap: the library
         itself is not re-read, only the rows re-filled from what is cached.
         """
@@ -1034,11 +1180,11 @@ class VideoLibraryMixin(MixinBase):
         self._rebuild_video_list()
 
     def _on_video_pass_to_cart(self, pass_id_str: str) -> None:
-        """The cart control on a section, from a row or the pane's list.
+        """The cart control on a pass, from a row or the pane's list.
 
-        One control, both ways: a section that is not in the cart goes in, and
+        One control, both ways: a pass that is not in the cart goes in, and
         one that is comes out. The button is green while it is in, so clicking
-        the green is how a section is taken back out again.
+        the green is how a pass is taken back out again.
         """
         try:
             pass_id = uuid.UUID(pass_id_str)
@@ -1053,9 +1199,7 @@ class VideoLibraryMixin(MixinBase):
             return
         if pass_id_str in self._cart_pass_ids():
             self._take_pass_out_of_cart(pass_id)
-            self._status_label.setText(
-                f"Took the {section_window(pass_)} section out of the cart."
-            )
+            self._status_label.setText(f"Took the {section_window(pass_)} pass out of the queue.")
             return
         # A section whose footage is not on disk would fail the moment the cart
         # was checked out, so it never gets in. Refused here rather than at the
@@ -1063,18 +1207,17 @@ class VideoLibraryMixin(MixinBase):
         missing = self._missing_clips_for(pass_)
         if missing:
             self._status_label.setText(
-                f"{', '.join(missing)} cannot be found, so this section cannot be "
-                "processed. Add the footage again from where it lives now."
+                f"{', '.join(missing)} cannot be found. Add the footage again from where it lives now."
             )
             return
         self._add_pass_to_cart(pass_id)
 
     def _on_section_retrim(self, pass_id: str) -> None:
-        """Move a section's window. The trim is metadata, so it stays editable.
+        """Move a pass's window. The trim is metadata, so it stays editable.
 
-        A section that has already run keeps its runs: each one recorded the
+        A pass that has already run keeps its runs: each one recorded the
         window it actually processed, so the history stays true even once the
-        section is asking for a different one next time.
+        pass is asking for a different one next time.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
@@ -1083,7 +1226,7 @@ class VideoLibraryMixin(MixinBase):
         if clip is None or store is None:
             return
         pass_ = self._pass_by_id(store, pass_id)
-        if pass_ is None:
+        if pass_ is None or self._refuse_locked(pass_):
             return
         duration = clip.video.duration_s or 0.0
         if clip.link_state != LINK_LINKED or duration <= 0.0:
@@ -1107,12 +1250,45 @@ class VideoLibraryMixin(MixinBase):
         # window, and the run made from it processes the new window too.
         self._refresh_survey_batch_tab()
 
+    def _refuse_locked(self, row) -> bool:
+        """Say why a row another laptop made cannot be changed here, and refuse.
+
+        A row the console validated or authored is not refused: the change goes
+        up as a proposal, which the sync report says.
+        """
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id, read_only
+
+        mine = own_device_id()
+        if read_only(row, mine):
+            self._status_label.setText(lock_note(row, mine))
+            return True
+        return False
+
+    def _on_clip_details(self, video_id: str) -> None:
+        """Camera, rig position, mounting and the review verdict on one clip."""
+        from deepreefmap_gui.runs.clip_details import ClipDetailsDialog
+        from deepreefmap_gui.survey.ownership import lock_note, own_device_id
+
+        store = self._try_survey_store()
+        clip = self._clip_by_id(video_id)
+        if store is None or clip is None or self._refuse_locked(clip.video):
+            return
+        video = store.get_video(clip.video.id)
+        if video is None:
+            return
+        dialog = ClipDetailsDialog(self, video, note=lock_note(video, own_device_id()))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog.apply_to(video)
+        store.update_video(video)
+        self._refresh_video_library()
+
     def _transect_picker(self, store, **kwargs):
         """The map-and-list dialog both filing steps use, wired to the page.
 
         Its arrow leaves for the Transects page, rejecting the dialog on the way
-        so no choice made in it is half applied. Whether the section survives the
-        trip is the caller's business: a section being reassigned already exists,
+        so no choice made in it is half applied. Whether the pass survives the
+        trip is the caller's business: a pass being reassigned already exists,
         and one being cut is written unfiled rather than thrown away.
         """
         from deepreefmap_gui.simple.transect_picker import TransectPickerDialog
@@ -1121,52 +1297,100 @@ class VideoLibraryMixin(MixinBase):
         dialog.open_transect_requested.connect(self._open_transect_page)
         return dialog
 
+    def _on_section_rename(self, pass_id: str) -> None:
+        """Rename a pass from wherever it is shown on this page.
+
+        Locked the same way the other edits are: a row another laptop authored
+        is not this device's to rename.
+        """
+        from deepreefmap_gui.runs.pass_rename import rename_pass, renamed_note
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            return
+        before = pass_.label
+        said = rename_pass(self, store, pass_.id)
+        renamed = store.get_pass(pass_.id)
+        if renamed is None or renamed.label == before:
+            if said:
+                self._status_label.setText(said)
+            return
+        # These rows carry the transect and the window, not the pass's name, so
+        # the rename would otherwise leave the page looking untouched.
+        self._status_label.setText(said or renamed_note(renamed.label))
+        self._refresh_video_library()
+        self._select_section(pass_id)
+
+    def _on_section_campaign(self, pass_id: str) -> None:
+        """File a pass under a campaign, without reopening the whole picker."""
+        from deepreefmap_gui.runs.pass_campaign import set_campaign
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            return
+        said = set_campaign(self, store, pass_.id)
+        if said is None:
+            return
+        self._status_label.setText(said)
+        self._refresh_video_library()
+        self._select_section(pass_id)
+        self._refresh_survey_batch_tab()
+
     def _on_section_reassign(self, pass_id: str) -> None:
-        """Change which transect a section belongs to, or its direction."""
+        """Change which transect a pass belongs to, or its direction."""
         store = self._try_survey_store()
         if store is None:
             return
         pass_ = self._pass_by_id(store, pass_id)
         if pass_ is None:
             return
+        if self._refuse_locked(pass_):
+            return
         dialog = self._transect_picker(
             store,
             transect_id=pass_.transect_id,
             direction=pass_.direction,
+            quality=pass_.quality,
             ok_label="Save",
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         pass_.transect_id, pass_.direction = dialog.choice()
+        pass_.quality = dialog.quality_choice()
+        pass_.campaign_id = dialog.campaign_choice()
         store.update_pass(pass_)
         self._refresh_video_library()
         self._select_section(pass_id)
         self._refresh_survey_batch_tab()
 
     def _on_section_delete(self, pass_id: str) -> None:
-        """Remove a section, unless something was made from it.
+        """Remove a pass, unless something was made from it.
 
-        A section with runs is the record of what those runs processed, so it
+        A pass with runs is the record of what those runs processed, so it
         cannot quietly disappear from under them. Deleting the runs is Browse's
-        job, and doing it there leaves the section deletable here.
+        job, and doing it there leaves the pass deletable here.
         """
         store = self._try_survey_store()
         if store is None:
             return
         pass_ = self._pass_by_id(store, pass_id)
-        if pass_ is None:
+        if pass_ is None or self._refuse_locked(pass_):
             return
         runs = store.runs_for_pass(pass_.id)
         if runs:
             count = f"{len(runs)} run{'' if len(runs) == 1 else 's'}"
-            self._status_label.setText(
-                f"This section has {count}. Delete them in Browse first."
-            )
+            self._status_label.setText(f"This pass has {count}. Delete them in Results first.")
             return
         if not confirm(
             self,
-            "Delete section",
-            f"Remove the {section_window(pass_)} section from "
+            "Delete pass",
+            f"Remove the {section_window(pass_)} pass from "
             f"{self._video_detail.entry.video.file_name if self._video_detail.entry else 'this clip'}?",
         ):
             return
@@ -1179,10 +1403,10 @@ class VideoLibraryMixin(MixinBase):
         self._section_detail.setVisible(False)
         self._refresh_video_library()
         self._refresh_survey_batch_tab()
-        self._status_label.setText("Section deleted.")
+        self._status_label.setText("Pass deleted.")
 
     def _on_section_run_activated(self, run_dir_name: str) -> None:
-        """Open what this section produced, the same as Open does in Browse."""
+        """Open what this pass produced, the same as Open does in Browse."""
         root = Path(self._out_root_input.text()).expanduser()
         self._load_run_from_dir(root / run_dir_name)
 
@@ -1200,13 +1424,12 @@ class VideoLibraryMixin(MixinBase):
             return
         doomed = [p for p in clip.passes if not store.runs_for_pass(p.id)]
         if not doomed:
-            self._status_label.setText("Every section of this clip has runs.")
+            self._status_label.setText("Every pass of this clip has runs.")
             return
         if not confirm(
             self,
-            "Delete sections",
-            f"Remove {_sections_phrase(len(doomed))} from {clip.video.file_name}? "
-            "Nothing has been made from them.",
+            "Delete passes",
+            f"Remove {_sections_phrase(len(doomed))} from {clip.video.file_name}?",
         ):
             return
         removed = 0
@@ -1214,7 +1437,7 @@ class VideoLibraryMixin(MixinBase):
             try:
                 store.delete_pass(pass_.id)
             except ValueError as exc:
-                logger.warning("Could not delete section %s: %s", pass_.id, exc)
+                logger.warning("Could not delete pass %s: %s", pass_.id, exc)
                 continue
             removed += 1
         self._selected_pass_id = None
