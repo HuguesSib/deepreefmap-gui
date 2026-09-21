@@ -91,14 +91,19 @@ def test_distribution_single_missing_and_zero():
     assert distribution([10])["q1"] == 10
 
 
-def test_performance_widget_consolidates_and_expands(qapp, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QPushButton, QTableWidget
-
-    from deepreefmap_gui.system.performance_comparison import PerformanceComparison
+def test_performance_widget_shows_groups_together_and_expands(qapp, tmp_path, monkeypatch):
+    from deepreefmap_gui.system.performance_charts import MetricCell
+    from deepreefmap_gui.system.performance_comparison import ConfigurationRow, PerformanceComparison, RunEvidence
 
     path = tmp_path / "timings.json"
     record_observation(sample(), path)
     record_observation(sample(200, 400, 30), path)
+    faster = sample()
+    faster["performance_observation"]["settings"]["fps"] = 10
+    record_observation(faster, path)
+    machine = sample()
+    machine["performance_observation"]["basis"] = "machine"
+    record_observation(machine, path)
     monkeypatch.setattr(
         "deepreefmap_gui.system.performance_comparison.history_observations", lambda: history_observations(path)
     )
@@ -106,14 +111,51 @@ def test_performance_widget_consolidates_and_expands(qapp, tmp_path, monkeypatch
     widget.refresh()
     widget.show()
     qapp.processEvents()
-    assert widget.configuration.count() == 1
-    table = widget.findChild(QTableWidget)
-    assert table.rowCount() == 2
-    assert not table.isVisible()
-    widget.findChild(QPushButton).click()
-    assert table.isVisible()
+    cards = widget.findChildren(ConfigurationRow)
+    assert len(cards) == 3
+    assert all(card.isVisible() for card in cards)
+    assert not widget.findChildren(RunEvidence)
+    ram_cells = [cell for cell in widget.findChildren(MetricCell) if cell.metric_key == "ram"]
+    assert {cell.maximum for cell in ram_cells} == {100}
+    group = next(card for card in cards if card.group["count"] == 2)
+    group.disclosure.click()
+    assert group.evidence.isVisible()
+    assert group.evidence.layout().count() == 3
+    assert not widget.minimum.isVisible()
+    widget.filters_button.click()
+    assert widget.minimum.isVisible()
     widget.minimum.setValue(150)
-    assert widget.findChild(QTableWidget).rowCount() == 1
+    qapp.processEvents()
+    cards = widget.findChildren(ConfigurationRow)
+    assert len(cards) == 1
+    assert cards[0].group["count"] == 1
+    assert cards[0].evidence.isVisible()
+    widget.close()
+
+
+def test_performance_widget_keeps_model_filters_and_handles_empty_ranges(qapp, tmp_path, monkeypatch):
+    from deepreefmap_gui.system.performance_comparison import ConfigurationRow, PerformanceComparison
+
+    path = tmp_path / "timings.json"
+    record_observation(sample(), path)
+    other = sample()
+    other["performance_observation"]["settings"]["mapping_backend"] = "other"
+    record_observation(other, path)
+    monkeypatch.setattr(
+        "deepreefmap_gui.system.performance_comparison.history_observations", lambda: history_observations(path)
+    )
+    widget = PerformanceComparison()
+    widget.refresh()
+    assert len(widget.findChildren(ConfigurationRow)) == 2
+    widget.models.setCurrentIndex(1)
+    assert len(widget.findChildren(ConfigurationRow)) == 1
+    selection = widget.models.currentData()
+    widget.refresh()
+    assert widget.models.currentData() == selection
+    widget.minimum.setValue(200)
+    assert not widget.findChildren(ConfigurationRow)
+    widget.maximum.setValue(100)
+    assert not widget.legend.isVisible()
     widget.close()
 
 
