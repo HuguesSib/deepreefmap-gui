@@ -182,8 +182,8 @@ def history_observations(path=None) -> list[dict]:
     target = path or timings_path()
     history = dict(_load_all(target))
     for key, entries in _load_all(target.with_name("performance_runs.json")).items():
-        legacy = [entry for entry in history.get(key, []) if not entry.get("performance_observation")]
-        history[key] = (legacy + entries)[-10:]
+        legacy_entries = [entry for entry in history.get(key, []) if not entry.get("performance_observation")]
+        history[key] = (legacy_entries + entries)[-10:]
     histories = history.values()
     seen = set()
     for entries in histories:

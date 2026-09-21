@@ -17,18 +17,6 @@ import pytest
 from deepreefmap_gui.core.theme import BLOCK, SUCCESS, UPDATE
 
 
-def _recorded_runs_text(window) -> str:
-    """Caption + every child label text + every meter bar stylesheet, concatenated."""
-    from PySide6.QtWidgets import QLabel, QProgressBar
-
-    combo = window._recorded_runs_filter_combo
-    parts = [window._recorded_runs_caption.text()]
-    parts += [combo.itemText(i) for i in range(combo.count())]
-    parts += [w.text() for w in window._recorded_runs_container.findChildren(QLabel)]
-    parts += [w.styleSheet() for w in window._recorded_runs_container.findChildren(QProgressBar)]
-    return " ".join(parts)
-
-
 def test_gauges_reflect_a_sampled_utilisation(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
@@ -283,146 +271,104 @@ def test_the_capacity_colour_tracks_warn_against_block(window, monkeypatch) -> N
     assert BLOCK in window._capacity_advice.styleSheet()
 
 
-def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
-
-    monkeypatch.setattr(
-        history, "summarise_recorded_runs",
-        lambda *a, **k: [{
-            "key": "loger_star|seg|1376x768|3fps",
-            "params": {"fps": 3, "processing_width": 1376, "processing_height": 768,
-                       "mapping_backend": "loger_star", "segmentation_model": "coralscapes-vit-b-dpt"},
-            "frames": 1134, "points": 14_000_000, "run_seconds": 430.0,
-            "peak_ram_bytes": 30 * 1024**3, "peak_swap_bytes": 0, "swap_recorded": False,
-            "peak_vram_bytes": 17 * 1024**3,
-            "total_ram_bytes": 32 * 1024**3, "total_swap_bytes": 32 * 1024**3,
-            "gpu_name": "RTX 4090", "gpu_total_vram_bytes": 24 * 1024**3,
-        }],
-    )
-    window._refresh_recorded_runs()
-    text = _recorded_runs_text(window)
-    assert "1134 frames" in text
-    assert "loger_star" in text
-    # The segmentation model is now shown alongside the mapping backend.
-    assert "coralscapes-vit-b-dpt" in text
-    # Separate meters for RAM, swap and VRAM are rendered.
-    assert "RAM" in text and "Swap" in text and "VRAM" in text
-    # Swap predates capture on this run -> shown as "not recorded", not a fake 0%.
-    assert "not recorded" in text
-    # 30/32 GB = ~94% -> the RAM meter is coloured red, no separate text label.
-    assert BLOCK in text
-
-
-def test_recorded_runs_summary_shows_swap_spill(window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
-
-    monkeypatch.setattr(
-        history, "summarise_recorded_runs",
-        lambda *a, **k: [{
-            "key": "loger_star|seg|1376x768|5fps",
-            "params": {"fps": 5, "processing_width": 1376, "processing_height": 768,
-                       "mapping_backend": "loger_star"},
-            "frames": 1890, "points": 30_000_000, "run_seconds": 905.0,
-            "peak_ram_bytes": 31 * 1024**3, "peak_swap_bytes": 8 * 1024**3, "swap_recorded": True,
-            "peak_vram_bytes": 17 * 1024**3,
-            "total_ram_bytes": 32 * 1024**3, "total_swap_bytes": 32 * 1024**3,
-            "gpu_name": "RTX 4090", "gpu_total_vram_bytes": 24 * 1024**3,
-        }],
-    )
-    window._refresh_recorded_runs()
-    text = _recorded_runs_text(window)
-    # Committed 39 GB > 32 GB RAM: the swap meter is populated and the tag is red.
-    assert "swap" in text.lower()
-    assert "not recorded" not in text
-    assert BLOCK in text
-    # The median wall-clock and its per-frame throughput are shown.
-    assert "Time" in text
-    assert "s/frame" in text
-
-
-def test_recorded_runs_group_shows_run_count(window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
-
-    monkeypatch.setattr(
-        history, "group_recorded_runs",
-        lambda *a, **k: [{
-            "params": {"fps": 5, "processing_width": 1376, "processing_height": 768,
-                       "mapping_backend": "loger_star", "segmentation_model": "seg"},
-            "frames": 1890, "count": 3, "run_seconds": 905, "seconds_per_frame": 905 / 1890,
-            "peak_ram_bytes": 30 * 1024**3, "peak_swap_bytes": 0, "swap_recorded": True,
-            "peak_vram_bytes": 17 * 1024**3,
-            "total_ram_bytes": 32 * 1024**3, "total_swap_bytes": 32 * 1024**3,
-            "gpu_name": "RTX 4090", "gpu_total_vram_bytes": 24 * 1024**3,
-        }],
-    )
-    window._refresh_recorded_runs()
-    assert "3 runs" in _recorded_runs_text(window)
-
-
-def test_recorded_runs_summary_empty_state(window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
-
-    monkeypatch.setattr(history, "group_recorded_runs", lambda *a, **k: [])
-    window._refresh_recorded_runs()
-    assert "None yet" in window._recorded_runs_caption.text()
-    assert window._recorded_runs_filter_row.isHidden()
-
-
-def _group(mapping, seg, fps, frames):
+def _recorded_run(mapping="loger_star", frames=1134, swap=None):
     return {
-        "params": {"fps": fps, "processing_width": 1376, "processing_height": 768,
-                   "mapping_backend": mapping, "segmentation_model": seg},
-        "frames": frames, "count": 1, "run_seconds": 100, "seconds_per_frame": 0.1,
-        "peak_ram_bytes": 20 * 1024**3, "peak_swap_bytes": 0, "swap_recorded": True,
-        "peak_vram_bytes": 10 * 1024**3,
-        "total_ram_bytes": 32 * 1024**3, "total_swap_bytes": 32 * 1024**3,
-        "gpu_name": "RTX 4090", "gpu_total_vram_bytes": 24 * 1024**3,
+        "settings": {
+            "fps": 5, "processing_width": 1376, "processing_height": 768,
+            "mapping_backend": mapping, "segmentation_model": "coralscapes-vit-b-dpt",
+        },
+        "hardware": {
+            "total_ram_bytes": 32 * 1024**3, "total_swap_bytes": 32 * 1024**3,
+            "total_vram_bytes": 24 * 1024**3,
+        },
+        "basis": "process", "known": True, "status": "completed",
+        "recorded_at": "2026-09-21T12:00:00Z", "frames": frames,
+        "ram": 30 * 1024**3, "swap": swap, "vram": 17 * 1024**3,
+        "seconds_per_frame": 0.5, "duration_s": frames * 0.5,
     }
 
 
-def _group_titles(window):
+def _recorded_view(window, monkeypatch, runs):
+    import deepreefmap_gui.system.performance_comparison as comparison
+
+    monkeypatch.setattr(comparison, "history_observations", lambda: runs)
+    window._refresh_recorded_runs()
+    return window._performance_comparison
+
+
+def _metric_cells(view):
+    from deepreefmap_gui.system.performance_charts import MetricCell
+
+    return {cell.metric_key: cell for cell in view.findChildren(MetricCell)}
+
+
+def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:
+    from deepreefmap_gui.system.performance_charts import usage_color
+
+    view = _recorded_view(window, monkeypatch, [_recorded_run()])
+    cells = _metric_cells(view)
+    assert cells["ram"].stats["median"] == 30 * 1024**3
+    assert usage_color(cells["ram"].stats["median"], cells["ram"].total).name() == BLOCK
+    assert cells["swap"].stats["n"] == 0
+    assert cells["swap"].toolTip() == "No measurements recorded"
+    assert cells["vram"].stats["median"] == 17 * 1024**3
+
+
+def test_recorded_runs_summary_shows_swap_spill(window, monkeypatch) -> None:
+    view = _recorded_view(window, monkeypatch, [_recorded_run(swap=8 * 1024**3)])
+    cells = _metric_cells(view)
+    assert cells["swap"].stats["median"] == 8 * 1024**3
+    assert cells["seconds_per_frame"].stats["median"] == 0.5
+    assert "0.50 s" in cells["seconds_per_frame"].toolTip()
+
+
+def test_recorded_runs_group_shows_run_count(window, monkeypatch) -> None:
+    from deepreefmap_gui.system.performance_comparison import ConfigurationRow
+
+    view = _recorded_view(window, monkeypatch, [_recorded_run(frames=n) for n in (100, 200, 300)])
+    rows = view.findChildren(ConfigurationRow)
+    assert len(rows) == 1
+    assert rows[0].disclosure.text() == "3 runs"
+    rows[0].disclosure.click()
+    assert len(rows[0].evidence.findChildren(type(rows[0].summary), "performanceRunRow")) == 3
+
+
+def test_recorded_runs_summary_empty_state(window, monkeypatch) -> None:
     from PySide6.QtWidgets import QLabel
 
-    return [w.text() for w in window._recorded_runs_container.findChildren(QLabel)]
+    view = _recorded_view(window, monkeypatch, [])
+    assert not view.visible_groups
+    assert "No recorded runs match these filters." in [label.text() for label in view.findChildren(QLabel)]
+    assert view.legend.isHidden()
 
 
-def test_recorded_runs_filter_defaults_to_most_recent_combination(make_window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
+def test_recorded_runs_filter_preserves_selection_after_refresh(make_window, monkeypatch) -> None:
+    import deepreefmap_gui.system.performance_comparison as comparison
 
-    # Patch before building: the window populates the filter from real machine
-    # history during construction, and a later reload preserves that selection.
-    monkeypatch.setattr(
-        history, "group_recorded_runs",
-        lambda *a, **k: [
-            _group("loger_star", "coralscapes-vit-b-dpt", 1, 378),
-            _group("scsfmlearner", "coralscapes-vit-b-dpt", 3, 785),
-        ],
-    )
+    monkeypatch.setattr(comparison, "history_observations", lambda: [
+        _recorded_run("scsfmlearner", 785), _recorded_run("loger_star", 378),
+    ])
     window = make_window()
-
-    # Default selection is the newest combination; only its group renders and the
-    # redundant per-group model subtitle is dropped.
-    assert window._recorded_runs_filter_combo.currentData() == ("loger_star", "coralscapes-vit-b-dpt")
-    titles = " ".join(_group_titles(window))
-    assert "378 frames" in titles
-    assert "785 frames" not in titles
-    assert "scsfmlearner" not in titles
+    view = window._performance_comparison
+    index = next(i for i in range(view.models.count()) if view.models.itemData(i) == (
+        "loger_star", "coralscapes-vit-b-dpt",
+    ))
+    view.models.setCurrentIndex(index)
+    window._refresh_recorded_runs()
+    assert view.models.currentData() == ("loger_star", "coralscapes-vit-b-dpt")
+    assert len(view.visible_groups) == 1
+    assert view.visible_groups[0]["workload"]["min"] == 378
 
 
 def test_recorded_runs_filter_all_shows_every_group_with_subtitle(window, monkeypatch) -> None:
-    import deepreefmap_gui.profiling.run_history as history
+    from PySide6.QtWidgets import QLabel
 
-    monkeypatch.setattr(
-        history, "group_recorded_runs",
-        lambda *a, **k: [
-            _group("loger_star", "coralscapes-vit-b-dpt", 1, 378),
-            _group("scsfmlearner", "coralscapes-vit-b-dpt", 3, 785),
-        ],
-    )
-    window._refresh_recorded_runs()
-    window._recorded_runs_filter_combo.setCurrentIndex(0)  # "All combinations"
-
-    titles = " ".join(_group_titles(window))
+    view = _recorded_view(window, monkeypatch, [
+        _recorded_run("loger_star", 378), _recorded_run("scsfmlearner", 785),
+    ])
+    view.models.setCurrentIndex(0)
+    assert len(view.visible_groups) == 2
+    titles = " ".join(label.text() for label in view.findChildren(QLabel))
     assert "378 frames" in titles and "785 frames" in titles
-    # Under "All" the model subtitle returns so groups stay distinguishable.
-    assert "scsfmlearner" in titles
+    assert "scsfmlearner" in titles and "loger_star" in titles
+    assert "DeepReefMap memory" in titles

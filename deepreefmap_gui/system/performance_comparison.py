@@ -129,6 +129,7 @@ class ConfigurationRow(QFrame):
         self.setObjectName("performanceConfiguration")
         self.setStyleSheet(f"QFrame#performanceConfiguration {{ background: {CARD_BG}; border-radius: 6px; }}")
         outer = QVBoxLayout(self)
+        self.outer = outer
         outer.setContentsMargins(0, 0, 0, 0)
         self.summary = QWidget()
         grid = columns(self.summary)
@@ -172,7 +173,7 @@ class ConfigurationRow(QFrame):
     def _toggle_evidence(self, expanded: bool) -> None:
         if expanded and self.evidence is None:
             self.evidence = RunEvidence(self.group, self.scales, self)
-            self.layout().addWidget(self.evidence)
+            self.outer.addWidget(self.evidence)
         if self.evidence is not None:
             self.evidence.setVisible(expanded)
         self.disclosure.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
@@ -294,7 +295,7 @@ class PerformanceComparison(QWidget):
         self.body_layout.addWidget(header)
 
     def _add_groups(self, scales: dict, show_models: bool) -> None:
-        sections = {}
+        sections: dict[tuple, list[dict]] = {}
         for group in self.visible_groups:
             key = (model_pair(group), group["basis"], json.dumps(group["hardware"], sort_keys=True))
             sections.setdefault(key, []).append(group)
