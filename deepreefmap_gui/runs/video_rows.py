@@ -34,6 +34,7 @@ from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
     QCursor,
+    QFontMetrics,
     QIcon,
     QMouseEvent,
     QPainter,
@@ -384,7 +385,8 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
     link glyph, the name and four figure columns; a pass row leads with its
     indent, a status dot, the window, the transect chip and the run count.
     """
-    cw = widget.fontMetrics().averageCharWidth()
+    metrics = widget.fontMetrics()
+    figures = QFontMetrics(tabular(widget.font()))
     clip = (
         # A left margin, then one gap after each of the disclosure, the link, the
         # name and the four figure columns.
@@ -392,12 +394,18 @@ def section_strip_lead(widget: QWidget, name_width: int) -> int:
         + DISCLOSURE_WIDTH
         + ICON_SM
         + name_width
-        + cw * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
+        + sum(figures.horizontalAdvance("0" * chars) for chars in (RECORDED_CHARS, LENGTH_CHARS, SIZE_CHARS))
+        + metrics.horizontalAdvance("0" * GRAVITY_CHARS)
     )
     section = (
         # SECTION_INDENT already carries two of these, then one gap after each of
         # the dot, the window, the chip, the arrow, the run count and this spacer.
-        SPACE_SM * 8 + DISCLOSURE_WIDTH + ICON_SM * 3 + cw * (WINDOW_CHARS + TRANSECT_CHARS + RUNS_CHARS)
+        SPACE_SM * 8
+        + DISCLOSURE_WIDTH
+        + ICON_SM * 3
+        + figures.horizontalAdvance("0" * WINDOW_CHARS)
+        + metrics.averageCharWidth() * TRANSECT_CHARS
+        + figures.horizontalAdvance("0" * RUNS_CHARS)
     )
     return max(0, clip - section)
 

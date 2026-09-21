@@ -802,7 +802,7 @@ def tabular_columns(view: QTableWidget | QTreeWidget, columns: Sequence[int]) ->
     delegate = TabularFiguresDelegate(view)
     # Held on the view: PySide6 drops a delegate nothing else references, and
     # the column then paints with a deleted C++ object behind it.
-    view.tabular_delegate = delegate  # type: ignore[attr-defined]
+    view.tabular_delegate = delegate  # type: ignore[union-attr]
     for column in columns:
         view.setItemDelegateForColumn(column, delegate)
 

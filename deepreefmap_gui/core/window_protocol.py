@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.models.packs_ui import PackProgressDialog
     from deepreefmap_gui.notify.center import NotificationCenter
     from deepreefmap_gui.notify.widgets import BellButton, NotificationPopover
-    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction
+    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction, PassSpec
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.runs.progress import ProgressModel, RunProgress
     from deepreefmap_gui.runs.run_table import RunTable
@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         _status_base_text: str
         _status_count_text: str
         _status_phase_key: str | None
+        _status_stage_key: str | None
         _status_phase_started: float
         _active_run_manifest: dict | None
         _results_output_dir: Path | None
@@ -353,7 +354,7 @@ if TYPE_CHECKING:
             flush: bool = False,
         ) -> None: ...
         def _auto_load_run(self, run_dir: Path) -> None: ...  # RunLoadingMixin
-        def _begin_progress(self, model: ProgressModel) -> None: ...  # ProgressBarsMixin
+        def _begin_progress(self, model: ProgressModel, spec: PassSpec | None = None) -> None: ...  # ProgressBarsMixin
         def _progress_sinks(self) -> list: ...  # ProgressBarsMixin
         def _build_legend(self) -> None: ...  # ViewerControlsMixin
         def _build_model_status_button(  # ModelManagementMixin

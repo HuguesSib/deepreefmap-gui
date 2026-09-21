@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCursor
@@ -41,6 +42,9 @@ from deepreefmap_gui.profiling.eta import (
     stage_for_phase,
     stage_plain_label_for_phase,
 )
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.profiling.batch_estimate import PassSpec
 
 
 @dataclass
@@ -336,7 +340,7 @@ class ProgressBarsMixin(MixinBase):
             if sink is not None
         ]
 
-    def _begin_progress(self, model: ProgressModel, spec=None) -> None:
+    def _begin_progress(self, model: ProgressModel, spec: PassSpec | None = None) -> None:
         """Switch the active progress model and start the run from zero.
 
         `spec` is the PassSpec of the queued pass about to run, when there is
