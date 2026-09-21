@@ -291,7 +291,9 @@ def group_recorded_runs(path: Path | None = None) -> list[dict]:
         signature = (
             p.get("mapping_backend"), p.get("segmentation_model"),
             p.get("processing_width"), p.get("processing_height"),
-            p.get("fps"), row["frames"],
+            p.get("fps"), p.get("preprocess_batch_size"),
+            json.dumps(p, sort_keys=True), row["machine_basis"],
+            row["total_ram_bytes"], row["gpu_name"], row["gpu_total_vram_bytes"],
         )
         groups.setdefault(signature, []).append(row)
 
@@ -304,10 +306,10 @@ def group_recorded_runs(path: Path | None = None) -> list[dict]:
         swaps = [m["peak_swap_bytes"] for m in members if m.get("swap_recorded")]
         vrams = [m["peak_vram_bytes"] for m in members if m["peak_vram_bytes"]]
         secs = [m["run_seconds"] for m in members if m.get("run_seconds")]
-        # A group is one exact config (fps and frame count are both in the signature),
-        # so this time is never pooled across fps, whose memory regime differs.
+        # Duration remains available for callers displaying individual workloads.
         run_seconds = int(statistics.median(secs)) if secs else None
         frames = rep["frames"]
+        rates = [m["run_seconds"] / m["frames"] for m in members if m.get("run_seconds") and m.get("frames")]
         grouped.append(
             {
                 "params": rep["params"],
@@ -317,7 +319,7 @@ def group_recorded_runs(path: Path | None = None) -> list[dict]:
                 # A per-frame throughput hint for eyeballing between cards. Rough
                 # only: fps and scene complexity change per-frame cost, so it is not
                 # an apples-to-apples figure across different fps.
-                "seconds_per_frame": (run_seconds / frames) if run_seconds and frames else None,
+                "seconds_per_frame": statistics.median(rates) if rates else None,
                 "peak_ram_bytes": int(statistics.median(rams)) if rams else None,
                 "peak_swap_bytes": int(statistics.median(swaps)) if swaps else 0,
                 "swap_recorded": any(m.get("swap_recorded") for m in members),
@@ -417,11 +419,14 @@ def record_run(
     stage_peaks: dict | None = None,
     system_profile: dict | None = None,
     path: Path | None = None,
+    performance_observation: dict | None = None,
 ) -> None:
     """Append one finished run to the profile, capped to the rolling window."""
     target = path or timings_path()
     all_runs = _load_all(target)
     entry: dict = {"version": _ENTRY_VERSION, "stage_durations": stage_durations, "frames": frames, "points": points}
+    if performance_observation:
+        entry["performance_observation"] = performance_observation
     if params:
         entry["params"] = params
     if stage_peaks:
@@ -448,6 +453,9 @@ def record_run_from_manifest(
     hard-link rather than the work, and folding that in makes every fresh run
     predicted from this key too fast.
     """
+    from deepreefmap_gui.profiling.comparison import record_observation
+
+    record_observation(manifest)
     durations = manifest.get("stage_durations") or {}
     if cached_stages:
         durations = {k: v for k, v in durations.items() if k not in cached_stages}
@@ -489,6 +497,7 @@ def record_run_from_manifest(
             params=params,
             stage_peaks=manifest.get("stage_peaks") or None,
             system_profile=manifest.get("system_profile") or None,
+            performance_observation=manifest.get("performance_observation"),
         )
     except Exception:
         logger.warning("Could not record run timings", exc_info=True)

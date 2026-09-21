@@ -748,3 +748,17 @@ def test_a_deviating_path_travels_as_its_file_name(tmp_path):
         "scs_checkpoint_path": "scs.ckpt",
         "fps": 4,
     }
+
+
+def test_performance_paths_remain_distinct_without_exposing_directories(tmp_path):
+    from deepreefmap_gui.survey.models.run_record import RunRecord
+
+    observation = {"settings": {"mapping_options": {"model_path": "/home/alice/models/weights.pt"}}}
+    run = RunRecord(pass_id=uuid.uuid4(), run_dir_name="missing", performance_observation=observation)
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+    remote = row["performance_observation"]["settings"]["mapping_options"]["model_path"]
+    assert "alice" not in remote
+    assert remote.startswith("weights.pt (")
+    other = wire._performance_for_wire("/home/bob/models/weights.pt")
+    assert other != remote
+    assert observation["settings"]["mapping_options"]["model_path"].startswith("/home/alice/")

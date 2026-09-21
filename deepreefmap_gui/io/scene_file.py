@@ -163,7 +163,7 @@ def _compressor():
 # `apply_manifest_timings` rewrites these after the scene is written, and none of
 # them describe the data the scene holds, so none may invalidate it.
 _VOLATILE_MANIFEST_KEYS = frozenset(
-    {"stage_durations", "stage_peaks", "run_duration_s", "system_profile"}
+    {"stage_durations", "stage_peaks", "run_duration_s", "system_profile", "performance_observation"}
 )
 
 

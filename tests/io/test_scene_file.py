@@ -164,6 +164,7 @@ def test_fingerprint_survives_the_timings_being_folded_in(run_dir):
         "stage_peaks": {"scene_save": 1024},
         "run_duration_s": 186.2,
         "system_profile": {"gpu": "none"},
+        "performance_observation": {"duration_s": 186.2, "frames": 100},
     }
     (run_dir / "run_manifest.json").write_text(json.dumps(timed))
     assert fingerprint_matches(base, compute_source_fingerprint(run_dir))

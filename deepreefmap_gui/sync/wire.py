@@ -9,6 +9,7 @@ testable on plain dicts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -133,6 +134,7 @@ _PROVENANCE_FIELDS = (
     "run_duration_s",
     "stage_durations",
     "stage_peaks",
+    "performance_observation",
     "camera_profile",
     "camera_calibration_id",
     "pixel_size_m",
@@ -249,6 +251,8 @@ def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str
             merged["error"] = scrub_home_paths(str(merged["error"]))
         if isinstance(merged.get("preset_deviations"), dict):
             merged["preset_deviations"] = _scrub_deviations(merged["preset_deviations"])
+        if merged.get("performance_observation"):
+            merged["performance_observation"] = _performance_for_wire(merged["performance_observation"])
         wire_rows.append(merged)
     return wire_rows
 
@@ -280,6 +284,19 @@ def _scrub_deviations(deviations: dict[str, Any]) -> dict[str, Any]:
         else:
             scrubbed[key] = value
     return scrubbed
+
+
+def _performance_for_wire(value: Any) -> Any:
+    """Return observations with local paths replaced by distinct opaque labels."""
+    if isinstance(value, dict):
+        return {key: _performance_for_wire(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_performance_for_wire(item) for item in value]
+    if isinstance(value, str) and (value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", value)):
+        name = PurePath(value.replace("\\", "/")).name
+        digest = hashlib.sha256(value.encode()).hexdigest()[:16]
+        return f"{name} ({digest})"
+    return value
 
 
 def pass_video_rows(pass_: TransectPass) -> list[dict[str, Any]]:
@@ -405,6 +422,7 @@ def provenance_from_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     provenance["run_duration_s"] = _seconds(manifest.get("run_duration_s"))
     provenance["stage_durations"] = _block(manifest, "stage_durations") or None
     provenance["stage_peaks"] = _block(manifest, "stage_peaks") or None
+    provenance["performance_observation"] = _block(manifest, "performance_observation") or None
     # The scale the cover was measured at. The tape length and crop width are the
     # ones the run used, which may differ from the transect's current reading.
     provenance["camera_profile"] = _text(manifest.get("camera_profile"))

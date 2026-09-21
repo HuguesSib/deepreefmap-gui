@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE, stage_for_phase
 from deepreefmap_gui.profiling.perf_sampler import ResourceSampler, peaks_from_marks
@@ -151,6 +151,9 @@ def apply_manifest_timings(
     manifest["stage_peaks"] = instr.stage_peaks()
     manifest["run_duration_s"] = instr.total_seconds()
     manifest["system_profile"] = instr.system_profile
+    from deepreefmap_gui.profiling.comparison import observation
+
+    manifest["performance_observation"] = observation(manifest, completed=True)
     # Atomic: this rewrites the manifest the run just produced, and a truncated
     # one makes the finished run unloadable rather than merely untimed.
     atomic_write_json(manifest_path, manifest)
@@ -398,6 +401,9 @@ def failed_run_manifest(
     manifest["stage_peaks"] = instr.stage_peaks()
     manifest["run_duration_s"] = instr.total_seconds()
     manifest["system_profile"] = instr.system_profile
+    from deepreefmap_gui.profiling.comparison import observation
+
+    manifest["performance_observation"] = observation(manifest, completed=False)
     return manifest
 
 
@@ -405,9 +411,9 @@ def instrumented_reconstruction(
     *,
     run_name: str | None = None,
     manifest_extra: dict | None = None,
-    cached_stages: "frozenset[str] | None" = None,
-    scene_writer: "Callable[[Path, dict, dict], None] | None" = None,
-    on_failure: "Callable[[dict], None] | None" = None,
+    cached_stages: frozenset[str] | None = None,
+    scene_writer: Callable[[Path, dict, dict], None] | None = None,
+    on_failure: Callable[[dict], None] | None = None,
     **kwargs,
 ) -> None:
     """run_reconstruction with stage timing + memory sampling, folded into the
@@ -446,6 +452,10 @@ def instrumented_reconstruction(
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
     extra = dict(manifest_extra or {})
+    from deepreefmap_gui.profiling.comparison import SETTING_KEYS
+
+    extra["performance_settings"] = {key: kwargs[key] for key in SETTING_KEYS if key in kwargs}
+    extra["performance_settings"]["mode"] = "geometry_only" if kwargs.get("skip_segmentation") else "semantic"
     if cached_stages:
         extra["resumed_stages"] = sorted(cached_stages)
     extra.update(_record_run_command(output_dir, kwargs))
@@ -488,14 +498,15 @@ def instrumented_reconstruction(
                     output_dir, instr, run_name=run_name, manifest_extra=extra
                 )
     except Exception:
-        if on_failure is not None:
-            try:
-                on_failure(failed_run_manifest(output_dir, instr, kwargs, extra, run_started_at))
-            except Exception:
-                # Guarded because the run's own error is the one the user needs:
-                # losing it to a second failure here would leave a pass that says
-                # only that provenance could not be recorded.
-                logger.warning("Could not record what the failed run measured", exc_info=True)
+        try:
+            from deepreefmap_gui.profiling.comparison import record_observation
+
+            failed = failed_run_manifest(output_dir, instr, kwargs, extra, run_started_at)
+            record_observation(failed)
+            if on_failure is not None:
+                on_failure(failed)
+        except Exception:
+            logger.warning("Could not record what the failed run measured", exc_info=True)
         raise
     finally:
         instr.stop()

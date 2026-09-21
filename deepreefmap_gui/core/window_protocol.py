@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
     from deepreefmap_gui.system.log_view import LogView
+    from deepreefmap_gui.system.performance_comparison import PerformanceComparison
     from deepreefmap_gui.viewer.pick_tooltip import PickCard
     from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
@@ -94,6 +95,7 @@ if TYPE_CHECKING:
         _selected_pass_id: str | None
         _survey_preset: dict | None
         _active_preset: ActivePreset | None
+        _performance_comparison: PerformanceComparison
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
         # Single-file, but declared anyway: each is assigned an empty literal in

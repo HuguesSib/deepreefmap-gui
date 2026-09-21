@@ -58,6 +58,7 @@ class RunRecord:
     run_duration_s: float | None = None
     stage_durations: dict[str, Any] | None = None
     stage_peaks: dict[str, Any] | None = None
+    performance_observation: dict[str, Any] | None = None
     # The scale the cover was measured at: the camera profile, the tape length
     # and crop width the run used, the metres per pixel that gave, and how the
     # scale was established.

@@ -189,22 +189,20 @@ def test_group_recorded_runs_medians_repeat_configs(tmp_path) -> None:
             stage_peaks={"mapping": {"ram_bytes": ram, "vram_bytes": 8_000_000_000, "swap_bytes": 0}},
             system_profile=profile, path=path,
         )
-    # A different frame count is a different workload -> its own group.
+    # Frame count changes the workload without splitting the configuration.
     record_run(
         key, {"mapping": 1.0}, frames=900, points=1, params={**params, "fps": 5},
         stage_peaks={"mapping": {"ram_bytes": 20_000_000_000, "vram_bytes": 8_000_000_000, "swap_bytes": 0}},
         system_profile=profile, path=path,
     )
     groups = group_recorded_runs(path=path)
-    assert len(groups) == 2
-    big = next(g for g in groups if g["frames"] == 1890)
-    assert big["count"] == 3
-    assert big["peak_ram_bytes"] == 30_000_000_000  # median of 28/30/32
+    assert len(groups) == 1
+    big = groups[0]
+    assert big["count"] == 4
+    assert big["peak_ram_bytes"] == 29_000_000_000
     assert big["swap_recorded"] is True
-    # Time is the median total wall-clock over the group (600/900/1200 -> 900),
-    # averaged over runs rather than one, and normalised per frame.
-    assert big["run_seconds"] == 900
-    assert abs(big["seconds_per_frame"] - 900 / 1890) < 1e-9
+    assert big["run_seconds"] == 750
+    assert abs(big["seconds_per_frame"] - 750 / 1890) < 1e-9
 
 
 def test_second_run_estimates_are_calibrated_from_first_run(tmp_path) -> None:

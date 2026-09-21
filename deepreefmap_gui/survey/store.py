@@ -894,6 +894,11 @@ _MIGRATIONS: list[Migration] = [
         "a camera profile names the calibration it deploys",
         "ALTER TABLE camera_profile ADD COLUMN current_calibration_id TEXT;",
     ),
+    Migration(
+        24,
+        "run performance observations",
+        "ALTER TABLE run_record ADD COLUMN performance_observation TEXT;",
+    ),
 ]
 
 
