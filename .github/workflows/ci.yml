@@ -52,6 +52,16 @@ jobs:
       - name: Install project (dev extra)
         run: uv sync --python ${{ matrix.python-version }} --extra dev
 
+      - name: Check Qt startup under Xvfb
+        env:
+          QT_DEBUG_PLUGINS: "1"
+        run: >
+          xvfb-run -a -s "-screen 0 1920x1200x24"
+          uv run --python ${{ matrix.python-version }} python -c
+          'from PySide6.QtWidgets import QApplication;
+          app = QApplication([]);
+          assert app.platformName() == "xcb", app.platformName()'
+
       - name: Lint (ruff)
         run: uv run --python ${{ matrix.python-version }} ruff check deepreefmap_gui tests
 
