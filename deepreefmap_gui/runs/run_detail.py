@@ -399,6 +399,8 @@ class RunDetailPanel(DetailCard):
                 "The registry could not verify an upload. Archive again.",
             ),
         }
+        for phase in ("preparing", "queued", "uploading", "verifying", "paused", "cancelled"):
+            faces[phase] = (f"Archive {phase}", WARN_TEXT, f"Archive {phase}. Open Server for progress or resume.")
         face = faces.get(state or "")
         if face is None:
             self.archive_state.setVisible(False)

@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.4.0"
+version = "0.4.1"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -30,6 +30,7 @@ dependencies = [
   # never pin to it.
   "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@36110a30cc5a16f002da4a1ff0674a97e5b0fa86",
   "PySide6>=6.7,<7",
+  "httpx>=0.28,<0.29",
   # The app also imports vtkmodules.* directly (viewer/picking.py,
   # viewer/widget.py) and relies on the vtk that pyvista hard-pins. Deliberately
   # not declared separately: an independent constraint could only conflict with

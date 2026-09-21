@@ -211,13 +211,18 @@ def make_job(tmp_path, content=CLIP_BYTES, name="clip.mp4"):
     )
 
 
-def pending(object_id, part_size, parts_done=()):
+def pending(object_id, part_size, parts_done=(), content=b""):
     return {
         "object_id": object_id,
         "status": "pending",
         "upload_id": "u-1",
         "part_size_bytes": part_size,
         "parts_done": list(parts_done),
+        "uploaded_parts": [
+            {"part_number": n, "size_bytes": len(content[(n - 1) * part_size:n * part_size]),
+             "etag": hashlib.md5(content[(n - 1) * part_size:n * part_size], usedforsecurity=False).hexdigest()}
+            for n in parts_done
+        ],
     }
 
 
@@ -244,25 +249,21 @@ def test_missing_parts_are_read_at_their_offsets(tmp_path):
     part_size = 16
     content = bytes(range(48))
     job = make_job(tmp_path, content=content)
-    client = FakeArchive({job.content_hash: pending("o-1", part_size, parts_done=[1])})
+    client = FakeArchive({job.content_hash: pending("o-1", part_size, parts_done=[1], content=content)})
 
     report = run_archive(client, [job], no_progress)
 
     assert report.archived == 1
-    assert client.uploaded == [
+    assert sorted(client.uploaded) == [
         ("o-1", 2, content[16:32]),
         ("o-1", 3, content[32:48]),
     ]
-    receipts = [
-        {"part_number": n, "etag": hashlib.md5(chunk, usedforsecurity=False).hexdigest()}
-        for _, n, chunk in client.uploaded
-    ]
-    assert client.completed == [("o-1", receipts)]
+    assert client.completed == [("o-1", [])]
 
 
 def test_an_upload_with_every_part_stored_is_assembled_without_sending(tmp_path):
     job = make_job(tmp_path, content=b"x" * 24)
-    client = FakeArchive({job.content_hash: pending("o-1", 8, parts_done=[1, 2, 3])})
+    client = FakeArchive({job.content_hash: pending("o-1", 8, parts_done=[1, 2, 3], content=b"x" * 24)})
 
     report = run_archive(client, [job], no_progress)
 
@@ -313,7 +314,7 @@ def test_a_cancelled_queue_stops_between_jobs(tmp_path):
 
     report = run_archive(client, [job], no_progress, cancel_event=cancelled)
 
-    assert report == ArchiveReport(cancelled=True)
+    assert report == ArchiveReport(cancelled=True, remaining=[job])
     assert client.initiated == []
 
 
@@ -398,18 +399,22 @@ def test_bytes_are_reported_per_part_as_they_land(tmp_path):
 
     run_archive(client, [job], no_progress, on_bytes=readings.append)
 
-    assert [r.done_bytes for r in readings] == [0, 0, 4, 8, 10]
+    assert readings[0].done_bytes == 0
+    assert readings[-1].done_bytes == 10
+    assert sorted(b.done_bytes - a.done_bytes for a, b in zip(readings, readings[1:], strict=False)) == [2, 4, 4]
     assert readings[-1].total_bytes == 10
 
 
 def test_parts_a_prior_pass_stored_count_without_travelling(tmp_path):
     job = make_job(tmp_path, content=b"0123456789")
-    client = FakeArchive({job.content_hash: pending("o-1", 4, parts_done=[1])})
+    client = FakeArchive({job.content_hash: pending("o-1", 4, parts_done=[1], content=b"0123456789")})
     readings = []
 
     run_archive(client, [job], no_progress, on_bytes=readings.append)
 
-    assert [r.done_bytes for r in readings] == [0, 4, 8, 10]
+    assert readings[0].done_bytes == 0
+    assert readings[-1].done_bytes == 10
+    assert len(client.uploaded) == 2
     assert readings[1].speed_bps is None
 
 

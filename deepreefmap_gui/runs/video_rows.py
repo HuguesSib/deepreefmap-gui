@@ -440,6 +440,11 @@ ARCHIVE_CLIP_TOOLTIP = (
 # What the registry holds of a clip, as the glyph says it. The same vocabulary
 # the run rows use, so one icon means one thing across the app.
 ARCHIVE_FACES = {
+    "preparing": "Archive preparing. Open Server for progress or resume.",
+    "queued": "Archive queued. Open Server for progress or resume.",
+    "verifying": "Archive verifying. Open Server for progress or resume.",
+    "paused": "Archive paused. Open Server for progress or resume.",
+    "cancelled": "Archive cancelled. Open Server for progress or resume.",
     "archived": "Already on the server.",
     "uploading": "Sending to the server...",
     "failed": "The registry could not verify the upload. Press to send it again.",

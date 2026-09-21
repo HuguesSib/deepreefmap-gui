@@ -75,6 +75,11 @@ ARCHIVING = "Archiving…"
 
 # What the registry holds of one run, as its icon says it.
 _ARCHIVE_FACES = {
+    "preparing": "Archive preparing. Open Server for progress or resume.",
+    "queued": "Archive queued. Open Server for progress or resume.",
+    "verifying": "Archive verifying. Open Server for progress or resume.",
+    "paused": "Archive paused. Open Server for progress or resume.",
+    "cancelled": "Archive cancelled. Open Server for progress or resume.",
     "archived": "Outputs on server. Press to verify them again.",
     "partial": "Some outputs are on the server. Press to send the rest.",
     "pending": "Offered to the registry, not verified yet. Press to resume.",

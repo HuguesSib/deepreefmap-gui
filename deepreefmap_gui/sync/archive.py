@@ -18,7 +18,6 @@ marshals progress back through signals, the same shape as `engine.py`.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from collections import deque
@@ -30,7 +29,6 @@ from typing import Any, Protocol
 from deepreefmap_gui.io.video_hash import hash_video
 from deepreefmap_gui.survey.models import RunRecord, VideoAsset
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.client import SyncError
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +74,6 @@ class TransferProgress:
 
 
 BytesFn = Callable[[TransferProgress], None]
-
-
-class _Landed(Protocol):
-    """Records bytes now on the server, saying whether they travelled to get there."""
-
-    def __call__(self, count: int, *, travelled: bool) -> None: ...
 
 
 class TransferMeter:
@@ -147,6 +139,8 @@ class ArchiveJob:
     kind: str
     run_id: str | None = None
     relpath: str | None = None
+    video_id: str | None = None
+    mtime_ns: int | None = None
 
     def initiate_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -176,6 +170,8 @@ class ArchiveReport:
     failed: list[tuple[str, str]] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
     cancelled: bool = False
+    paused: bool = False
+    remaining: list[ArchiveJob] = field(default_factory=list)
 
 
 @dataclass
@@ -201,33 +197,41 @@ class ArchivePlan:
 # --- planning -----------------------------------------------------------------
 
 
-def archive_plan(store: SurveyStore, out_root: Path) -> ArchivePlan:
+def archive_plan(store: SurveyStore, out_root: Path, cancel_event: Any = None) -> ArchivePlan:
     """Everything worth archiving: the clips, then each succeeded run's files."""
     plan = ArchivePlan()
     for video in store.list_videos():
+        if cancel_event is not None and cancel_event.is_set():
+            break
         _plan_video(plan, video)
     for run in store.list_runs():
-        _plan_run(plan, run, out_root)
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        _plan_run(plan, run, out_root, cancel_event)
     return plan
 
 
-def archive_plan_for_video(store: SurveyStore, video_id: object) -> ArchivePlan:
+def archive_plan_for_video(store: SurveyStore, video_id: object, cancel_event: Any = None) -> ArchivePlan:
     """One clip's job and nothing else. Empty when its file cannot be read."""
     wanted = str(video_id)
     plan = ArchivePlan()
     for video in store.list_videos():
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if str(video.id) == wanted:
             _plan_video(plan, video)
     return plan
 
 
-def archive_plan_for_run(store: SurveyStore, out_root: Path, run_id: object) -> ArchivePlan:
+def archive_plan_for_run(store: SurveyStore, out_root: Path, run_id: object, cancel_event: Any = None) -> ArchivePlan:
     """One run's artefacts and nothing else. Empty unless it succeeded and kept its directory."""
     wanted = str(run_id)
     plan = ArchivePlan()
     for run in store.list_runs():
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if str(run.id) == wanted:
-            _plan_run(plan, run, out_root)
+            _plan_run(plan, run, out_root, cancel_event)
     return plan
 
 
@@ -241,12 +245,16 @@ def _plan_video(plan: ArchivePlan, video: VideoAsset) -> None:
     """
     path = Path(video.path)
     try:
-        size_bytes = path.stat().st_size
+        stat = path.stat()
+        size_bytes = stat.st_size
         readable = path.is_file()
     except OSError:
         readable = False
     if not readable:
         plan.skipped.append((video.file_name, "the file is not where the survey last saw it"))
+        return
+    if size_bytes == 0:
+        plan.skipped.append((video.file_name, "empty files cannot be archived"))
         return
     digest = video.hash
     if not digest:
@@ -262,11 +270,13 @@ def _plan_video(plan: ArchivePlan, video: VideoAsset) -> None:
             content_hash=digest,
             size_bytes=size_bytes,
             kind=KIND_VIDEO,
+            video_id=str(video.id),
+            mtime_ns=stat.st_mtime_ns,
         )
     )
 
 
-def _plan_run(plan: ArchivePlan, run: RunRecord, out_root: Path) -> None:
+def _plan_run(plan: ArchivePlan, run: RunRecord, out_root: Path, cancel_event: Any = None) -> None:
     if run.status != "succeeded":
         plan.skipped.append((run.run_dir_name, "the run did not succeed"))
         return
@@ -275,7 +285,7 @@ def _plan_run(plan: ArchivePlan, run: RunRecord, out_root: Path) -> None:
         plan.skipped.append((run.run_dir_name, "its output directory is gone"))
         return
     _backfill_web_cloud(plan, run_dir, run.run_dir_name)
-    _plan_run_dir(plan, run_dir, run.run_dir_name, str(run.id))
+    _plan_run_dir(plan, run_dir, run.run_dir_name, str(run.id), cancel_event)
 
 
 def _backfill_web_cloud(plan: ArchivePlan, run_dir: Path, run_dir_name: str) -> None:
@@ -306,8 +316,10 @@ def _backfill_web_cloud(plan: ArchivePlan, run_dir: Path, run_dir_name: str) -> 
         plan.skipped.append((label, "the web view could not be built from the saved scene"))
 
 
-def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: str) -> None:
-    for path in sorted(run_dir.rglob("*")):
+def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: str, cancel_event: Any = None) -> None:
+    for path in run_dir.rglob("*"):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if not path.is_file():
             continue
         rel = path.relative_to(run_dir)
@@ -322,6 +334,9 @@ def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: s
             logger.info("Cannot read %s: %s", path, exc)
             plan.skipped.append((label, "the file could not be read"))
             continue
+        if stat.st_size == 0:
+            plan.skipped.append((label, "empty files cannot be archived"))
+            continue
         digest = hash_video(path)
         if not digest:
             plan.skipped.append((label, "the file could not be read to identify it"))
@@ -333,6 +348,7 @@ def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: s
                 content_hash=digest,
                 size_bytes=stat.st_size,
                 kind=KIND_ARTIFACT,
+                mtime_ns=stat.st_mtime_ns,
                 run_id=run_id,
                 relpath=relpath,
             )
@@ -431,6 +447,7 @@ def run_archive(
     progress: ProgressFn,
     cancel_event: Any = None,
     on_bytes: BytesFn | None = None,
+    on_state: Callable[[ArchiveJob, str], None] | None = None,
 ) -> ArchiveReport:
     """One pass over the queue. A job that fails is recorded and the rest still run.
 
@@ -438,82 +455,6 @@ def run_archive(
     server: once up front, then after every deduplicated file and every part
     sent, so a gauge can show bytes and speed rather than a file count.
     """
-    report = ArchiveReport()
-    total = len(jobs)
-    meter = TransferMeter(sum(job.size_bytes for job in jobs))
+    from deepreefmap_gui.sync.archive_transfer import transfer_archive
 
-    def landed(count: int, *, travelled: bool) -> None:
-        reading = meter.account(count, travelled=travelled)
-        if on_bytes is not None:
-            on_bytes(reading)
-
-    if on_bytes is not None:
-        on_bytes(meter.reading())
-    for done, job in enumerate(jobs):
-        if cancel_event is not None and cancel_event.is_set():
-            report.cancelled = True
-            break
-        progress(f"Archiving {job.label}…", done, total)
-        try:
-            _send_one(client, job, report, progress, done, total, landed)
-        except Exception as exc:
-            logger.warning("Archive of %s failed: %s", job.label, exc)
-            report.failed.append((job.label, str(exc)))
-    return report
-
-
-def _send_one(
-    client: ArchiveTransport,
-    job: ArchiveJob,
-    report: ArchiveReport,
-    progress: ProgressFn,
-    done: int,
-    total: int,
-    landed: _Landed,
-) -> None:
-    """Offer one file, uploading whatever the registry says is still missing.
-
-    The registry names the parts it already stores, so a pass interrupted mid
-    file resumes from there on the next initiate rather than starting over.
-    """
-    answer = client.archive_initiate(job.initiate_payload())
-    if answer.get("status") == STATUS_COMPLETE:
-        report.already += 1
-        # On the server already, which is what the gauge measures. Not
-        # travelled, so the dedup cannot spike the speed.
-        landed(job.size_bytes, travelled=False)
-        return
-    part_size = int(answer.get("part_size_bytes") or 0)
-    if answer.get("status") != STATUS_PENDING or part_size < 1:
-        raise SyncError(f"The registry answered an unusable upload state ({answer.get('status')}).")
-    object_id = str(answer["object_id"])
-    count = (job.size_bytes + part_size - 1) // part_size
-    stored = {int(n) for n in answer.get("parts_done") or []}
-    missing = [number for number in range(1, count + 1) if number not in stored]
-    # Parts a prior pass stored are on the server before this one sends a byte.
-    missing_bytes = sum(
-        min(part_size, job.size_bytes - (number - 1) * part_size) for number in missing
-    )
-    landed(job.size_bytes - missing_bytes, travelled=False)
-    parts: list[dict[str, Any]] = []
-    with job.path.open("rb") as handle:
-        for sent, number in enumerate(missing):
-            progress(
-                f"Archiving {job.label} (part {sent + 1} of {len(missing)})…",
-                done,
-                total,
-            )
-            # Only the missing parts travel, so the offset comes from the part
-            # number rather than from read position.
-            handle.seek((number - 1) * part_size)
-            chunk = handle.read(part_size)
-            etag = client.archive_upload_part(object_id, number, chunk)
-            # The registry's own checksum of what it stored. Comparing it to
-            # the buffer in hand is the whole integrity check, and it costs no
-            # second read.
-            if etag != hashlib.md5(chunk, usedforsecurity=False).hexdigest():
-                raise SyncError("The registry stored a part that differs from the one sent.")
-            parts.append({"part_number": number, "etag": etag})
-            landed(len(chunk), travelled=True)
-    client.archive_complete(object_id, parts)
-    report.archived += 1
+    return transfer_archive(client, jobs, progress, cancel_event, on_bytes, on_state)

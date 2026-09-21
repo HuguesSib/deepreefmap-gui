@@ -779,10 +779,11 @@ loger = [
 
 [[package]]
 name = "deepreefmap-gui"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "deepreefmap", extra = ["gopro", "loger"] },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "imageio" },
     { name = "imohash" },
@@ -833,6 +834,7 @@ rocm = [
 [package.metadata]
 requires-dist = [
     { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=36110a30cc5a16f002da4a1ff0674a97e5b0fa86" },
+    { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "huggingface-hub", specifier = ">=0.30" },
     { name = "imageio", specifier = ">=2.37" },
     { name = "imohash", specifier = ">=1.1.0" },

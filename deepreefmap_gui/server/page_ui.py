@@ -207,6 +207,12 @@ class ServerPageMixin(MixinBase):
     _sync_client: Any | None = None
     # The archive flow between its two workers: the client the plan was built
     # for, and the plan awaiting confirmation or upload.
+    _archive_pause_requested: bool = False
+    _archive_session: int = 0
+    _archive_retry_builder: Any = None
+    _archive_builder: Any = None
+    _archive_video_faces: dict[str, str] = {}
+    _archive_item_faces: dict[str, str] = {}
     _archive_client: Any | None = None
     # The run a row-level press is archiving, and how its row is dressed until
     # the registry is asked again: run id to (state, tooltip note).
@@ -333,6 +339,10 @@ class ServerPageMixin(MixinBase):
         self._server_archive_cancel_btn.setVisible(False)
         self._server_archive_cancel_btn.clicked.connect(self._on_archive_cancel)
         row.addWidget(self._server_archive_cancel_btn)
+        self._server_archive_pause_btn = QPushButton("Pause archive")
+        self._server_archive_pause_btn.setVisible(False)
+        self._server_archive_pause_btn.clicked.connect(self._on_archive_pause)
+        row.addWidget(self._server_archive_pause_btn)
 
         self._server_connect_btn = QPushButton(CONNECT)
         self._server_connect_btn.setProperty("cta", "true")
@@ -601,22 +611,36 @@ class ServerPageMixin(MixinBase):
         """
         from deepreefmap_gui.sync import archive
 
-        self._archive_with_plan(archive.archive_plan, confirm_first=True)
+        if self._archive_retry_builder is not None:
+            self._archive_with_plan(self._archive_retry_builder)
+        else:
+            self._archive_with_plan(
+                lambda store, root: archive.archive_plan(store, root, self._archive_cancel), confirm_first=True
+            )
 
     def _archive_video(self, video_id: str) -> None:
         """Offer one clip, from its own card. Same worker, a plan of one."""
         from deepreefmap_gui.sync import archive
 
-        self._archive_with_plan(lambda store, _out_root: archive.archive_plan_for_video(store, video_id))
+        session = self._archive_session
+        self._archive_with_plan(
+            lambda store, _out_root: archive.archive_plan_for_video(store, video_id, self._archive_cancel)
+        )
+        if self._server_archiving and self._archive_session != session:
+            self._archive_video_faces = {**self._archive_video_faces, str(video_id): "preparing"}
+            self._paint_archive_badges()
 
     def _archive_run(self, run_id: object) -> None:
         """Offer one run's outputs, from its own card."""
         from deepreefmap_gui.sync import archive
 
-        if run_id is None or self._server_archiving:
+        if run_id is None:
             return
-        self._archive_with_plan(lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id)))
-        if not self._server_archiving:
+        session = self._archive_session
+        self._archive_with_plan(
+            lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id), self._archive_cancel)
+        )
+        if not self._server_archiving or self._archive_session == session:
             return
         # Progress is shown on the run's own row, where the press was made.
         self._archive_focus_run = str(run_id)
@@ -630,6 +654,8 @@ class ServerPageMixin(MixinBase):
         say what it weighs and be declined, and every upload can be cancelled.
         """
         if self._server_syncing or self._server_archiving:
+            self._set_simple_section(SERVER_SECTION)
+            self._server_notice.show_notice("A server operation is active. Follow its progress here.")
             return
         # Same guard as a sync: a running batch is still writing into the run
         # directories this would be hashing and reading.
@@ -637,7 +663,7 @@ class ServerPageMixin(MixinBase):
             self._server_blocker.show_blocker(SESSION_RUNNING)
             return
         from deepreefmap_gui.sync import credentials
-        from deepreefmap_gui.sync.client import SyncClient
+        from deepreefmap_gui.sync.archive_client import ArchiveClient
 
         store = self._try_survey_store()
         if store is None:
@@ -657,14 +683,32 @@ class ServerPageMixin(MixinBase):
             return
         # No `agreed` here: archive responses carry no contract stamp, and a
         # client that has adopted one refuses unstamped bodies.
-        client = SyncClient(held.base_url, held.token)
+        client = ArchiveClient(held.base_url, held.token)
+        self._start_archive_plan(client, store, plan_builder, confirm_first)
+
+    def _start_archive_plan(
+        self, client: Any, store: SurveyStore, plan_builder: Callable[..., object], confirm_first: bool
+    ) -> None:
         out_root = store.path.parent
+        self._archive_pause_requested = False
+        self._archive_session += 1
+        session = self._archive_session
+        self._archive_builder = plan_builder
+        self._archive_retry_builder = None
+        self._archive_item_faces = {}
+        self._archive_cancel = threading.Event()
+        self._server_archive_btn.setText(ARCHIVE_NOW)
         self._server_archiving = True
         self._archive_client = client
         self._archive_confirm_first = confirm_first
         self._archive_plan_pending = None
         self._server_notice.clear()
         self._set_server_busy(True, PLANNING_ARCHIVE)
+        self._server_archive_cancel_btn.setVisible(True)
+        self._server_archive_cancel_btn.setEnabled(True)
+        self._server_archive_cancel_btn.setText(CANCEL_ARCHIVE)
+        self._server_archive_pause_btn.setVisible(True)
+        self._server_archive_pause_btn.setEnabled(True)
 
         def worker() -> None:
             try:
@@ -673,27 +717,41 @@ class ServerPageMixin(MixinBase):
                 logger.warning("Archive planning failed: %s", exc)
                 result = describe_failure(exc)
             try:
-                self._sig_archive_plan.emit(result)
+                self._sig_archive_plan.emit((session, result))
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive plan was built")
 
         threading.Thread(target=worker, daemon=True, name="registry-archive-plan").start()
 
     def _on_archive_plan_ready(self, result: object) -> None:
-        """Back on the GUI thread with the plan: land the digests, ask, upload."""
-        from deepreefmap_gui.sync import archive
-
+        """Accept the current session's plan and start its transfer workers."""
+        if isinstance(result, tuple):
+            session, result = result
+            if session != self._archive_session:
+                return
+        if self._archive_cancel.is_set():
+            self._archive_retry_builder = self._archive_builder
+            self._on_archive_done(ArchiveReport(cancelled=True))
+            self._server_archive_btn.setText("Resume archive")
+            return
         if isinstance(result, Failure):
             self._on_archive_done(result)
             return
-        if not isinstance(result, ArchivePlan) or not self._server_archiving:
+        if not self._server_archiving:
+            return
+        if not isinstance(result, ArchivePlan):
+            self._on_archive_done(describe_failure(RuntimeError("Archive planning returned no plan")))
             return
         store = self._try_survey_store()
         if store is not None:
             # Written here rather than by the planner: the planner runs on a
             # worker thread, and the GUI thread writes this same database.
-            for video_id, digest in result.hash_backfills:
-                store.set_video_hash(video_id, digest)
+            try:
+                for video_id, digest in result.hash_backfills:
+                    store.set_video_hash(video_id, digest)
+            except Exception as exc:
+                self._on_archive_done(describe_failure(exc))
+                return
         self._archive_plan_pending = result
         if not result.jobs:
             self._on_archive_done(ArchiveReport())
@@ -705,14 +763,22 @@ class ServerPageMixin(MixinBase):
             f"{format_bytes(result.total_bytes)}, to the registry's archive? "
             "Files it already holds are skipped without travelling.",
         ):
-            self._archive_plan_pending = None
-            self._server_archiving = False
-            self._set_server_busy(False)
+            self._on_archive_done(ArchiveReport(cancelled=True, remaining=result.jobs))
             return
+        self._start_archive_transfer(result)
+
+    def _start_archive_transfer(self, result: ArchivePlan) -> None:
+        from deepreefmap_gui.sync import archive
+
         client = self._archive_client
         if client is None:
+            self._on_archive_done(ArchiveReport(cancelled=True, remaining=result.jobs))
             return
+        session = self._archive_session
         jobs = result.jobs
+        for job in jobs:
+            self._on_archive_item((session, job, "queued"), repaint=False)
+        self._paint_archive_badges()
         self._archive_cancel = threading.Event()
         self._server_archive_cancel_btn.setText(CANCEL_ARCHIVE)
         self._server_archive_cancel_btn.setEnabled(True)
@@ -720,40 +786,77 @@ class ServerPageMixin(MixinBase):
 
         def report(text: str, done: int, total: int) -> None:
             try:
-                self._sig_archive_progress.emit(f"{text} ({min(done + 1, total)} of {total})")
+                self._sig_archive_progress.emit((session, f"{text} ({done} of {total} verified)"))
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive finished")
 
         def on_bytes(reading: object) -> None:
             try:
-                self._sig_archive_bytes.emit(reading)
+                self._sig_archive_bytes.emit((session, reading))
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive finished")
 
         def worker() -> None:
             try:
                 outcome: object = archive.run_archive(
-                    client, jobs, report, cancel_event=self._archive_cancel, on_bytes=on_bytes
+                    client, jobs, report, cancel_event=self._archive_cancel, on_bytes=on_bytes,
+                    on_state=lambda job, phase: self._sig_archive_item.emit((session, job, phase)),
                 )
             except Exception as exc:
                 logger.warning("Archive failed: %s", exc)
                 outcome = describe_failure(exc)
             try:
-                self._sig_archive_done.emit(outcome)
+                self._sig_archive_done.emit((session, outcome))
             except (RuntimeError, TypeError):
                 logger.debug("The window closed before the archive finished")
 
         threading.Thread(target=worker, daemon=True, name="registry-archive").start()
+
+    def _on_archive_pause(self) -> None:
+        self._archive_pause_requested = True
+        self._server_archive_pause_btn.setEnabled(False)
+        self._on_archive_cancel()
 
     def _on_archive_cancel(self) -> None:
         """Stop after the file in flight: its parts resume server-side anyway."""
         event = getattr(self, "_archive_cancel", None)
         if event is not None:
             event.set()
+        client = self._archive_client
+        if client is not None and hasattr(client, "cancel"):
+            threading.Thread(target=client.cancel, daemon=True, name="archive-cancel").start()
         self._server_archive_cancel_btn.setEnabled(False)
         self._server_archive_cancel_btn.setText(CANCELLING_ARCHIVE)
 
-    def _on_archive_progress(self, text: str) -> None:
+    def _on_archive_item(self, event: object, *, repaint: bool = True) -> None:
+        session, job, phase = event
+        if session != self._archive_session or not self._server_archiving:
+            return
+        self._archive_item_faces[str(job.path)] = phase
+        if job.video_id is not None:
+            self._archive_video_faces = {**self._archive_video_faces, job.video_id: phase}
+        if job.run_id is not None:
+            plan = self._archive_plan_pending
+            faces = [self._archive_item_faces.get(str(item.path), "queued")
+                     for item in plan.jobs if item.run_id == job.run_id] if plan else [phase]
+            settled = "archived" if all(face == "archived" for face in faces) else phase
+            if settled == "archived" and any(face != "archived" for face in faces):
+                settled = "uploading"
+            for failure in ("failed", "paused", "cancelled"):
+                if failure in faces:
+                    settled = failure
+                    break
+            self._archive_run_faces = {**self._archive_run_faces, job.run_id: (settled, None)}
+        now = time.monotonic()
+        if repaint and now - getattr(self, "_archive_last_paint", 0) >= 0.2:
+            self._archive_last_paint = now
+            self._paint_archive_badges()
+
+    def _on_archive_progress(self, text: object) -> None:
+        if isinstance(text, tuple):
+            session, text = text
+            if session != self._archive_session:
+                return
         if self._server_archiving:
             self._set_server_busy(True, text)
 
@@ -765,6 +868,10 @@ class ServerPageMixin(MixinBase):
         Readings that arrive after the pass has been reported are dropped, or a
         gauge already emptied would fill again behind the summary.
         """
+        if isinstance(reading, tuple):
+            session, reading = reading
+            if session != self._archive_session:
+                return
         if not self._server_archiving or not isinstance(reading, TransferProgress):
             return
         total = reading.total_bytes
@@ -842,11 +949,17 @@ class ServerPageMixin(MixinBase):
         self._archive_states = states if isinstance(states, ArchiveStates) else None
         # The registry's account replaces this device's own; offline, the local
         # answer stands until it can be checked.
-        if self._archive_states is not None:
-            self._archive_run_faces = {}
+        if self._archive_states is not None and not self._server_archiving:
+            self._archive_run_faces = {key: value for key, value in self._archive_run_faces.items()
+                                       if value[0] in {"failed", "paused", "cancelled"}}
+            self._archive_video_faces = {key: value for key, value in self._archive_video_faces.items()
+                                         if value in {"failed", "paused", "cancelled"}}
         self._paint_archive_badges()
 
     def _archive_state_for_video(self, video_id: object) -> str | None:
+        face = self._archive_video_faces.get(str(video_id))
+        if face is not None:
+            return face
         states = getattr(self, "_archive_states", None)
         return None if states is None else states.videos.get(str(video_id))
 
@@ -899,17 +1012,38 @@ class ServerPageMixin(MixinBase):
         self._set_archive_run_face(run_id, "archived")
 
     def _on_archive_done(self, result: object) -> None:
+        if isinstance(result, tuple):
+            session, result = result
+            if session != self._archive_session:
+                return
         self._server_archiving = False
         self._set_server_busy(False)
         # What the plan left out belongs on the same line as what was sent, or
         # "Archived 12" reads as "archived everything".
         plan = getattr(self, "_archive_plan_pending", None)
         self._archive_plan_pending = None
+        if isinstance(result, ArchiveReport) and self._archive_pause_requested:
+            result.paused = True
+            result.cancelled = False
+        self._settle_archive_faces(result)
+        self._server_archive_pause_btn.setVisible(False)
+        client = self._archive_client
         self._archive_client = None
-        self._settle_archive_run_face(result, plan)
+        if client is not None and hasattr(client, "close"):
+            client.close()
+        self._server_archive_cancel_btn.setVisible(False)
+        if not isinstance(result, ArchiveReport) or not (result.paused or result.cancelled):
+            self._settle_archive_run_face(result, plan)
         if isinstance(result, ArchiveReport) and plan is not None:
             result.skipped = list(plan.skipped)
         if isinstance(result, Failure):
+            self._archive_retry_builder = self._archive_builder
+            self._server_archive_btn.setText("Retry archive")
+            active = {"preparing", "queued", "uploading", "verifying"}
+            self._archive_video_faces = {
+                key: "failed" if value in active else value for key, value in self._archive_video_faces.items()
+            }
+            self._paint_archive_badges()
             self._server_notice.clear()
             self._server_blocker.show_blocker(
                 f"{result.title}. {result.detail}",
@@ -923,6 +1057,7 @@ class ServerPageMixin(MixinBase):
         self._refresh_server_page()
         self._refresh_archive_badges()
         self._server_notice.show_notice(summarise_archive(result))
+        self._offer_archive_retry(result)
         if result.failed:
             label, reason = result.failed[0]
             self._notify_post(
@@ -935,6 +1070,32 @@ class ServerPageMixin(MixinBase):
                     "section": SERVER_SECTION,
                 }
             )
+
+    def _settle_archive_faces(self, result: object) -> None:
+        if not isinstance(result, ArchiveReport) or not (result.paused or result.cancelled):
+            return
+        phase = "paused" if result.paused else "cancelled"
+        active = {"preparing", "queued", "uploading", "verifying", "cancelled"}
+        self._archive_video_faces = {
+            key: phase if value in active else value for key, value in self._archive_video_faces.items()
+        }
+        self._archive_run_faces = {
+            key: (phase, value[1]) if value[0] in active else value for key, value in self._archive_run_faces.items()
+        }
+        self._paint_archive_badges()
+
+    def _offer_archive_retry(self, result: ArchiveReport) -> None:
+        if result.remaining and self._archive_builder is not None:
+            builder = self._archive_builder
+            paths = {job.path for job in result.remaining}
+
+            def rebuild(store, out_root):
+                plan = builder(store, out_root)
+                plan.jobs = [job for job in plan.jobs if job.path in paths]
+                return plan
+
+            self._archive_retry_builder = rebuild
+            self._server_archive_btn.setText("Resume archive" if result.paused or result.cancelled else "Retry failed")
 
     # --- the status-bar badge -------------------------------------------------
 
@@ -1378,6 +1539,8 @@ def summarise_archive(report: ArchiveReport) -> str:
     if report.failed:
         parts.append(f"{len(report.failed)} failed")
     line = ", ".join(parts) + "."
+    if report.paused:
+        line += f" Paused with {len(report.remaining)} file(s) remaining. Resume when the cause is resolved."
     if report.cancelled:
         line += " Stopped on request; archive again to send the rest."
     if report.skipped:

@@ -156,7 +156,8 @@ class DeepReefMapWindow(
     _sig_server_reach = Signal(object)
     # The archive queue, on the same worker-and-signal shape as the sync. One
     # object rather than a pair: the slot tells a report from a Failure itself.
-    _sig_archive_progress = Signal(str)
+    _sig_archive_progress = Signal(object)
+    _sig_archive_item = Signal(object)
     _sig_archive_bytes = Signal(object)
     _sig_archive_plan = Signal(object)
     _sig_archive_done = Signal(object)
@@ -201,6 +202,7 @@ class DeepReefMapWindow(
         self._sig_sync_badge.connect(self._apply_sync_badge)
         self._sig_server_reach.connect(self._apply_server_reachability)
         self._sig_archive_progress.connect(self._on_archive_progress)
+        self._sig_archive_item.connect(self._on_archive_item)
         self._sig_archive_bytes.connect(self._on_archive_bytes)
         self._sig_archive_plan.connect(self._on_archive_plan_ready)
         self._sig_archive_done.connect(self._on_archive_done)
@@ -474,7 +476,7 @@ class DeepReefMapWindow(
             # die with the process, which is why the warning is logged.
             logger.warning("Quitting with a reconstruction in flight; it will be abandoned")
 
-        for attr in ("_cancel_event", "_survey_cancel_event"):
+        for attr in ("_cancel_event", "_survey_cancel_event", "_archive_cancel"):
             cancel = getattr(self, attr, None)
             if cancel is not None:
                 cancel.set()
@@ -484,6 +486,8 @@ class DeepReefMapWindow(
         if pause is not None:
             pause.set()
 
+        if self._server_archiving:
+            self._on_archive_cancel()
         self._stop_window_timers()
         # Before the handles go: these close over a QProgressDialog parented to
         # this window, so a render still in flight would drive a widget Qt is

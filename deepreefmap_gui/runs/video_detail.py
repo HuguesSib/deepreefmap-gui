@@ -180,6 +180,8 @@ class VideoDetailPanel(DetailCard):
             "pending": ("Uploading…", WARNING, "Offered to the registry, not verified yet."),
             "failed": ("Archive failed", ERROR, "The registry could not verify the upload. Archive again."),
         }
+        for phase in ("preparing", "queued", "uploading", "verifying", "paused", "cancelled"):
+            faces[phase] = (f"Archive {phase}", WARNING, f"Archive {phase}. Open Server for progress or resume.")
         face = faces.get(state or "")
         if face is None:
             self.archive_state.setVisible(False)

@@ -144,7 +144,10 @@ def registry(monkeypatch):
             made.append(fake)
             return fake
 
+        from deepreefmap_gui.sync import archive_client
+
         monkeypatch.setattr(client_mod, "SyncClient", factory)
+        monkeypatch.setattr(archive_client, "ArchiveClient", factory)
         return made
 
     return build
@@ -868,7 +871,7 @@ def test_an_archive_fills_the_gauge_and_clears_it(window, qapp, registry, tmp_pa
     filled: list[int] = []
     window._sig_archive_bytes.connect(lambda _: filled.append(window._server_archive_bar.value()))
     readings = []
-    window._sig_archive_bytes.connect(readings.append)
+    window._sig_archive_bytes.connect(lambda event: readings.append(event[1] if isinstance(event, tuple) else event))
 
     window._server_archive_btn.click()
     assert settle(qapp, lambda: not window._server_archiving)
@@ -1360,3 +1363,39 @@ def test_the_probe_paints_the_clip_badge(window, qapp):
     window._apply_archive_states(None)
 
     assert not detail.archive_state.isVisibleTo(detail)
+
+
+def test_archive_ignores_stale_session_events(window):
+    from deepreefmap_gui.sync.archive import ArchiveReport, TransferProgress
+
+    window._archive_session = 2
+    window._server_archiving = True
+    window._on_archive_done((1, ArchiveReport()))
+    window._on_archive_bytes((1, TransferProgress(1, 1)))
+    assert window._server_archiving
+    window._server_archiving = False
+
+
+def test_paused_archive_retains_a_rebuildable_queue(window, tmp_path):
+    from deepreefmap_gui.sync.archive import ArchiveJob, ArchivePlan, ArchiveReport
+
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"reef")
+    job = ArchiveJob("clip.mp4", path, "hash", 4, "video")
+    window._archive_builder = lambda *_: ArchivePlan(jobs=[job])
+    window._archive_plan_pending = ArchivePlan(jobs=[job])
+    window._server_archiving = True
+    window._on_archive_done(ArchiveReport(paused=True, remaining=[job]))
+    assert not window._server_archiving
+    assert window._server_archive_btn.text() == "Resume archive"
+    assert window._archive_retry_builder(None, tmp_path).jobs == [job]
+
+
+def test_single_asset_busy_click_does_not_change_its_state(window):
+    window._server_archiving = True
+    window._archive_session = 1
+    window._archive_video_faces = {}
+    window._archive_video("another-video")
+    assert "another-video" not in window._archive_video_faces
+    assert window._archive_session == 1
+    window._server_archiving = False
