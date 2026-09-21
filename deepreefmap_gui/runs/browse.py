@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -46,9 +47,9 @@ from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     EmptyState,
     FilterChips,
+    FilterChoice,
     secondary_label,
     section_column,
-    segmented_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.io.video_files import find_videos, is_run_dir
@@ -221,6 +222,7 @@ class BrowseMixin(MixinBase):
         # known number stays on screen while the new one is being counted.
         self._run_size_stale: set[str] = set()
         self._data_sizes_scan_running = False
+        self._data_transect_sites: dict[str, str | None] = {}
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -231,32 +233,31 @@ class BrowseMixin(MixinBase):
         # with the rail when a facet has no grouping to show.
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
-        facet_row = QHBoxLayout()
-        facet_row.setSpacing(0)
+        self._data_facet_choice = FilterChoice(_FACETS)
+        self._data_facet_choice.setAccessibleName("Group results by")
+        self._data_facet_choice.changed.connect(self._on_data_facet_changed)
+        self._data_facet_buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(panel)
         group.setExclusive(True)
-        self._data_facet_buttons: dict[str, QToolButton] = {}
-        for index, (name, title) in enumerate(_FACETS):
-            btn = QToolButton()
-            btn.setText(title)
-            btn.setCheckable(True)
-            # One joined control, so it reads as three views of the same data
-            # rather than three unrelated buttons.
-            btn.setStyleSheet(segmented_qss(first=index == 0, last=index == len(_FACETS) - 1))
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            group.addButton(btn)
-            facet_row.addWidget(btn)
-            btn.toggled.connect(lambda checked, n=name: self._on_data_facet_changed(n) if checked else None)
-            self._data_facet_buttons[name] = btn
-        top_row.addWidget(QLabel("Group"))
-        top_row.addLayout(facet_row)
+        for name, _title in _FACETS:
+            button = QToolButton(panel)
+            button.setCheckable(True)
+            button.hide()
+            group.addButton(button)
+            button.toggled.connect(
+                lambda checked, key=name: self._data_facet_choice.set_current(key) if checked else None
+            )
+            self._data_facet_buttons[name] = button
+        top_row.addWidget(QLabel("Group by"))
+        top_row.addWidget(self._data_facet_choice)
         self._data_search = QLineEdit()
         self._data_search.setPlaceholderText("Search runs…")
         self._data_search.setClearButtonEnabled(True)
         self._data_search.setMaximumWidth(240)
         self._data_search.textChanged.connect(lambda *_: self._rebuild_data_run_list())
         top_row.addWidget(self._data_search)
-        self._data_status_chips = FilterChips(_STATUS_FILTERS)
+        self._data_status_chips = FilterChoice(_STATUS_FILTERS)
+        self._data_status_chips.setAccessibleName("Filter results by outcome")
         self._data_status_chips.changed.connect(self._on_data_status_filter_changed)
         top_row.addWidget(self._data_status_chips)
         # Last on the row, because it only means something where there is a map
@@ -267,8 +268,35 @@ class BrowseMixin(MixinBase):
         self._data_scope_chips.changed.connect(self._on_data_scope_filter_changed)
         self._data_scope_chips.setVisible(False)
         top_row.addWidget(self._data_scope_chips)
+        self._data_map_toggle = QCheckBox("Show map")
+        self._data_map_toggle.toggled.connect(self._toggle_results_map)
+        top_row.addWidget(self._data_map_toggle)
         top_row.addStretch(1)
         layout.addLayout(top_row)
+        metadata_row = QHBoxLayout()
+        self._data_campaign_filter = QComboBox()
+        self._data_site_filter = QComboBox()
+        for label, combo in (("Campaign", self._data_campaign_filter), ("Site", self._data_site_filter)):
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setAccessibleName(f"Filter results by {label.lower()}")
+            metadata_row.addWidget(QLabel(label))
+            metadata_row.addWidget(combo)
+            combo.currentIndexChanged.connect(lambda *_: self._rebuild_data_run_list())
+        metadata_row.addStretch(1)
+        self._data_columns_btn = QToolButton()
+        self._data_columns_btn.setText("Columns")
+        self._data_columns_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        columns_menu = QMenu(self._data_columns_btn)
+        self._data_technical_action = columns_menu.addAction("Show technical columns")
+        self._data_technical_action.setCheckable(True)
+        self._data_technical_action.setChecked(bool(self._settings.value("result_technical_columns", False, type=bool)))
+        self._data_technical_action.toggled.connect(self._set_result_columns)
+        self._data_columns_btn.setMenu(columns_menu)
+        metadata_row.addWidget(self._data_columns_btn)
+        layout.addLayout(metadata_row)
 
         # Disk sits with the group header rather than on the filter row: the
         # filters already fill that row, and squeezing a growing byte count in
@@ -333,6 +361,7 @@ class BrowseMixin(MixinBase):
         rail_split = QSplitter(Qt.Orientation.Vertical)
         rail_split.setHandleWidth(SPACE_SM)
         rail_split.addWidget(self._data_map)
+        self._data_map.hide()
         rail_split.addWidget(self._data_tree_stack)
         rail_split.setStretchFactor(0, 0)
         rail_split.setStretchFactor(1, 1)
@@ -351,6 +380,7 @@ class BrowseMixin(MixinBase):
         runs_layout.addLayout(header_row)
 
         self._data_run_table = RunTable()
+        self._data_run_table.set_technical_columns(self._data_technical_action.isChecked())
         self._data_run_table.itemDoubleClicked.connect(self._on_data_run_activated)
         self._data_run_table.itemSelectionChanged.connect(self._update_data_actions)
         self._data_run_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -367,7 +397,7 @@ class BrowseMixin(MixinBase):
         # rest are occasional housekeeping.
         actions = QHBoxLayout()
         actions.setSpacing(SPACE_SM)
-        self._data_open_btn = QPushButton("Open")
+        self._data_open_btn = QPushButton("Open result")
         self._data_open_btn.clicked.connect(self._on_data_open_clicked)
         actions.addWidget(self._data_open_btn)
         self._data_show_btn = QPushButton("Show in folder")
@@ -553,7 +583,7 @@ class BrowseMixin(MixinBase):
         """
         if not hasattr(self, "_data_map"):
             return
-        shown = self._data_facet == "transects"
+        shown = self._data_facet == "transects" and self._data_map_toggle.isChecked()
         self._data_map.setVisible(shown)
         if not shown or not getattr(self, "_data_store_ok", False):
             return
@@ -674,7 +704,7 @@ class BrowseMixin(MixinBase):
         """Queue the selected runs' passes for the next session.
 
         The pass carries trim, direction and transect already; reruns of one
-        pass collapse to one cart item.
+        pass collapse to one queue item.
         """
         entries = [e for e in self._data_selected_entries() if not e.incomplete]
         if not entries:
@@ -701,9 +731,9 @@ class BrowseMixin(MixinBase):
             self._refresh_survey_batch_tab()
             self._refresh_data_manager()
         message = (
-            f"Added {len(added)} pass{'' if len(added) == 1 else 'es'} to the cart."
+            f"Added {len(added)} pass{'' if len(added) == 1 else 'es'} to the queue."
             if added
-            else "Nothing was added to the cart."
+            else "Nothing was added to the queue."
         )
         if skipped:
             message += f" Skipped {skipped} with no recoverable time range."
@@ -1018,6 +1048,11 @@ class BrowseMixin(MixinBase):
             self._apply_data_split_sizes(rail_visible=bool(self._data_rail_shown))
 
     def _on_data_facet_changed(self, name: str) -> None:
+        self._data_facet_buttons[name].setChecked(True)
+        if name != "transects":
+            self._data_map_toggle.blockSignals(True)
+            self._data_map_toggle.setChecked(False)
+            self._data_map_toggle.blockSignals(False)
         # _focus_data_on_transect sets the facet and the key together and then
         # checks the button; without this the check would land here first and
         # throw the key away, rebuilding the tree twice for one selection.
@@ -1074,7 +1109,7 @@ class BrowseMixin(MixinBase):
         choice of what to look at, and panning off it afterwards should not
         empty the list underneath.
         """
-        return self._data_scope_offered() and self._data_selected_key is None
+        return self._data_scope_offered() and self._data_map_toggle.isChecked() and self._data_selected_key is None
 
     def _data_visible_transect_ids(self) -> frozenset[str] | None:
         """Transects the Browse map is showing, or None when it cannot say."""
@@ -1091,6 +1126,38 @@ class BrowseMixin(MixinBase):
             return entries
         return _entries_in_view(entries, visible)
 
+    def _set_result_columns(self, visible: bool) -> None:
+        self._settings.setValue("result_technical_columns", visible)
+        self._data_run_table.set_technical_columns(visible)
+
+    def _toggle_results_map(self, checked: bool) -> None:
+        if checked and self._data_facet != "transects":
+            self._data_facet_choice.set_current("transects")
+        self._data_visible_ids = None
+        self._refresh_data_map()
+        self._apply_data_view_change()
+        self._rebuild_data_run_list()
+
+    def _refresh_result_metadata(self) -> None:
+        self._data_transect_sites = {}
+        store = self._try_survey_store()
+        if store is None:
+            return
+        self._data_transect_sites = {str(t.id): str(t.site_id) if t.site_id else None for t in store.list_transects()}
+        for combo, records in (
+            (self._data_campaign_filter, store.list_campaigns()),
+            (self._data_site_filter, store.list_sites()),
+        ):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            for record in records:
+                combo.addItem(record.name, str(record.id))
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
     def _data_listed_entries(self) -> list[RunEntry]:
         """What the list shows: the group, narrowed by map, outcome and search."""
         entries = self._data_scoped_entries()
@@ -1099,7 +1166,11 @@ class BrowseMixin(MixinBase):
         needle = self._data_search.text().strip().lower()
         if needle:
             entries = [e for e in entries if needle in self._entry_search_text(e)]
-        return entries
+        campaign = self._data_campaign_filter.currentData()
+        site = self._data_site_filter.currentData()
+        return [entry for entry in entries if
+                campaign in {"all", str(entry.campaign_id) if entry.campaign_id else "unassigned"}
+                and site in {"all", self._data_transect_sites.get(str(entry.transect_id)) or "unassigned"}]
 
     @staticmethod
     def _entry_search_text(entry: RunEntry) -> str:
@@ -1159,7 +1230,9 @@ class BrowseMixin(MixinBase):
         say what pressing one would list, not what is listed now.
         """
         offered = self._data_scope_offered()
-        self._data_scope_chips.setVisible(offered)
+        self._data_scope_chips.setVisible(
+            offered and (self._data_map_toggle.isChecked() or self._data_selected_key is not None)
+        )
         if not offered:
             return
         entries = self._data_entries
@@ -1180,6 +1253,7 @@ class BrowseMixin(MixinBase):
     def _rebuild_data_run_list(self) -> None:
         # The rebuild is the point at which the list catches up with the map, so
         # this is also where the view the change detector compares against is set.
+        self._refresh_result_metadata()
         self._data_visible_ids = self._data_visible_transect_ids()
         self._refresh_data_scope_chips()
         self._refresh_data_status_counts()
@@ -1200,7 +1274,7 @@ class BrowseMixin(MixinBase):
             # A section that has never run.
             self._data_empty_state.set_text(
                 "Not processed yet",
-                "It is in the cart." if self._pass_in_current_cart(key[1]) else "Add it to the cart to process it.",
+                "It is in the queue." if self._pass_in_current_cart(key[1]) else "Add it to the queue to process it.",
             )
         elif not listed and not scoped and self._data_grouped_entries():
             self._data_empty_state.set_text(
@@ -1311,7 +1385,7 @@ class BrowseMixin(MixinBase):
             ("show", "Show in folder", self._on_data_show_in_folder_clicked),
             ("rename", "Rename…", self._on_data_rename_clicked),
             ("assign", "Assign to transect…", self._on_data_assign_clicked),
-            ("cart", "Add to cart", self._on_data_add_to_cart_clicked),
+            ("cart", "Add to queue", self._on_data_add_to_cart_clicked),
             ("copy", "Copy run command", self._on_data_copy_command_clicked),
             (None, "", None),
             ("delete", "Delete…", self._on_data_delete_clicked),
@@ -1531,7 +1605,7 @@ class BrowseMixin(MixinBase):
         if len(known) not in (0, len(with_data)):
             size_txt = f"at least {size_txt}"
         counts = (
-            f"{len(runs)} run{'s' if len(runs) != 1 else ''} and {len(cart)} cart item{'s' if len(cart) != 1 else ''}"
+            f"{len(runs)} run{'s' if len(runs) != 1 else ''} and {len(cart)} queue item{'s' if len(cart) != 1 else ''}"
         )
         choice = DeleteDataDialog.ask(
             DeleteScope(

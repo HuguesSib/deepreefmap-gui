@@ -41,6 +41,23 @@ def _reset_setup_complete(qapp):
     settings.remove("setup_complete")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_job_preferences(qapp):
+    from PySide6.QtCore import QSettings
+
+    settings = QSettings("ECEO", "deepreefmap")
+    keys = ("video_job_filter", "video_column_size", "video_column_gravity", "result_technical_columns", "columns/runs")
+    previous = {key: settings.value(key) for key in keys}
+    for key in keys:
+        settings.remove(key)
+    yield
+    for key, value in previous.items():
+        if value is None:
+            settings.remove(key)
+        else:
+            settings.setValue(key, value)
+
+
 @pytest.fixture
 def out_root(tmp_path):
     """The one output root every window in the suite writes under.

@@ -10,29 +10,23 @@ below with what became of that cut.
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import Mapping
-from typing import Any, Callable
-
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QToolButton,
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import ERROR, PRIMARY, SPACE_SM, SUCCESS, WARNING
+from deepreefmap_gui.core.theme import ERROR, SPACE_SM, SUCCESS, WARNING
 from deepreefmap_gui.core.widgets import (
     clip_outcome_color,
-    muted_label,
 )
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.runs.video_rows import (
     ARCHIVE_CLIP,
     ARCHIVE_CLIP_TOOLTIP,
-    NEW_SECTION_GLYPH,
-    SectionList,
     apply_link_state,
     archive_button,
 )
@@ -41,12 +35,11 @@ from deepreefmap_gui.survey.catalogue import (
     LINK_MISSING,
     VideoLibraryEntry,
 )
-from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.statuses import clip_spec
 
 UNAVAILABLE = "Video unavailable"
 
-NEW_SECTION_TOOLTIP = "Cut a pass from this clip and add it to the cart."
+NEW_SECTION_TOOLTIP = "Cut a pass from this clip and add it to the queue."
 NO_FILE_TOOLTIP = "The video file cannot be found. Add it again from where it lives now."
 
 
@@ -73,35 +66,20 @@ def _short_date(stamp: str | None) -> str:
     return (stamp or "").split("T")[0] or "unknown"
 
 
-def _link_line(entry: VideoLibraryEntry) -> str:
-    """The path, and whether the file is still at the end of it.
-
-    Said in words rather than only in an icon: a clip whose file has moved is
-    read here, and an icon in the rail is not a sentence.
-    """
-    if entry.link_state == LINK_MISSING:
-        return f"{entry.video.path}  (not found)"
-    return entry.video.path
-
-
 class VideoDetailPanel(DetailCard):
     """A titled card describing the selected clip."""
 
     queue_requested = Signal()
+    play_requested = Signal(str)
     reveal_requested = Signal(str)
-    pass_activated = Signal(str)
-    add_to_cart_requested = Signal(str)
     archive_requested = Signal(str)
     details_requested = Signal(str)
-    retrim_requested = Signal(str)
-    reassign_requested = Signal(str)
-    rename_requested = Signal(str)
-    delete_requested = Signal(str)
-    open_transect_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = self.body
+        self.title.setWordWrap(True)
+        tools_row = QHBoxLayout()
 
         # A clip whose file is gone can do nothing at all, so it is said in
         # words at the top of the card rather than left to an icon and a path
@@ -109,7 +87,7 @@ class VideoDetailPanel(DetailCard):
         self.unavailable = QLabel(UNAVAILABLE)
         self.unavailable.setStyleSheet(f"color: {ERROR};")
         self.unavailable.setVisible(False)
-        self.title_row.addWidget(self.unavailable)
+        layout.addWidget(self.unavailable)
 
         # Whether the file is still there, said where the clip is named. It is
         # live in every state: the folder is where you go to find out what
@@ -117,7 +95,9 @@ class VideoDetailPanel(DetailCard):
         self.link_btn = QToolButton()
         self.link_btn.setAccessibleName("Show in folder")
         self.link_btn.clicked.connect(self._emit_reveal)
-        self.add_title_button(self.link_btn)
+        self.link_btn.setText("Show in folder")
+        self.link_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        tools_row.addWidget(self.link_btn)
 
         # What a person knows about the clip: camera, rig position, review.
         self.details_btn = QToolButton()
@@ -128,17 +108,23 @@ class VideoDetailPanel(DetailCard):
             "Clip details:\n• Camera and rig position\n• Upside-down mounting\n• Review verdict"
         )
         self.details_btn.clicked.connect(self._emit_details)
-        self.add_title_button(self.details_btn)
+        tools_row.addWidget(self.details_btn)
+        tools_row.addStretch(1)
+        layout.addLayout(tools_row)
 
         # What the registry holds of this clip, painted only from a live probe.
         self.archive_state = QLabel("")
         self.archive_state.setVisible(False)
-        self.title_row.addWidget(self.archive_state)
+        layout.addWidget(self.archive_state)
 
         heading_row = QHBoxLayout()
         heading_row.setContentsMargins(0, 0, 0, 0)
         heading_row.setSpacing(SPACE_SM)
-        heading_row.addWidget(muted_label("Passes cut from this clip"))
+        self.play_btn = QPushButton("Play video")
+        self.play_btn.clicked.connect(
+            lambda: self.play_requested.emit(str(self._entry.video.id)) if self._entry else None
+        )
+        heading_row.addWidget(self.play_btn)
         heading_row.addStretch(1)
         # Beside the pass rows' own actions rather than in the card's title: the
         # same glyph in the same place as the pass pane's upload button, and the
@@ -153,37 +139,32 @@ class VideoDetailPanel(DetailCard):
         # Cutting a section belongs to the list it adds to, not to the bottom of
         # the card: the same + the clip's own row carries, in the same blue.
         self.queue_btn = QToolButton()
-        self.queue_btn.setText(NEW_SECTION_GLYPH)
+        self.queue_btn.setText("Cut pass")
         self.queue_btn.setAccessibleName("New pass")
-        self.queue_btn.setProperty("quiet", "true")
-        self.queue_btn.setProperty("pad", "none")
+        self.queue_btn.setProperty("cta", "true")
         self.queue_btn.clicked.connect(self.queue_requested)
         self._set_queue_available(True)
         heading_row.addWidget(self.queue_btn)
         layout.addLayout(heading_row)
 
-        # The same rows the list nests under each clip, so a section offers the
-        # same four things wherever it is read. It says its own emptiness, so
-        # the dark well stays on screen when there is nothing in it.
-        self.pass_list = SectionList()
-        self.pass_list.activated.connect(self.pass_activated)
-        self.pass_list.add_to_cart_requested.connect(self.add_to_cart_requested)
-        self.pass_list.retrim_requested.connect(self.retrim_requested)
-        self.pass_list.rename_requested.connect(self.rename_requested)
-        self.pass_list.reassign_requested.connect(self.reassign_requested)
-        self.pass_list.delete_requested.connect(self.delete_requested)
-        self.pass_list.open_transect_requested.connect(self.open_transect_requested)
-        layout.addWidget(self.pass_list, 1)
+        layout.addStretch(1)
 
+        self.technical_btn = QToolButton()
+        self.technical_btn.setText("File details")
+        self.technical_btn.setCheckable(True)
+        layout.addWidget(self.technical_btn)
+        self.technical = QLabel()
+        self.technical.setWordWrap(True)
+        self.technical.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.technical)
+        self.technical.hide()
+        self.technical_btn.toggled.connect(self.technical.setVisible)
         self._entry: VideoLibraryEntry | None = None
 
     def _set_queue_available(self, available: bool) -> None:
-        """Cutting decodes the file, so a clip that is gone cuts nothing.
-
-        Red rather than greyed: a disabled button shows no tooltip, and the
-        reason is the whole of what the user needs at that point.
-        """
-        self.queue_btn.setStyleSheet(f"QToolButton {{ color: {PRIMARY if available else ERROR}; }}")
+        """Enable playback and cutting when the source file is available."""
+        self.queue_btn.setEnabled(available)
+        self.play_btn.setEnabled(available)
         self.queue_btn.setToolTip(NEW_SECTION_TOOLTIP if available else NO_FILE_TOOLTIP)
 
     def _emit_reveal(self) -> None:
@@ -226,25 +207,12 @@ class VideoDetailPanel(DetailCard):
     def set_queue_enabled(self, enabled: bool) -> None:
         self.queue_btn.setEnabled(enabled)
 
-    def show_entry(
-        self,
-        entry: VideoLibraryEntry,
-        transect_name: Callable[[Any], str | None],
-        *,
-        campaign_name: Callable[[Any], str | None] = lambda _id: None,
-        in_cart: Callable[[str], bool] = lambda _pass_id: False,
-        assets: Mapping[uuid.UUID, VideoAsset] | None = None,
-    ) -> None:
-        """Describe one clip. ``transect_name`` resolves a pass's transect id,
-        and ``campaign_name`` its campaign id.
-
-        ``assets`` is the rest of the library, passed through so a pass cut
-        across chapters can still find the files its frames come from.
-        """
+    def show_entry(self, entry: VideoLibraryEntry) -> None:
+        """Describe the selected clip and its source file."""
         self.title.setText(entry.video.file_name)
         self.set_status(clip_spec(entry.outcome).label, clip_outcome_color(entry.outcome))
 
-        rows = [("File", _link_line(entry))]
+        rows = []
         facts = clip_facts(entry)
         if facts:
             rows.append(("Footage", facts))
@@ -255,20 +223,15 @@ class VideoDetailPanel(DetailCard):
         rows.append(("Last processed", _short_date(last_run) if last_run else "never"))
         # The checksum is what makes a clip recognisable when it turns up again
         # somewhere else, so its absence is worth as much space as its value.
-        rows.append(("Checksum", f"#{entry.video.hash[:8]}" if entry.video.hash else "none yet"))
+        self.technical.setText(
+            f"File: {entry.video.path}\nChecksum: {entry.video.hash or 'none yet'}"
+        )
         self.facts.set_rows(rows)
 
         apply_link_state(self.link_btn, entry.link_state)
         self.unavailable.setVisible(entry.link_state == LINK_MISSING)
         self._set_queue_available(entry.link_state == LINK_LINKED)
-        self.pass_list.set_sections(
-            entry, transect_name, campaign_name=campaign_name, in_cart=in_cart, assets=assets
-        )
         self._entry = entry
-
-    def select_section(self, pass_id: str | None) -> None:
-        """Highlight the pass the page is showing below, or none."""
-        self.pass_list.set_selected(pass_id)
 
     def set_server_connected(self, connected: bool) -> None:
         """Offer the archive button only where there is a registry to send to."""
@@ -276,5 +239,4 @@ class VideoDetailPanel(DetailCard):
 
     def clear(self) -> None:
         super().clear()
-        self.pass_list.set_selected(None)
         self._entry = None

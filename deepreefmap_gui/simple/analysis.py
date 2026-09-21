@@ -187,10 +187,10 @@ class SimpleAnalysisMixin(MixinBase):
         layout.addWidget(stats_card, 2)
 
         export_row = QHBoxLayout()
-        self._analysis_export_btn = QPushButton("Export repeatability CSV")
+        self._analysis_export_btn = QPushButton("Export repeatability…")
         self._analysis_export_btn.clicked.connect(self._on_analysis_export_csv)
         export_row.addWidget(self._analysis_export_btn)
-        self._analysis_collated_btn = QPushButton("Export collated cover CSV")
+        self._analysis_collated_btn = QPushButton("Export cover…")
         self._analysis_collated_btn.clicked.connect(self._on_analysis_export_collated)
         export_row.addWidget(self._analysis_collated_btn)
         export_row.addStretch(1)

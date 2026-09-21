@@ -403,7 +403,8 @@ def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None
     # The window and how long it runs for, on one label: the clip above says how
     # long the recording is, and this says how much of it was cut.
     assert "0:00-0:30 · 30s" in texts
-    assert "2 runs" in texts
+    assert "Succeeded" in texts
+    assert row._runs.toolTip() == "2 runs"
     # Direction is an arrow rather than a word, so it costs an icon's width
     # instead of a column; the tooltip still says it in words.
     assert "forward" in row._direction.toolTip()
@@ -708,10 +709,10 @@ def test_the_clip_menu_offers_to_put_back_a_clip_that_is_already_hidden() -> Non
     entry = make_entry()
 
     row.set_entry(entry, no_name)
-    assert [action.text() for action in row.menu().actions()][0] == MENU_HIDE
+    assert MENU_HIDE in [action.text() for action in row.menu().actions()]
 
     row.set_entry(entry, no_name, hidden=True)
-    assert [action.text() for action in row.menu().actions()][0] == MENU_UNHIDE
+    assert MENU_UNHIDE in [action.text() for action in row.menu().actions()]
 
 
 def test_only_the_sections_nothing_was_made_from_can_be_swept_up() -> None:
@@ -806,7 +807,7 @@ def test_a_section_of_a_clip_of_unknown_length_still_gets_a_row() -> None:
     listing = make_list(entry)
 
     assert set(listing.sections()) == {str(entry.passes[0].id)}
-    assert "Queued" in listing.sections()[str(entry.passes[0].id)].toolTip()
+    assert "Ready" in listing.sections()[str(entry.passes[0].id)].toolTip()
 
 
 def test_a_bare_section_row_paints_before_it_has_been_told_anything() -> None:

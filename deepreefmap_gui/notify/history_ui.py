@@ -61,7 +61,7 @@ _SECTION_LABELS = {
     "transects": "Transects",
     "videos": "Videos",
     "process": "Cart",
-    "browse": "Browse",
+    "browse": "Results",
     "machine": "Setup",
     "models": "Models",
     "server": "Server",

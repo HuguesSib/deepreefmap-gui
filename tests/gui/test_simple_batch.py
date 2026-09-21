@@ -1668,7 +1668,7 @@ def test_a_processed_pass_leaves_the_batch_until_asked_for_again(batch_window, t
     assert batch_window._survey_batch.id != first_session.id
     assert group_headings(batch_window) == ["To process  (1)"]
     assert len(batch_window._survey_remaining_rows()) == 1
-    assert "cart" in batch_window._status_label.text().lower()
+    assert "queue" in batch_window._status_label.text().lower()
 
 
 def test_a_finished_order_hands_the_page_to_the_cart(batch_window, tmp_path, monkeypatch, qapp):

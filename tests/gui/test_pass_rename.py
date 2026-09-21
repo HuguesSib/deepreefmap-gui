@@ -109,10 +109,9 @@ def test_every_place_a_pass_is_shown_offers_the_rename(qapp) -> None:
     a page that stops relaying the signal fails here rather than going quiet.
     """
     from deepreefmap_gui.runs.section_detail import SectionDetailPanel
-    from deepreefmap_gui.runs.video_detail import VideoDetailPanel
     from deepreefmap_gui.runs.video_rows import SectionList, SectionRow, VideoLibraryList
 
-    for owner in (SectionRow, SectionList, VideoDetailPanel, SectionDetailPanel):
+    for owner in (SectionRow, SectionList, SectionDetailPanel):
         assert hasattr(owner, "rename_requested"), owner.__name__
     assert hasattr(VideoLibraryList, "section_rename")
 

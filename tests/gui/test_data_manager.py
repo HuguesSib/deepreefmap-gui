@@ -174,7 +174,7 @@ def test_browse_is_the_destination_holding_the_run_browser(make_window):
     """One widget, one name: the destination called Browse is the run browser."""
     window = make_window()
     assert list(window._simple_nav_buttons) == list(DESTINATIONS)
-    assert window._simple_nav_buttons["browse"].text() == "Browse"
+    assert window._simple_nav_buttons["browse"].text() == "Results"
 
     window._set_simple_section("browse")
     assert window._simple_stack.currentWidget().isAncestorOf(window._data_panel)
@@ -865,7 +865,7 @@ def test_add_to_cart_requeues_a_finished_run(out_root, make_window):
     assert cart.id != batch.id
     assert [i.pass_id for i in store.list_batch_items(cart.id)] == [pass_.id]
     assert window._cart_button._count == 1
-    assert "cart" in window._status_label.text().lower()
+    assert "queue" in window._status_label.text().lower()
 
 
 def test_add_to_cart_adopts_an_adhoc_run_unassigned(out_root, make_window):
@@ -899,9 +899,9 @@ def test_status_chips_count_and_filter_runs(out_root, make_window):
     write_crashed_run(out_root, "crashed")
     window = make_window()
     chips = window._data_status_chips
-    assert chips._buttons["all"].text().endswith("3")
-    assert chips._buttons["succeeded"].text().endswith("2")
-    assert chips._buttons["unfinished"].text().endswith("1")
+    assert chips.itemText(chips.findData("all")).endswith("(3)")
+    assert chips.itemText(chips.findData("succeeded")).endswith("(2)")
+    assert chips.itemText(chips.findData("unfinished")).endswith("(1)")
 
     chips.set_current("unfinished")
     assert listed_runs(window) == ["crashed"]
@@ -1077,6 +1077,7 @@ def two_sites(root: Path) -> None:
 def browse_by_transect(make_window):
     window = make_window()
     window._data_facet_buttons["transects"].click()
+    window._data_map_toggle.setChecked(True)
     window._data_map.resize(400, 300)
     return window
 
@@ -1153,6 +1154,8 @@ def test_the_map_scope_appears_only_where_it_decides_anything(out_root, make_win
     assert not chips.isVisibleTo(window._data_panel)
 
     window._data_facet_buttons["transects"].click()
+    assert not chips.isVisibleTo(window._data_panel)
+    window._data_map_toggle.setChecked(True)
     assert chips.isVisibleTo(window._data_panel)
     window._data_facet_buttons["sessions"].click()
     assert not chips.isVisibleTo(window._data_panel)
@@ -1211,6 +1214,7 @@ def test_the_map_draws_transects_only_while_grouping_by_them(out_root, make_wind
     window = make_window()
 
     window._data_facet_buttons["transects"].click()
+    window._data_map_toggle.setChecked(True)
     assert window._data_map.isVisibleTo(window._data_rail)
     assert [o.label for o in window._data_map._transects] == ["T1"]
 
@@ -1594,9 +1598,8 @@ def test_an_outcome_is_the_same_chip_wherever_it_is_read(out_root, make_window):
     assert succeeded in chip.styleSheet()
     assert tinted(succeeded, PILL_TINT_ALPHA) in chip.styleSheet()
 
-    # The filter that finds a failed run is drawn in a failed run's colour.
-    filter_chip = window._data_status_chips._buttons["failed"]
-    assert STATUS_COLORS["failed"] in filter_chip.styleSheet()
+    choice = window._data_status_chips
+    assert choice.itemText(choice.findData("failed")).startswith("Failed")
 
 
 def test_session_delete_takes_runs_and_record_together(out_root, make_window, monkeypatch):

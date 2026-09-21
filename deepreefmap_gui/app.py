@@ -359,7 +359,7 @@ class DeepReefMapWindow(
 
         bindings = (
             ("Show or hide the log", "Ctrl+L", self._log_toggle_btn.click),
-            ("Go to Browse", "Ctrl+B", self._activate_browse),
+            ("Go to Results", "Ctrl+B", self._activate_browse),
             ("Run settings", "Ctrl+,", self._activate_settings),
             ("Setup", "F1", self._activate_machine),
             ("Quit", QKeySequence.StandardKey.Quit, self.close),

@@ -985,7 +985,7 @@ class FormPanelMixin(MixinBase):
         # The group above is hidden until a run loads.
         self._results_empty = EmptyState(
             "No run loaded",
-            "Start a run, or open a finished one from Browse.",
+            "Start a run, or open a finished one from Results.",
         )
         viewer_layout.addWidget(self._results_empty, 1)
         viewer_layout.addStretch()

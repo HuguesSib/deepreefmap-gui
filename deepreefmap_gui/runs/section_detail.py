@@ -8,17 +8,20 @@ of one piece of it.
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QMouseEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPushButton,
     QToolButton,
     QWidget,
 )
@@ -52,7 +55,6 @@ from deepreefmap_gui.runs.pass_campaign import CAMPAIGN_ACTION
 from deepreefmap_gui.runs.pass_rename import RENAME_ACTION
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.runs.video_rows import icon_button, set_button_dead
-from deepreefmap_gui.simple.catalogue_dialogs import NO_CAMPAIGN
 from deepreefmap_gui.survey import statuses
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
@@ -243,6 +245,9 @@ class SectionDetailPanel(DetailCard):
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
     campaign_requested = Signal(str)
+    campaign_selected = Signal(str, str)
+    add_to_queue_requested = Signal(str)
+    open_transect_requested = Signal(str)
     delete_requested = Signal(str)
     rename_requested = Signal(str)
     run_activated = Signal(str)
@@ -253,7 +258,28 @@ class SectionDetailPanel(DetailCard):
         super().__init__(parent)
         layout = self.body
 
-        layout.addWidget(muted_label("Sessions this pass has run in"))
+        campaign_row = QHBoxLayout()
+        campaign_row.addWidget(QLabel("Campaign"))
+        self.campaign_combo = QComboBox()
+        self.campaign_combo.setAccessibleName("Pass campaign")
+        self.campaign_combo.setMinimumContentsLength(10)
+        self.campaign_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.campaign_combo.activated.connect(
+            lambda *_: self.campaign_selected.emit(self._pass_id(), self.campaign_combo.currentData() or "")
+        )
+        campaign_row.addWidget(self.campaign_combo, 1)
+        layout.addLayout(campaign_row)
+        self.site_label = QLabel("Site: Unassigned")
+        self.site_label.linkActivated.connect(self.open_transect_requested.emit)
+        layout.addWidget(self.site_label)
+        self.queue_btn = QPushButton("Add to queue")
+        self.queue_btn.setProperty("cta", "true")
+        self.queue_btn.clicked.connect(lambda: self.add_to_queue_requested.emit(self._pass_id()))
+        layout.addWidget(self.queue_btn)
+        self.assign_btn = QPushButton("Change transect…")
+        self.assign_btn.clicked.connect(self._emit_reassign)
+        layout.addWidget(self.assign_btn)
+        layout.addWidget(muted_label("Processing history"))
 
         self.run_list = QListWidget()
         self.run_list.setAlternatingRowColors(True)
@@ -264,6 +290,9 @@ class SectionDetailPanel(DetailCard):
         # control below it and left the pane a different shape for a section
         # that had run and one that had not.
         layout.addWidget(self.run_list, 1)
+        self.open_result_btn = QPushButton("Open result")
+        self.open_result_btn.clicked.connect(self._open_selected_result)
+        layout.addWidget(self.open_result_btn)
 
         # A menu rather than a row of buttons the pane cannot hold without
         # truncating every label. The cart is not among them: the section's own
@@ -286,6 +315,31 @@ class SectionDetailPanel(DetailCard):
         self._run_rows: list[RunRow] = []
         # No registry until the window says there is one.
         self._server_connected = False
+
+    def set_site(self, name: str | None, transect_id) -> None:
+        """Show the location with a link to its transect editor."""
+        label = html.escape(name or "Unassigned")
+        value = f'<a href="{transect_id}">{label}</a>' if transect_id else label
+        self.site_label.setText(f"Site: {value}")
+
+    def _open_selected_result(self) -> None:
+        index = self.run_list.currentRow()
+        if 0 <= index < len(self._run_rows):
+            self.run_activated.emit(self._run_rows[index].run.run_dir_name)
+
+    def set_campaigns(self, campaigns, selected) -> None:
+        """Fill the campaign selector without changing the pass assignment."""
+        self.campaign_combo.blockSignals(True)
+        self.campaign_combo.clear()
+        self.campaign_combo.addItem("Unassigned", "")
+        for campaign in campaigns:
+            self.campaign_combo.addItem(campaign.name, str(campaign.id))
+        index = self.campaign_combo.findData(str(selected) if selected else "")
+        if selected and index < 0:
+            self.campaign_combo.addItem("Archived campaign", str(selected))
+            index = self.campaign_combo.count() - 1
+        self.campaign_combo.setCurrentIndex(max(0, index))
+        self.campaign_combo.blockSignals(False)
 
     def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
         """Everything the menu offers on this pass, in one list.
@@ -377,6 +431,8 @@ class SectionDetailPanel(DetailCard):
     ) -> None:
         """Describe one pass. ``session_name`` resolves a run's batch id."""
         self.title.setText(section_window(pass_))
+        self.queue_btn.setText("Remove from queue" if in_cart else "Add to queue")
+        self.queue_btn.setEnabled(in_cart or status not in {"running", "pending"})
         self.set_status(status, STATUS_COLORS.get(status, TEXT_MUTED))
         # Transect and direction on one row, as one link. They are set together
         # in one dialog, and which way a swim went means nothing without the
@@ -389,7 +445,7 @@ class SectionDetailPanel(DetailCard):
             # Its own row rather than fused into the filing above: the trip is
             # set on its own, and a swim belongs to one whether or not anyone
             # has said which line it followed.
-            ("Campaign", fact_link(campaign_name or NO_CAMPAIGN, _CAMPAIGN_LINK)),
+
             ("Length", _length(pass_)),
         ]
         # What this cut has cost so far, which is the figure worth having when
@@ -419,9 +475,9 @@ class SectionDetailPanel(DetailCard):
             # In the list rather than instead of it, so the pane keeps its shape
             # and the empty case is answered where the answer would appear.
             empty = QListWidgetItem(
-                "Not processed yet. Add it to the cart to run it."
+                "Not processed yet. Add it to the queue to run it."
                 if not in_cart
-                else "Not processed yet. It is in the cart for the next session."
+                else "Not processed yet. It is in the queue for the next session."
             )
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor(TEXT_MUTED))
@@ -432,9 +488,12 @@ class SectionDetailPanel(DetailCard):
         delete = self.menu_actions["delete"]
         delete.setEnabled(not runs)
         delete.setToolTip(
-            "This pass has runs. Delete them in Browse first." if runs else "Delete this pass from the clip."
+            "This pass has runs. Delete them in Results first." if runs else "Delete this pass from the clip."
         )
         self._pass = pass_
+        self.open_result_btn.setEnabled(bool(runs))
+        if runs:
+            self.run_list.setCurrentRow(0)
 
     def clear(self) -> None:
         super().clear()

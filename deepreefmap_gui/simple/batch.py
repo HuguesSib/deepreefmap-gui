@@ -521,8 +521,8 @@ class SimpleBatchMixin(MixinBase):
         self._survey_batch_name = QLabel("")
         self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
         name_row.addWidget(self._survey_batch_name, 1)
-        self._survey_clear_cart_btn = QPushButton("Clear cart")
-        self._survey_clear_cart_btn.setToolTip("Take every pass out of this session's cart.")
+        self._survey_clear_cart_btn = QPushButton("Clear queue")
+        self._survey_clear_cart_btn.setToolTip("Take every pass out of this session's queue.")
         self._survey_clear_cart_btn.clicked.connect(self._on_survey_clear_cart)
         name_row.addWidget(self._survey_clear_cart_btn)
         header_layout.addLayout(name_row)
@@ -692,7 +692,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_copy_settings_btn.clicked.connect(self._on_survey_copy_settings)
         selection_row.addWidget(self._survey_copy_settings_btn)
         self._survey_remove_btn = QPushButton("Remove from session")
-        self._survey_remove_btn.setToolTip("Take the selected passes out of this session's cart.")
+        self._survey_remove_btn.setToolTip("Take the selected passes out of this session's queue.")
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
         selection_row.addWidget(self._survey_remove_btn)
         selection_row.addStretch(1)
@@ -971,7 +971,7 @@ class SimpleBatchMixin(MixinBase):
         """
         self._cart_add(pass_id)
         self._refresh_survey_batch_tab()
-        self._status_label.setText("Added to the cart.")
+        self._status_label.setText("Added to the queue.")
 
     def _take_pass_out_of_cart(self, pass_id: uuid.UUID) -> None:
         """Un-cart a pass from anywhere in the app.
@@ -1001,18 +1001,18 @@ class SimpleBatchMixin(MixinBase):
             return
         items = store.list_batch_items(batch.id)
         if not items:
-            self._status_label.setText("The cart is already empty.")
+            self._status_label.setText("The queue is already empty.")
             return
         if not confirm(
             self,
-            "Clear the cart?",
+            "Clear the queue?",
             f"Take {passes_phrase(len(items))} out of '{batch.label}'?",
         ):
             return
         for item in items:
             store.remove_batch_item(batch.id, item.pass_id)
         self._refresh_survey_batch_tab()
-        self._status_label.setText(f"Cleared {passes_phrase(len(items))} from the cart.")
+        self._status_label.setText(f"Cleared {passes_phrase(len(items))} from the queue.")
 
     def _refresh_survey_batch_tab(self) -> None:
         """Rebuild the pass table from the store.
@@ -1537,7 +1537,7 @@ class SimpleBatchMixin(MixinBase):
         if not carted:
             return
         self._refresh_survey_batch_tab()
-        self._status_label.setText(f"Added {passes_phrase(carted)} to the cart.")
+        self._status_label.setText(f"Added {passes_phrase(carted)} to the queue.")
 
     # --- Settings for one pass ---
 

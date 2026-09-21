@@ -242,7 +242,7 @@ class StorageMixin(MixinBase):
     # --- navigation ---------------------------------------------------------
 
     def _open_storage_page(self, root: str) -> None:
-        """Go to this drive's page, or back to Browse if it is already showing."""
+        """Go to this drive's page, or back to Results if it is already showing."""
         if self._storage_root == root and self._current_section() == "storage":
             self._set_simple_section("browse")
             return

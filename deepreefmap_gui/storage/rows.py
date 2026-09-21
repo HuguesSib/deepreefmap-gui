@@ -97,7 +97,7 @@ BAR_TIERS = (*DELETABLE_TIERS, TIER_KEEP, TIER_UNKNOWN)
 
 ABORTED_DETAIL = "Stopped before it finished. Nothing to open, nothing to resume."
 OPEN_IN_VIEWER_DETAIL = "Open in the viewer. Close it with the + button."
-WHOLE_RUN_DETAIL = "The whole folder. The record stays, so the run still shows in Browse."
+WHOLE_RUN_DETAIL = "The whole folder. The record stays, so the run still shows in Results."
 OTHERS_TITLE = "Other files in the output folder"
 COUNTING = "counting"
 

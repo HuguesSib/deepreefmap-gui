@@ -21,14 +21,17 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +40,7 @@ from deepreefmap_gui.core.reveal import reveal_in_file_manager
 from deepreefmap_gui.core.theme import (
     BORDER,
     ERROR,
+    FONT_XL,
     GUTTER,
     PRIMARY,
     RADIUS_SM,
@@ -48,7 +52,7 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.core.widgets import (
     EmptyState,
     FilterChips,
-    clip_outcome_color,
+    FilterChoice,
     confirm,
     muted_label,
     section_column,
@@ -62,8 +66,9 @@ from deepreefmap_gui.runs.video_rows import (
     VideoLibraryList,
     VideoListHeader,
 )
-from deepreefmap_gui.survey import catalogue, statuses
+from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
+from deepreefmap_gui.survey.jobs import job_filters
 from deepreefmap_gui.survey.models import TransectPass
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
@@ -82,8 +87,12 @@ logger = logging.getLogger(__name__)
 # finished. "All" first so the unfiltered view is where the eye starts.
 _CLIP_FILTERS = (
     ("all", "All", PRIMARY),
-    *((spec.key, spec.label, clip_outcome_color(spec.key)) for spec in statuses.CLIP_OUTCOMES),
+    ("organise", "To organise", PRIMARY),
+    ("process", "To process", PRIMARY),
+    ("attention", "Needs attention", ERROR),
+    ("complete", "Complete", PRIMARY),
 )
+
 
 _SEARCH_WIDTH = 240
 
@@ -142,7 +151,7 @@ def _delete_report(deleted: list[VideoLibraryEntry], refused: int) -> str:
     """
     kept = (
         f" {_clips_phrase(refused)} kept: a run was made from "
-        f"{'it' if refused == 1 else 'them'}, so delete those in Browse first."
+        f"{'it' if refused == 1 else 'them'}, so delete those in Results first."
         if refused
         else ""
     )
@@ -190,10 +199,16 @@ class VideoLibraryMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(SPACE_SM)
 
+        title_row = QHBoxLayout()
+        page_title = QLabel("Videos")
+        page_title.setStyleSheet(f"font-size: {FONT_XL}; font-weight: 600;")
+        title_row.addWidget(page_title)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
-        top_row.addWidget(QLabel("Group"))
-        self._video_period_chips = FilterChips(PERIODS)
+        top_row.addWidget(QLabel("Group by"))
+        self._video_period_chips = FilterChoice(PERIODS)
         self._video_period_chips.setToolTip(_PERIOD_TOOLTIP)
         self._video_period_chips.set_current(self._video_period)
         self._video_period_chips.changed.connect(self._on_video_period_changed)
@@ -201,13 +216,19 @@ class VideoLibraryMixin(MixinBase):
         self._video_search = QLineEdit()
         self._video_search.setPlaceholderText("Search clips…")
         self._video_search.setClearButtonEnabled(True)
-        self._video_search.setMaximumWidth(_SEARCH_WIDTH)
+        self._video_search.setMinimumWidth(160)
         self._video_search.textChanged.connect(lambda *_: self._rebuild_video_list())
         top_row.addWidget(self._video_search)
         self._video_chips = FilterChips(_CLIP_FILTERS)
         self._video_chips.setToolTip("Filter clips by processing outcome.")
+        saved_filter = str(self._settings.value("video_job_filter", "all"))
+        self._video_clip_filter = saved_filter if saved_filter in {k: v for k, v, *_ in _CLIP_FILTERS} else "all"
+        self._video_chips.set_current(self._video_clip_filter)
         self._video_chips.changed.connect(self._on_video_filter_changed)
-        top_row.addWidget(self._video_chips)
+        jobs_row = QHBoxLayout()
+        jobs_row.addWidget(QLabel("Videos"))
+        jobs_row.addWidget(self._video_chips)
+        jobs_row.addStretch(1)
         # Only there when something is hidden: a checkbox offering to reveal
         # nothing is a control that has to be read to be dismissed.
         self._video_hidden_check = QCheckBox()
@@ -218,8 +239,11 @@ class VideoLibraryMixin(MixinBase):
         top_row.addStretch(1)
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
-        top_row.addWidget(self._video_add_btn)
+        self._video_add_btn.setProperty("cta", "true")
+        title_row.addWidget(self._video_add_btn)
         layout.addLayout(top_row)
+        layout.addLayout(jobs_row)
+        self._build_video_options(top_row, title_row)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(SPACE_SM)
@@ -231,6 +255,9 @@ class VideoLibraryMixin(MixinBase):
         column_layout.addWidget(self._video_header)
         self._video_list = VideoLibraryList()
         self._video_list.follow_header(self._video_header)
+        for column_key in ("size", "gravity"):
+            visible = bool(self._settings.value(f"video_column_{column_key}", False, type=bool))
+            self._video_list.set_column_visible(column_key, visible)
         self._video_list.activated.connect(self._on_video_activated)
         self._video_list.play_requested.connect(self._on_video_play)
         self._video_list.reveal_requested.connect(self._on_video_reveal)
@@ -244,6 +271,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
         self._video_list.section_reassign.connect(self._on_section_reassign)
+        self._video_list.section_rename.connect(self._on_section_rename)
         self._video_list.section_campaign.connect(self._on_section_campaign)
         self._video_list.section_delete.connect(self._on_section_delete)
         self._video_list.section_open_transect.connect(self._open_transect_page)
@@ -251,6 +279,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_stack = QStackedWidget()
         self._video_stack.addWidget(self._video_list)
         self._video_stack.addWidget(EmptyState("No footage yet", "Drop clips here, or use Add videos…"))
+        self._video_stack.addWidget(EmptyState("No videos match", "Change the search or filters to see more footage."))
         # The stack, not the list inside it: Qt finds a drop target by walking up
         # from the widget under the cursor, and an empty library hides the list
         # behind the empty state that advertises the drop.
@@ -260,22 +289,13 @@ class VideoLibraryMixin(MixinBase):
         column_layout.addWidget(self._build_video_actions())
         split.addWidget(column)
 
-        # The clip above the section it holds, so drilling in never costs sight
-        # of what was drilled into: the cut list stays on screen beside the runs
-        # made from the cut.
-        detail = QSplitter(Qt.Orientation.Vertical)
-        detail.setHandleWidth(SPACE_SM)
+        # The inspector shows one selected video or pass in a stable space.
+        detail = QStackedWidget()
         detail.setMinimumWidth(_DETAIL_MIN_WIDTH)
 
         self._video_detail = VideoDetailPanel()
+        self._video_detail.play_requested.connect(self._on_video_play)
         self._video_detail.queue_requested.connect(self._on_video_new_section)
-        self._video_detail.pass_activated.connect(self._select_section)
-        self._video_detail.add_to_cart_requested.connect(self._on_video_pass_to_cart)
-        self._video_detail.retrim_requested.connect(self._on_section_retrim)
-        self._video_detail.reassign_requested.connect(self._on_section_reassign)
-        self._video_detail.rename_requested.connect(self._on_section_rename)
-        self._video_detail.delete_requested.connect(self._on_section_delete)
-        self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
         self._video_detail.archive_requested.connect(self._archive_video)
         self._video_detail.details_requested.connect(self._on_clip_details)
@@ -296,8 +316,11 @@ class VideoLibraryMixin(MixinBase):
         # Same handler as the run card in Browse, so the press lands on the
         # Server view with its progress and summary showing.
         self._section_detail.archive_run_requested.connect(self._archive_run)
-        self._section_detail.setVisible(False)
         detail.addWidget(self._section_detail)
+        self._video_inspector = detail
+        self._section_detail.add_to_queue_requested.connect(self._on_video_pass_to_cart)
+        self._section_detail.campaign_selected.connect(self._set_pass_campaign)
+        self._section_detail.open_transect_requested.connect(self._open_transect_page)
         split.addWidget(detail)
 
         split.setStretchFactor(0, 1)
@@ -309,6 +332,83 @@ class VideoLibraryMixin(MixinBase):
         self._video_split = split
         layout.addWidget(split, 1)
         return page
+
+    def _build_video_options(self, filters: QHBoxLayout, title: QHBoxLayout) -> None:
+        self._video_campaign_filter = QComboBox()
+        self._video_site_filter = QComboBox()
+        for label, combo in (("Campaign", self._video_campaign_filter), ("Site", self._video_site_filter)):
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            combo.setMinimumContentsLength(10)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setAccessibleName(f"Filter by {label.lower()}")
+            filters.addWidget(QLabel(label))
+            filters.addWidget(combo)
+            combo.currentIndexChanged.connect(lambda *_: self._rebuild_video_list())
+        self._video_columns = QToolButton()
+        self._video_columns.setText("Columns")
+        self._video_columns.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._video_columns)
+        for column, label in (("size", "Size"), ("gravity", "Gravity")):
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bool(self._settings.value(f"video_column_{column}", False, type=bool)))
+            action.toggled.connect(lambda checked, key=column: self._set_video_column(key, checked))
+        self._video_columns.setMenu(menu)
+        title.addWidget(self._video_columns)
+
+    def _set_video_column(self, column: str, visible: bool) -> None:
+        self._settings.setValue(f"video_column_{column}", visible)
+        self._video_list.set_column_visible(column, visible)
+
+    def _refresh_video_metadata(self) -> None:
+        store = self._try_survey_store()
+        self._video_transect_sites = {}
+        if store is None:
+            return
+        self._video_transect_sites = {str(t.id): str(t.site_id) if t.site_id else None for t in store.list_transects()}
+        for combo, records in (
+            (self._video_campaign_filter, store.list_campaigns()),
+            (self._video_site_filter, store.list_sites()),
+        ):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All", "all")
+            combo.addItem("Unassigned", "unassigned")
+            for record in records:
+                combo.addItem(record.name, str(record.id))
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
+    def _matches_video_metadata(self, clip: VideoLibraryEntry) -> bool:
+        campaign = self._video_campaign_filter.currentData()
+        site = self._video_site_filter.currentData()
+        if campaign == "all" and site == "all":
+            return True
+        passes: list[TransectPass | None] = list(clip.passes) or [None]
+        for pass_ in passes:
+            campaign_id = str(pass_.campaign_id) if pass_ and pass_.campaign_id else "unassigned"
+            site_id = self._video_transect_sites.get(str(pass_.transect_id)) if pass_ else None
+            if campaign in {"all", campaign_id} and site in {"all", site_id or "unassigned"}:
+                return True
+        return False
+
+    def _set_pass_campaign(self, pass_id: str, campaign_id: str) -> None:
+        from deepreefmap_gui.runs.pass_campaign import file_pass
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        pass_ = self._pass_by_id(store, pass_id)
+        if pass_ is None or self._refuse_locked(pass_):
+            self._refresh_video_detail()
+            return
+        note = file_pass(store, pass_, uuid.UUID(campaign_id) if campaign_id else None)
+        if note:
+            self._status_label.setText(note)
+        self._refresh_video_library(store)
+        self._refresh_survey_batch_tab()
 
     def _apply_video_split_sizes(self) -> None:
         """Divide the page between the clip list and the detail pane.
@@ -365,7 +465,15 @@ class VideoLibraryMixin(MixinBase):
         self._video_clear_btn = QPushButton(_SWEEP_IDLE)
         self._video_clear_btn.setEnabled(False)
         self._video_clear_btn.clicked.connect(self._on_video_sweep_clicked)
-        row.addWidget(self._video_clear_btn)
+        self._video_clear_btn.hide()
+        self._video_library_menu = QToolButton()
+        self._video_library_menu.setText("Library")
+        self._video_library_menu.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._video_library_menu)
+        self._video_cleanup_action = menu.addAction("Remove clips with no passes…")
+        self._video_cleanup_action.triggered.connect(self._video_clear_btn.click)
+        self._video_library_menu.setMenu(menu)
+        row.addWidget(self._video_library_menu)
 
         self._video_delete_btn = QPushButton(_delete_label(0))
         self._video_delete_btn.setEnabled(False)
@@ -426,6 +534,9 @@ class VideoLibraryMixin(MixinBase):
             ("sweep", self._video_clear_btn),
         ):
             button.setStyleSheet(f"color: {ERROR}; font-weight: {WEIGHT_SEMIBOLD};" if armed == name else "")
+        self._video_delete_btn.setVisible(bool(picked))
+        self._video_cleanup_action.setText(self._video_clear_btn.text())
+        self._video_cleanup_action.setEnabled(bool(sweepable))
         self._video_delete_btn.setEnabled(bool(picked))
         self._video_clear_btn.setEnabled(bool(sweepable))
         self._video_finding.setText(_PICK_HINT if not picked else f"{_clips_phrase(picked)} picked.")
@@ -547,16 +658,20 @@ class VideoLibraryMixin(MixinBase):
         if self._hidden_clip_ids and not self._video_hidden_check.isChecked():
             clips = [c for c in clips if str(c.video.id) not in self._hidden_clip_ids]
         if self._video_clip_filter != "all":
-            clips = [c for c in clips if c.outcome == self._video_clip_filter]
+            clips = [c for c in clips if self._video_clip_filter in job_filters(c)]
         needle = self._video_search.text().strip().lower()
         if needle:
             clips = [c for c in clips if needle in c.video.file_name.lower()]
-        return clips
+        return [clip for clip in clips if self._matches_video_metadata(clip)]
 
     def _rebuild_video_list(self) -> None:
         if getattr(self, "_video_list", None) is None:
             return
         self._refresh_hidden_control()
+        queued = self._cart_pass_ids()
+        for entry in self._video_entries:
+            entry.queued_pass_ids = set(queued)
+        self._refresh_video_metadata()
         clips = self._visible_clips()
         groups = sort_groups(
             group_by_period(clips, self._video_period),
@@ -570,7 +685,9 @@ class VideoLibraryMixin(MixinBase):
             in_cart=self._cart_pass_ids().__contains__,
             hidden=self._hidden_clip_ids.__contains__,
         )
-        self._video_stack.setCurrentIndex(0 if clips else 1)
+        if self._selected_pass_id and self._selected_pass_id not in self._video_list.sections():
+            self._selected_pass_id = None
+        self._video_stack.setCurrentIndex(0 if clips else (2 if self._video_entries else 1))
         self._refresh_archive_affordances()
         self._refresh_video_chips()
         self._refresh_video_actions()
@@ -582,7 +699,8 @@ class VideoLibraryMixin(MixinBase):
         counts = {option[0]: 0 for option in _CLIP_FILTERS}
         counts["all"] = len(clips)
         for clip in clips:
-            counts[clip.outcome] = counts.get(clip.outcome, 0) + 1
+            for key in job_filters(clip) - {"all"}:
+                counts[key] += 1
         self._video_chips.set_counts(counts)
 
     def _refresh_video_detail(self) -> None:
@@ -590,31 +708,21 @@ class VideoLibraryMixin(MixinBase):
             clip = self._clip_for_pass(self._selected_pass_id)
             if clip is not None:
                 self._show_clip_detail(clip)
-                self._video_detail.select_section(self._selected_pass_id)
                 self._fill_section_detail(clip, self._selected_pass_id)
                 return
             # The cut it was showing is gone, so nothing below the clip stands.
             self._selected_pass_id = None
-        self._section_detail.setVisible(False)
+        self._video_inspector.setCurrentIndex(0)
         clip = self._selected_clip()
         if clip is None:
             self._video_detail.clear()
             self._video_detail_stack.setCurrentIndex(0)
             return
         self._show_clip_detail(clip)
-        self._video_detail.select_section(None)
 
     def _show_clip_detail(self, clip: VideoLibraryEntry) -> None:
         self._video_detail_stack.setCurrentIndex(1)
-        self._video_detail.show_entry(
-            clip,
-            self._transect_name_for,
-            campaign_name=self._campaign_name_for,
-            in_cart=self._cart_pass_ids().__contains__,
-            # Hidden clips included: a chapter being out of the list does not
-            # stop the section that spans it wanting a frame from it.
-            assets={entry.video.id: entry.video for entry in getattr(self, "_video_entries", [])},
-        )
+        self._video_detail.show_entry(clip)
         self._video_detail.set_archive_state(self._archive_state_for_video(clip.video.id))
         # First card of the session asks the registry; the answer repaints it.
         self._maybe_refresh_archive_badges()
@@ -774,6 +882,7 @@ class VideoLibraryMixin(MixinBase):
 
     def _on_video_filter_changed(self, key: str) -> None:
         self._video_clip_filter = key
+        self._settings.setValue("video_job_filter", key)
         self._rebuild_video_list()
 
     def _on_video_sort_changed(self, column: str, descending: bool) -> None:
@@ -813,7 +922,6 @@ class VideoLibraryMixin(MixinBase):
         # Through the one filler, so the pane highlights the same row the list
         # does and reads the cart the same way it does.
         self._show_clip_detail(clip)
-        self._video_detail.select_section(pass_id)
         self._fill_section_detail(clip, pass_id)
         self._video_list.reveal(pass_id)
         return True
@@ -861,7 +969,7 @@ class VideoLibraryMixin(MixinBase):
             pass_,
             clip_name=clip.video.file_name,
             transect_name=self._transect_name_for(pass_.transect_id),
-            status=pass_status(runs),
+            status=pass_status(runs, queued=self._pass_in_current_cart(pass_id)),
             runs=runs,
             session_name=self._session_name_for,
             in_cart=self._pass_in_current_cart(pass_id),
@@ -869,7 +977,13 @@ class VideoLibraryMixin(MixinBase):
             output_bytes=sum(sizes.get(r.run_dir_name, 0) for r in runs),
         )
         self._section_detail.paint_archive_states(self._archive_state_for_run, self._archive_note_for_run)
-        self._section_detail.setVisible(True)
+        store = self._try_survey_store()
+        if store is not None:
+            self._section_detail.set_campaigns(store.list_campaigns(), pass_.campaign_id)
+            transect = store.get_transect(pass_.transect_id) if pass_.transect_id else None
+            site = store.get_site(transect.site_id) if transect and transect.site_id else None
+            self._section_detail.set_site(site.name if site else None, pass_.transect_id)
+        self._video_inspector.setCurrentIndex(1)
         self._maybe_refresh_archive_badges()
 
     def _refresh_archive_affordances(self, connected: bool | None = None) -> None:
@@ -1036,7 +1150,7 @@ class VideoLibraryMixin(MixinBase):
                 return set()
             return {str(item.pass_id) for item in store.list_batch_items(cart.id)}
         except Exception:
-            logger.exception("Could not read the cart")
+            logger.exception("Could not read the queue")
             return set()
 
     def _pass_in_current_cart(self, pass_id_str: object) -> bool:
@@ -1087,7 +1201,7 @@ class VideoLibraryMixin(MixinBase):
             return
         if pass_id_str in self._cart_pass_ids():
             self._take_pass_out_of_cart(pass_id)
-            self._status_label.setText(f"Took the {section_window(pass_)} pass out of the cart.")
+            self._status_label.setText(f"Took the {section_window(pass_)} pass out of the queue.")
             return
         # A section whose footage is not on disk would fail the moment the cart
         # was checked out, so it never gets in. Refused here rather than at the
@@ -1273,7 +1387,7 @@ class VideoLibraryMixin(MixinBase):
         runs = store.runs_for_pass(pass_.id)
         if runs:
             count = f"{len(runs)} run{'' if len(runs) == 1 else 's'}"
-            self._status_label.setText(f"This pass has {count}. Delete them in Browse first.")
+            self._status_label.setText(f"This pass has {count}. Delete them in Results first.")
             return
         if not confirm(
             self,

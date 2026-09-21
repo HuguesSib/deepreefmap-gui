@@ -133,15 +133,15 @@ _DESTINATION_ICONS = {
 _DESTINATION_LABELS = {
     "transects": "Transects",
     "videos": "Videos",
-    "process": "Cart",
-    "browse": "Browse",
+    "process": "Processing queue",
+    "browse": "Results",
 }
 
 # One line per destination, said in the terms of the work rather than the widget.
 _DESTINATION_TIPS = {
     "transects": "The lines you survey, and what repeat passes of each one found.",
     "videos": "The footage itself: every clip, when it was shot, and what has been cut from it.",
-    "process": "The cart: passes queued for the next session, and the batch as it runs.",
+    "process": "The processing queue: passes queued for the next session, and the batch as it runs.",
     "browse": "Every run so far, grouped however you need to read it.",
 }
 
@@ -634,7 +634,7 @@ class InterfaceShellMixin(MixinBase):
         # A breadcrumb, not a way out. The header above stays put with Browse
         # lit, so an opened run reads as a place inside Browse rather than a
         # mode that has taken the window; the crumb says where inside.
-        crumb = QPushButton("Browse")
+        crumb = QPushButton("Results")
         crumb.setProperty("quiet", "true")
         crumb.setCursor(Qt.CursorShape.PointingHandCursor)
         crumb.setToolTip("Back to the run list.")

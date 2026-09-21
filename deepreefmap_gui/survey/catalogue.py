@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
+from deepreefmap_gui.survey.jobs import clip_states
 from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.site import Site
@@ -701,6 +702,7 @@ class VideoLibraryEntry:
     # than at construction, because this is built while the rail is being drawn
     # and a stat per clip on a sleeping external drive is not a paint-time cost.
     link_state: str = LINK_UNKNOWN
+    queued_pass_ids: set[str] = field(default_factory=set)
 
     @property
     def orphan(self) -> bool:
@@ -716,15 +718,15 @@ class VideoLibraryEntry:
     def outcome(self) -> str:
         """Where this clip stands: unprocessed, failing, or done.
 
-        A clip is only ``processed`` once every pass cut from it has a run that
-        succeeded; anything short of that is work still owed.
+        A clip is processed when every pass's latest attempt succeeded and
+        no pass has queued or active work.
         """
         if self.orphan:
             return VIDEO_UNPROCESSED
-        if any(run.status == "failed" for run in self.runs):
+        states = clip_states(self)
+        if any(state in {"failed", "interrupted", "incomplete"} for state in states):
             return VIDEO_FAILED
-        succeeded = {run.pass_id for run in self.runs if run.status == "succeeded"}
-        if len(succeeded) >= self.pass_count:
+        if states and all(state == "succeeded" for state in states):
             return VIDEO_PROCESSED
         return VIDEO_PENDING
 

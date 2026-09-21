@@ -149,7 +149,7 @@ def browse_state(run_count: int, unfiled: int) -> SectionState:
         return SectionState(
             ATTENTION,
             f"{counts} · {unfiled} unfiled",
-            f"{_plural(unfiled, 'run')} belong to no transect. Assign them under Browse.",
+            f"{_plural(unfiled, 'run')} belong to no transect. Assign them under Results.",
             cause=CAUSE_UNFILED_RUNS,
             n=unfiled,
         )

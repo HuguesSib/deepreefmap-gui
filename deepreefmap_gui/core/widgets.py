@@ -68,6 +68,7 @@ from deepreefmap_gui.core.theme import (
     RADIUS,
     RADIUS_SM,
     READING_WIDTH,
+    SPACE_LG,
     SPACE_MD,
     SPACE_SM,
     SPACE_XL,
@@ -141,11 +142,11 @@ def section_card(title: str = "", *, spacing: int = SPACE_SM) -> tuple[QWidget, 
     # card drop their own border, which would otherwise double the card's.
     card.setStyleSheet(
         f"QWidget#sectionCard {{ background-color: {CARD_BG};"
-        f" border: 1px solid {BORDER}; border-radius: {RADIUS}px; }}"
+        f" border: none; border-radius: {RADIUS}px; }}"
         " QWidget#sectionCard QAbstractItemView { border: none; }"
     )
     outer = QVBoxLayout(card)
-    outer.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_MD)
+    outer.setContentsMargins(SPACE_LG, SPACE_LG, SPACE_LG, SPACE_LG)
     outer.setSpacing(spacing)
     if title:
         outer.addWidget(SectionHeader(title))
@@ -385,7 +386,7 @@ def utility_button_qss(right_padding: int = SPACE_SM) -> str:
 
 # How strongly a chip tints its own background, out of 255. Low because the text
 # on it is the same colour as the fill; test_design_system.py holds the floor.
-PILL_TINT_ALPHA = 36
+PILL_TINT_ALPHA = 20
 PILL_PROGRESS_ALPHA = 96
 # The selected filter chip's outline.
 PILL_BORDER_ALPHA = 110
@@ -441,7 +442,38 @@ class StatusChip(QLabel):
     def set_status(self, text: str, colour: str = TEXT_MUTED) -> None:
         self.setText(text)
         self.setStyleSheet(chip_qss(colour, interactive=False))
+        self.ensurePolished()
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(text) + 2 * SPACE_MD + 4)
         self.setVisible(bool(text))
+
+
+class FilterChoice(QComboBox):
+    """A compact named filter with optional item counts."""
+
+    changed = Signal(str)
+
+    def __init__(self, options: Sequence[tuple[str, ...]], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._labels = {key: title for key, title, *_ in options}
+        for key, title in self._labels.items():
+            self.addItem(title, key)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(12)
+        self.currentIndexChanged.connect(lambda *_: self.changed.emit(self.current()))
+
+    def current(self) -> str:
+        return self.currentData() or "all"
+
+    def set_current(self, key: str) -> None:
+        index = self.findData(key)
+        if index >= 0:
+            self.setCurrentIndex(index)
+
+    def set_counts(self, counts: dict[str, int]) -> None:
+        for index in range(self.count()):
+            key = self.itemData(index)
+            count = counts.get(key)
+            self.setItemText(index, self._labels[key] if count is None else f"{self._labels[key]} ({count})")
 
 
 class FilterChips(QWidget):
@@ -1012,8 +1044,10 @@ class ColumnSizer(QObject):
         available = view.viewport().width()
         if available <= 0:
             return
-        reserved = sum(self._pinned.values())
         spec = self._spec
+        offered = set(spec.fixed) | set(spec.weights) | {column for column, _ in spec.optional}
+        pinned = {column: width for column, width in self._pinned.items() if column in offered}
+        reserved = sum(pinned.values())
         fixed = {c: w for c, w in spec.fixed.items() if c not in self._pinned}
         weights = {c: w for c, w in spec.weights.items() if c not in self._pinned}
         optional = tuple((c, w) for c, w in spec.optional if c not in self._pinned)
@@ -1027,7 +1061,7 @@ class ColumnSizer(QObject):
                 optional=optional,
             ),
         )
-        widths.update(self._pinned)
+        widths.update(pinned)
         header = self._header()
         self._applying = True
         try:
@@ -1046,6 +1080,7 @@ class ColumnSizer(QObject):
             for column, _width in spec.optional:
                 self._set_hidden(column, column not in widths)
             for column, width in widths.items():
+                self._set_hidden(column, False)
                 header.resizeSection(column, width)
         finally:
             self._applying = False
@@ -1073,6 +1108,11 @@ class ColumnSizer(QObject):
         if column in self._pinned or self._spec.fixed.get(column, 0) >= width:
             return
         self._spec = replace(self._spec, fixed={**self._spec.fixed, column: width})
+        self.apply()
+
+    def set_spec(self, spec: ColumnSpec) -> None:
+        """Change the offered columns while retaining the user's width choices."""
+        self._spec = spec
         self.apply()
 
     def reset(self) -> None:

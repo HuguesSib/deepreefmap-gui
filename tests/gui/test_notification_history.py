@@ -34,7 +34,7 @@ def test_the_log_lists_what_was_reported(reported):
 
     assert table.rowCount() == 1
     assert table.item(0, 2).text() == "17 runs belong to no transect"
-    assert table.item(0, 3).text() == "Browse"
+    assert table.item(0, 3).text() == "Results"
     assert table.item(0, 4).text() == ""
 
 

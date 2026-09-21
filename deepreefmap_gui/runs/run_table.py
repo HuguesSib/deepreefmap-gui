@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QTableWidget,
 )
 
+from deepreefmap_gui.core.fonts import tabular
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     SortableItem,
@@ -212,7 +214,23 @@ class RunTable(QTableWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
         enable_sorting(self, COL_CREATED, Qt.SortOrder.DescendingOrder)
-        install_column_sizer(self, _COLUMN_SPEC, settings_key="runs")
+        self.column_sizer = install_column_sizer(self, _COLUMN_SPEC, settings_key="runs")
+        self.set_technical_columns(False)
+
+    def set_technical_columns(self, visible: bool) -> None:
+        """Show the full result inventory or the field review columns."""
+        if visible:
+            self.column_sizer.set_spec(_COLUMN_SPEC)
+            return
+        metrics = self.fontMetrics()
+        figures = QFontMetrics(tabular(self.font()))
+        self.column_sizer.set_spec(ColumnSpec(
+            fixed={COL_STATUS: metrics.horizontalAdvance("Succeeded") + 32,
+                   COL_CREATED: figures.horizontalAdvance("2026-09-21 10:38") + 32},
+            weights={COL_NAME: 3, COL_TRANSECT: 2},
+            minimums={COL_NAME: 160, COL_TRANSECT: 100},
+            optional=((COL_POINTS, 90),),
+        ))
 
     def current_run_dir(self) -> str | None:
         row = self.currentRow()

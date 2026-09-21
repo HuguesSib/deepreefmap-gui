@@ -1,22 +1,4 @@
-"""The design tokens, and the one place the palette and the global stylesheet are set.
-
-Every colour, radius, spacing step and font size in the app comes from a name here. That is the
-whole point: a literal `#4a4` or a bare `padding: 5px` at a call site has drifted off the ramp and
-will not move when the ramp does. `apply_theme` then forces Fusion plus a dark palette so the app
-looks the same whatever the host OS is doing, which matters because the stylesheets below are
-hardcoded dark and a light platform palette shows through everything they do not cover.
-
-Two things about the values are easy to get wrong:
-
-- **The surface ramp is spaced by lightness, not by contrast ratio.** Any two dark greys sit near
-  1:1 under WCAG, so a ratio says nothing about whether a card reads as a card. An earlier ramp
-  put 13 points of lightness between the shell and a panel, and panels read as text floating on
-  the window. `tests/core/test_theme.py` asserts the spacing and the 4.5:1 the accents do owe.
-- **Styling a combo or spin box hands arrow drawing to the stylesheet engine**, which then draws
-  nothing. Qt stylesheets accept only a URL, so the chevrons are painted into the cache directory
-  and referenced from there. Painting needs a live QApplication, which is why the arrow rules are
-  appended by `apply_theme` rather than living in the module-level QSS.
-"""
+"""Shared charcoal palette, geometry and application stylesheet."""
 
 from __future__ import annotations
 
@@ -29,34 +11,23 @@ from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 logger = logging.getLogger(__name__)
 
-# Structural greys as an elevation ramp: the shell is the darkest layer, panels
-# sit above it, and hovered/raised controls above those. Each step is far enough
-# from the last to be visible, and all carry the same faint blue-grey cast so
-# they read as one surface family rather than as unrelated greys.
-#
-# The steps are wide on purpose. An earlier ramp put only 13 points of lightness
-# between the shell and a card, and 20 between a card and its own border, which
-# is why panels read as text floating on the window rather than as panels. The
-# separation a reader actually sees between two large adjacent fills is the
-# lightness delta, not the WCAG ratio (which is near 1:1 for any two dark greys),
-# so the ramp is spaced by lightness and asserted that way in test_theme.py.
-WINDOW = "#101317"  # app shell, behind everything
-WINDOW_TEXT = "#dfe5ec"
-BASE = "#181c21"  # text fields and item views, recessed into a panel
-ALT_BASE = "#1e232a"
-BUTTON = "#2f363f"
-BORDER = "#3e4751"  # hairline: above the panel fills, below the top of the ramp
-GROOVE = "#14181d"  # recessed track (progress bars, sliders): below BASE, not level with BUTTON
+WINDOW = "#1b2026"  # app shell, behind everything
+WINDOW_TEXT = "#edf1f5"
+BASE = "#1e252d"  # text fields and item views, recessed into a panel
+ALT_BASE = "#232a32"
+BUTTON = "#2d3640"
+BORDER = "#8393a4"  # control boundaries clear 3:1 against the hover surface
+GROOVE = "#1b2026"  # recessed track (progress bars, sliders): below BASE, not level with BUTTON
 
 # Recurring dark fills and text shades that sit between the palette roles above.
-CARD_BG = "#242a31"  # raised card/panel fill, a visible step off WINDOW
-SURFACE_HI = "#434d59"  # hover and raised states, the top of the fill ramp
-BORDER_STRONG = "#57626f"  # dividers and hovered control borders
+CARD_BG = "#232a32"  # raised card/panel fill, a visible step off WINDOW
+SURFACE_HI = "#35414e"  # hover and raised states, the top of the fill ramp
+BORDER_STRONG = "#8393a4"  # dividers and hovered control borders
 PREVIEW_BG = "#0b0d10"  # backdrop behind image/preview panels before they load
 OVERLAY_TEXT = "#e8e8e8"  # bright label text on the dark viewer overlays
-TEXT_SECONDARY = "#b9c4cf"  # readouts a shade brighter than TEXT_MUTED
-TEXT_MUTED = "#93a0ad"  # labels and captions beside the text they describe
-TEXT_DIM = "#8b98a6"  # least prominent text, dimmer than TEXT_MUTED
+TEXT_SECONDARY = "#d2dae3"  # readouts a shade brighter than TEXT_MUTED
+TEXT_MUTED = "#bac5d0"  # labels and captions beside the text they describe
+TEXT_DIM = "#aebbc9"  # least prominent text, dimmer than TEXT_MUTED
 DISABLED_FG = "#7d8590"  # unavailable controls; dimmer again, but still readable
 PLACEHOLDER_TEXT = "#9aa3ad"  # prompt text inside an empty field
 SLIDER_HANDLE = "#f0f0f0"  # near-white grab handle on trim/timeline sliders
@@ -143,8 +114,8 @@ SPACE_MD = 12
 SPACE_LG = 16
 SPACE_XL = 24
 SPACE_XXL = 32
-PAGE_MARGIN = SPACE_MD  # padding between a page's content and the window edge
-GUTTER = SPACE_MD  # gap between two panes, cards, or rows of controls
+PAGE_MARGIN = SPACE_XL  # padding between a page's content and the window edge
+GUTTER = SPACE_LG  # gap between two panes, cards, or rows of controls
 
 # Below this a splitter has not been laid out yet and its width is a placeholder,
 # so a share of the page is computed from its pane sizes instead.
@@ -153,7 +124,7 @@ SPLIT_MIN_TOTAL = 400
 # Smallest comfortable click target. Chips, inline cell buttons and icon buttons
 # all sit on this floor: below it they are fiddly with a trackpad, which is how
 # this app is driven in the field.
-CONTROL_HEIGHT = 28
+CONTROL_HEIGHT = 36
 
 # One square target for every icon-only button, so a row of them lines up with
 # the text controls beside it. Call sites go through core.widgets.icon_button
@@ -182,7 +153,7 @@ HEADER_PAD_V = 4  # column headers, a shade looser so they read as a header
 # above. QTableView takes its row height from defaultSectionSize and ignores the
 # item padding entirely, so tightening only the stylesheet changed the look of a
 # row without fitting one more of them on the screen.
-TABLE_ROW_HEIGHT = 26
+TABLE_ROW_HEIGHT = 36
 
 # A readable measure for a page of prose and short rows. Stretched to fill a
 # 1500px window such a page is a card with a hole in it, and the eye has to track
@@ -192,7 +163,7 @@ READING_WIDTH = 900
 # Type scale, in points rather than pixels so it follows the user's font-size
 # preference the way the base font does. The strings are for QSS; the numbers for
 # QFont.setPointSize. FONT_MD matches core.fonts.BASE_POINT_SIZE.
-FONT_XS_PT, FONT_SM_PT, FONT_MD_PT, FONT_LG_PT, FONT_XL_PT = 8, 9, 10, 12, 14
+FONT_XS_PT, FONT_SM_PT, FONT_MD_PT, FONT_LG_PT, FONT_XL_PT = 9, 10, 11, 13, 16
 FONT_XS = f"{FONT_XS_PT}pt"
 FONT_SM = f"{FONT_SM_PT}pt"
 FONT_MD = f"{FONT_MD_PT}pt"

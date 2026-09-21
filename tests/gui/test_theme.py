@@ -86,9 +86,32 @@ def test_elevation_ramp_is_ordered() -> None:
     assert lightness == sorted(lightness)
     assert lightness[-1] - lightness[0] >= 20
 
-    # A hairline catches light off the panel it edges, but never outshines the
-    # topmost fill: a border brighter than its own hover state reads as a frame
-    # drawn on the page rather than an edge between two surfaces.
     border = QColor(theme.BORDER).lightness()
-    assert QColor(theme.CARD_BG).lightness() < border < QColor(theme.SURFACE_HI).lightness()
+    assert border > QColor(theme.SURFACE_HI).lightness()
 
+
+def _rgb(value):
+    return tuple(int(value[index:index + 2], 16) / 255 for index in (1, 3, 5))
+
+
+def _contrast(first, second):
+    def luminance(channels):
+        linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+        return sum(weight * value for weight, value in zip((0.2126, 0.7152, 0.0722), linear, strict=True))
+
+    low, high = sorted((luminance(first), luminance(second)))
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_charcoal_text_and_tinted_statuses_remain_readable():
+    from deepreefmap_gui.core import theme
+    from deepreefmap_gui.core.widgets import PILL_TINT_ALPHA
+
+    surface = _rgb(theme.CARD_BG)
+    for name in ("WINDOW_TEXT", "TEXT_MUTED", "PRIMARY", "SUCCESS", "ERROR", "WARNING", "IDLE"):
+        foreground = _rgb(getattr(theme, name))
+        tint = tuple(f * PILL_TINT_ALPHA / 255 + b * (1 - PILL_TINT_ALPHA / 255)
+                     for f, b in zip(foreground, surface, strict=True))
+        assert _contrast(foreground, surface) >= 4.5, name
+        assert _contrast(foreground, tint) >= 4.5, name
+    assert _contrast(_rgb(theme.BORDER), _rgb(theme.SURFACE_HI)) >= 3

@@ -5,7 +5,7 @@ from pathlib import Path
 from _factories import make_transect, write_test_mp4
 
 from deepreefmap_gui.core.icons import DEFAULT_INK
-from deepreefmap_gui.core.theme import DISABLED_FG, ERROR, PRIMARY
+from deepreefmap_gui.core.theme import DISABLED_FG, ERROR
 from deepreefmap_gui.runs.section_detail import (
     ARCHIVE_RUN_TOOLTIP,
     ARCHIVE_UNFINISHED,
@@ -104,7 +104,7 @@ def test_filters_and_search_narrow_the_list(window):
     _seed(store, "beta.mp4", passes=1, statuses=("succeeded",))
 
     show_videos(window)
-    window._on_video_filter_changed(VIDEO_PROCESSED)
+    window._on_video_filter_changed("complete")
     assert listed_names(window) == ["beta.mp4"]
 
     window._on_video_filter_changed("all")
@@ -388,7 +388,7 @@ def test_a_clip_with_runs_refuses_to_leave_the_library(window):
     window._on_video_delete(str(video.id))
 
     assert store.get_video(video.id) is not None
-    assert "Browse" in window._status_label.text()
+    assert "Results" in window._status_label.text()
 
 
 def test_a_clip_nothing_was_made_from_goes_with_its_sections(window):
@@ -662,7 +662,7 @@ def test_the_delete_gate_survives_the_move_into_the_menu(window):
 
     window._select_section(str(kept.id))
     assert not delete.isEnabled()
-    assert "Browse" in delete.toolTip()
+    assert "Results" in delete.toolTip()
 
     window._select_section(str(free.id))
     assert delete.isEnabled()
@@ -817,7 +817,7 @@ def test_connecting_a_registry_offers_them_all(window):
     window._refresh_archive_affordances()
 
     row = window._video_list.rows()[str(video.id)]
-    assert row.archive_btn.isVisibleTo(row)
+    assert any(action.text() == "Send this clip to the server" for action in row.menu().actions())
     assert window._video_detail.archive_btn.isVisibleTo(window._video_detail)
     run_row = window._section_detail.run_rows()[0]
     assert run_row.archive_btn.isVisibleTo(run_row)
@@ -971,7 +971,7 @@ def test_a_section_with_runs_refuses_to_be_deleted(window):
     window._on_section_delete(str(pass_.id))
 
     assert store.get_pass(pass_.id) is not None
-    assert "Browse" in window._status_label.text()
+    assert "Results" in window._status_label.text()
 
 
 def test_a_section_nothing_was_made_from_can_be_deleted(window, monkeypatch):
@@ -1047,10 +1047,10 @@ def test_a_clip_that_is_there_offers_to_be_cut(window, tmp_path):
 
     panel = window._video_detail
     assert not panel.unavailable.isVisibleTo(panel)
-    assert PRIMARY in panel.queue_btn.styleSheet()
+    assert panel.queue_btn.isEnabled()
 
 
-def test_the_clip_pane_lists_sections_as_rows_that_act(window):
+def test_the_video_list_keeps_actionable_pass_rows(window):
     """Scenario: the pane's passes were text in a list, actionable only by
     right click.
 
@@ -1065,7 +1065,7 @@ def test_the_clip_pane_lists_sections_as_rows_that_act(window):
     show_videos(window)
     select_clip(window, "GX010070.MP4")
 
-    rows = window._video_detail.pass_list.rows()
+    rows = window._video_list.sections()
     assert set(rows) == {str(first.id), str(second.id)}
     row = rows[str(first.id)]
     assert row.transect_chip.full_text == "Set transect"
@@ -1079,13 +1079,13 @@ def test_the_pane_rows_reach_the_pages_handlers(window, monkeypatch):
 
     show_videos(window)
     select_clip(window, "GX010071.MP4")
-    row = window._video_detail.pass_list.rows()[str(pass_.id)]
+    row = window._video_list.sections()[str(pass_.id)]
 
     seen = []
     for name in ("_on_section_retrim", "_on_section_reassign", "_on_section_delete"):
         monkeypatch.setattr(window, name, lambda pass_id, name=name: seen.append((name, pass_id)))
     # Bound after the connection was made, so the row is re-wired to the patches.
-    panel = window._video_detail
+    panel = row
     panel.retrim_requested.disconnect()
     panel.reassign_requested.disconnect()
     panel.delete_requested.disconnect()
@@ -1127,8 +1127,8 @@ def test_the_card_shows_a_missing_file_and_offers_its_folder(window, tmp_path):
     assert panel.unavailable.isVisibleTo(panel)
     # Cutting and trimming both decode the file, so both are marked in red
     # rather than greyed out, which would hide the reason with the tooltip.
-    assert ERROR in panel.queue_btn.styleSheet()
-    row = panel.pass_list.rows()[str(pass_.id)]
+    assert not panel.queue_btn.isEnabled()
+    row = window._video_list.sections()[str(pass_.id)]
     assert "cannot be found" in row.trim_btn.toolTip()
 
     panel.reveal_requested.connect(revealed.append)
@@ -1165,13 +1165,14 @@ def test_a_section_with_no_footage_cannot_be_carted_or_run(window, tmp_path):
 def _cart_marks(window, pass_id: str) -> tuple[bool, bool]:
     """Whether the wide row and the pane's row each say this is in the cart."""
     wide = window._video_list.sections()[pass_id]
-    pane = window._video_detail.pass_list.rows()[pass_id]
+    window._select_section(pass_id)
+    pane = window._section_detail
     from deepreefmap_gui.runs.video_rows import IN_CART_TOOLTIP
 
-    return wide.cart_btn.toolTip() == IN_CART_TOOLTIP, pane.cart_btn.toolTip() == IN_CART_TOOLTIP
+    return wide.cart_btn.toolTip() == IN_CART_TOOLTIP, pane.queue_btn.text() == "Remove from queue"
 
 
-def test_both_lists_say_the_same_thing_about_the_cart(window):
+def test_list_and_inspector_agree_on_queue_membership(window):
     """Scenario: a row went on reading "In cart" after the cart was cleared on
     the Process page, and the two lists disagreed with each other.
 
@@ -1194,7 +1195,7 @@ def test_both_lists_say_the_same_thing_about_the_cart(window):
     # Clicking the same control again is how a section comes back out.
     window._on_video_pass_to_cart(str(pass_.id))
     assert _cart_marks(window, str(pass_.id)) == (False, False)
-    assert "out of the cart" in window._status_label.text()
+    assert "out of the queue" in window._status_label.text()
 
     window._on_video_pass_to_cart(str(pass_.id))
     cart = store.current_cart()
@@ -1203,7 +1204,7 @@ def test_both_lists_say_the_same_thing_about_the_cart(window):
     assert _cart_marks(window, str(pass_.id)) == (False, False)
 
 
-def test_picking_a_section_highlights_it_in_both_lists(window):
+def test_picking_a_section_links_the_row_and_inspector(window):
     """Scenario: the pane filled itself down a second path that neither
     highlighted the row nor read the cart, so picking a pass lit it in the
     list and left the pane's copy of it looking untouched.
@@ -1219,7 +1220,7 @@ def test_picking_a_section_highlights_it_in_both_lists(window):
     show_videos(window)
     window._select_section(str(first.id))
 
-    pane = window._video_detail.pass_list.rows()
+    pane = window._video_list.sections()
     assert pane[str(first.id)].property("selected") is True
     assert pane[str(second.id)].property("selected") is False
     assert window._video_list.selected_section == str(first.id)
@@ -1235,7 +1236,7 @@ def test_a_sections_transect_can_be_opened_on_the_transects_page(window):
 
     show_videos(window)
     select_clip(window, "GX010072.MP4")
-    row = window._video_detail.pass_list.rows()[str(pass_.id)]
+    row = window._video_list.sections()[str(pass_.id)]
     action = next(a for a in row.menu().actions() if a.text() == "Show on the Transects page")
     action.trigger()
 
@@ -1441,7 +1442,7 @@ def test_a_mixed_pick_deletes_the_clean_clips_and_says_what_it_kept(window):
     assert store.get_video(clean.id) is None
     assert store.get_video(used.id) is not None
     assert "1 clip kept" in window._status_label.text()
-    assert "Browse" in window._status_label.text()
+    assert "Results" in window._status_label.text()
 
 
 def test_the_sweep_takes_the_clips_nothing_was_cut_from(window):
@@ -1480,7 +1481,7 @@ def test_the_sweep_counts_only_what_is_on_screen(window):
     assert window._video_clear_btn.text() == "Remove 1 clip with no passes"
 
     window._video_search.setText("")
-    window._on_video_filter_changed(VIDEO_PROCESSED)
+    window._on_video_filter_changed("complete")
     assert not window._video_clear_btn.isEnabled()
 
 
