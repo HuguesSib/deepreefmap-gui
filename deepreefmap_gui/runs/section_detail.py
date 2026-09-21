@@ -247,6 +247,7 @@ class SectionDetailPanel(DetailCard):
     campaign_requested = Signal(str)
     campaign_selected = Signal(str, str)
     add_to_queue_requested = Signal(str)
+    back_to_video_requested = Signal()
     open_transect_requested = Signal(str)
     delete_requested = Signal(str)
     rename_requested = Signal(str)
@@ -257,6 +258,9 @@ class SectionDetailPanel(DetailCard):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = self.body
+        self.back_btn = QPushButton("Back to video")
+        self.back_btn.clicked.connect(self.back_to_video_requested)
+        layout.insertWidget(0, self.back_btn)
 
         campaign_row = QHBoxLayout()
         campaign_row.addWidget(QLabel("Campaign"))

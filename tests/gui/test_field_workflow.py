@@ -139,7 +139,7 @@ def test_filtering_out_selected_pass_clears_inspector(window):
     assert window._video_detail_stack.currentIndex() == 0
 
 
-@pytest.mark.parametrize("width,height,points", [(1280, 800, 11), (1400, 930, 11), (1280, 800, 13)])
+@pytest.mark.parametrize("width,height,points", [(1280, 800, 10), (1280, 800, 11), (1400, 930, 11), (1280, 800, 13)])
 def test_field_layout_keeps_timelines_and_actions_visible(make_window, qapp, width, height, points):
     palette, font, stylesheet = QPalette(qapp.palette()), QFont(qapp.font()), qapp.styleSheet()
     try:

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # platform overflow on another. A bare "monospace" family has no match on macOS.
 UI_FONT_FAMILY = "Inter"
 MONO_FONT_FAMILY = "JetBrains Mono"
-BASE_POINT_SIZE = 11
+BASE_POINT_SIZE = 10
 
 _FONT_FILES = (
     "Inter-Regular.ttf",

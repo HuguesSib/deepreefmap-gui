@@ -1498,3 +1498,61 @@ def test_the_sweep_leaves_a_hidden_clip_where_it_is(window):
 
     assert store.get_video(hidden.id) is not None
     assert listed_names(window) == []
+
+
+def test_clicking_video_reveals_passes_for_queueing(window, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    store = window._survey_store()
+    video = _seed_at(store, "here.mp4", write_test_mp4(tmp_path / "here.mp4"))
+    pass_ = _cut(store, video)
+    show_videos(window)
+    resolve_links(window)
+    row = window._video_list.rows()[str(video.id)]
+    assert not row.expanded
+    QTest.mouseClick(row._name, Qt.MouseButton.LeftButton)
+    assert row.expanded
+    assert window._video_detail.entry.video.id == video.id
+    assert window._video_inspector.currentIndex() == 0
+    section = window._video_list.sections()[str(pass_.id)]
+    assert not section.isHidden()
+    section.cart_btn.click()
+    assert window._pass_in_current_cart(str(pass_.id))
+    window._video_list.sections()[str(pass_.id)].cart_btn.click()
+    assert not window._pass_in_current_cart(str(pass_.id))
+
+
+def test_pass_inspector_returns_to_video_with_passes_on_left(window):
+    store = window._survey_store()
+    video = _seed(store, "here.mp4")
+    pass_ = _cut(store, video)
+    show_videos(window)
+    select_clip(window, "here.mp4")
+    window._video_list.sections()[str(pass_.id)].activated.emit(str(pass_.id))
+    assert window._video_inspector.currentWidget() is window._section_detail
+    window._section_detail.back_btn.click()
+    assert window._selected_pass_id is None
+    assert window._video_inspector.currentIndex() == 0
+    assert window._video_detail.entry.video.id == video.id
+    assert not window._video_list.sections()[str(pass_.id)].isHidden()
+
+
+def test_selecting_another_video_collapses_previous_passes(window):
+    store = window._survey_store()
+    first = _seed(store, "first.mp4")
+    second = _seed(store, "second.mp4")
+    first_pass = _cut(store, first)
+    second_pass = _cut(store, second)
+    show_videos(window)
+    select_clip(window, "first.mp4")
+    assert not window._video_list.sections()[str(first_pass.id)].isHidden()
+    select_clip(window, "second.mp4")
+    rows = window._video_list.rows()
+    assert not rows[str(first.id)].expanded
+    assert rows[str(second.id)].expanded
+    assert window._video_list.sections()[str(first_pass.id)].isHidden()
+    assert not window._video_list.sections()[str(second_pass.id)].isHidden()
+    window._refresh_video_library()
+    assert window._video_list.sections()[str(first_pass.id)].isHidden()
+    assert not window._video_list.sections()[str(second_pass.id)].isHidden()

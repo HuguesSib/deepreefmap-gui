@@ -40,7 +40,6 @@ from deepreefmap_gui.core.reveal import reveal_in_file_manager
 from deepreefmap_gui.core.theme import (
     BORDER,
     ERROR,
-    FONT_XL,
     GUTTER,
     PRIMARY,
     RADIUS_SM,
@@ -52,7 +51,6 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.core.widgets import (
     EmptyState,
     FilterChips,
-    FilterChoice,
     confirm,
     muted_label,
     section_column,
@@ -199,16 +197,10 @@ class VideoLibraryMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(SPACE_SM)
 
-        title_row = QHBoxLayout()
-        page_title = QLabel("Videos")
-        page_title.setStyleSheet(f"font-size: {FONT_XL}; font-weight: 600;")
-        title_row.addWidget(page_title)
-        title_row.addStretch(1)
-        layout.addLayout(title_row)
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
         top_row.addWidget(QLabel("Group by"))
-        self._video_period_chips = FilterChoice(PERIODS)
+        self._video_period_chips = FilterChips(PERIODS)
         self._video_period_chips.setToolTip(_PERIOD_TOOLTIP)
         self._video_period_chips.set_current(self._video_period)
         self._video_period_chips.changed.connect(self._on_video_period_changed)
@@ -226,7 +218,6 @@ class VideoLibraryMixin(MixinBase):
         self._video_chips.set_current(self._video_clip_filter)
         self._video_chips.changed.connect(self._on_video_filter_changed)
         jobs_row = QHBoxLayout()
-        jobs_row.addWidget(QLabel("Videos"))
         jobs_row.addWidget(self._video_chips)
         jobs_row.addStretch(1)
         # Only there when something is hidden: a checkbox offering to reveal
@@ -240,15 +231,15 @@ class VideoLibraryMixin(MixinBase):
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
         self._video_add_btn.setProperty("cta", "true")
-        title_row.addWidget(self._video_add_btn)
+        top_row.addWidget(self._video_add_btn)
         layout.addLayout(top_row)
         layout.addLayout(jobs_row)
-        self._build_video_options(top_row, title_row)
+        self._build_video_options(jobs_row, top_row)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(SPACE_SM)
 
-        column, column_layout = section_column("Footage")
+        column, column_layout = section_column()
         self._video_header = VideoListHeader()
         self._video_header.set_sort(self._video_sort_column, self._video_sort_descending)
         self._video_header.sort_changed.connect(self._on_video_sort_changed)
@@ -307,6 +298,7 @@ class VideoLibraryMixin(MixinBase):
         detail.addWidget(self._video_detail_stack)
 
         self._section_detail = SectionDetailPanel()
+        self._section_detail.back_to_video_requested.connect(self._back_to_clip)
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
         self._section_detail.campaign_requested.connect(self._on_section_campaign)
@@ -339,7 +331,7 @@ class VideoLibraryMixin(MixinBase):
         for label, combo in (("Campaign", self._video_campaign_filter), ("Site", self._video_site_filter)):
             combo.addItem("All", "all")
             combo.addItem("Unassigned", "unassigned")
-            combo.setMinimumContentsLength(10)
+            combo.setMinimumContentsLength(6)
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setAccessibleName(f"Filter by {label.lower()}")
             filters.addWidget(QLabel(label))
@@ -896,6 +888,7 @@ class VideoLibraryMixin(MixinBase):
     # --- one clip ------------------------------------------------------------
 
     def _on_video_activated(self, video_id: str) -> None:
+        self._video_list.expand(video_id)
         self._video_list.set_selected(video_id)
         self._selected_pass_id = None
         self._section_detail.setVisible(False)
@@ -903,6 +896,11 @@ class VideoLibraryMixin(MixinBase):
         # The clip a user just picked is the one they are about to play, cut or
         # relocate, so its link state is worth a fresh stat.
         self._recheck_clip_link(video_id)
+
+    def _back_to_clip(self) -> None:
+        clip = self._clip_for_pass(self._selected_pass_id) if self._selected_pass_id else None
+        if clip is not None:
+            self._on_video_activated(str(clip.video.id))
 
     def _select_section(self, pass_id: str) -> bool:
         """Show one cut, wherever it was picked: the tree, the clip card, the strip.

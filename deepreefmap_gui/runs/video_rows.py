@@ -81,7 +81,6 @@ from deepreefmap_gui.core.theme import (
     BRIGHT_TEXT,
     BUTTON,
     CARD_BG,
-    CONTROL_HEIGHT,
     DISABLED_FG,
     ERROR,
     GROOVE,
@@ -106,7 +105,6 @@ from deepreefmap_gui.core.widgets import (
     PILL_TINT_ALPHA,
     STATUS_COLORS,
     EmptyState,
-    SectionHeader,
     icon_button,
     muted_label,
     secondary_label,
@@ -122,7 +120,7 @@ from deepreefmap_gui.survey.catalogue import (
     VideoLibraryEntry,
     preview_points,
 )
-from deepreefmap_gui.survey.jobs import clip_summary
+from deepreefmap_gui.survey.jobs import clip_summary, job_filters
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass, direction_phrase
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -188,7 +186,8 @@ NAME_WEIGHT, SECTIONS_WEIGHT = 3, 2
 # One row: the smallest comfortable click target and not a pixel more. The list
 # is a whole field season of clips, so every pixel of padding costs one less on
 # screen, and the row's own buttons are told to fit rather than to pad.
-ROW_HEIGHT = CONTROL_HEIGHT
+ROW_HEIGHT = 30
+ROW_ACTION_SIZE = 24
 
 # The disclosure column keeps its width on a clip with nothing to disclose, so
 # the file names stay in one column all the way down the list.
@@ -426,7 +425,7 @@ def clip_name_width(available: int, char_width: int, *, archiving: bool = False)
     always add up to the row exactly.
     """
     fixed = char_width * (RECORDED_CHARS + LENGTH_CHARS) + 150
-    trailing = CONTROL_HEIGHT
+    trailing = ROW_ACTION_SIZE * 3 + SPACE_SM * 2
     spent = fixed + DISCLOSURE_WIDTH + ICON_SM + trailing + SPACE_SM * 10
     slack = max(0, available - spent - SECTIONS_MIN_WIDTH)
     share = slack * NAME_WEIGHT // (NAME_WEIGHT + SECTIONS_WEIGHT)
@@ -865,12 +864,15 @@ class VideoRow(QWidget):
         self._delete_arm.setInterval(DELETE_ARM_MS)
         self._delete_arm.timeout.connect(self._apply_delete_icon)
 
-        for button in (self.play_btn, self.new_section_btn, self.archive_btn, self.delete_btn):
-            button.hide()
+        for button in (self.play_btn, self.new_section_btn):
+            button.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.archive_btn.hide()
+        self.delete_btn.hide()
         self.more_btn = QToolButton()
         self.more_btn.setText("…")
         self.more_btn.setAccessibleName("Video actions")
-        self.more_btn.setFixedWidth(CONTROL_HEIGHT)
+        self.more_btn.setProperty("pad", "none")
+        self.more_btn.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
         self.more_btn.clicked.connect(
             lambda: self.menu().exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
         )
@@ -1342,12 +1344,14 @@ class SectionRow(QWidget):
         self.delete_btn.clicked.connect(lambda: self._emit(self.delete_requested))
         row.addWidget(self.delete_btn)
 
-        for button in (self.cart_btn, self.trim_btn, self.delete_btn):
-            button.hide()
+        for button in (self.cart_btn, self.trim_btn):
+            button.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
+        self.delete_btn.hide()
         self.more_btn = QToolButton()
         self.more_btn.setText("…")
         self.more_btn.setAccessibleName("Pass actions")
-        self.more_btn.setFixedWidth(CONTROL_HEIGHT)
+        self.more_btn.setProperty("pad", "none")
+        self.more_btn.setFixedSize(ROW_ACTION_SIZE, ROW_ACTION_SIZE)
         self.more_btn.clicked.connect(
             lambda: self.menu().exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
         )
@@ -1855,7 +1859,7 @@ class VideoListHeader(QWidget):
         processing = _HeaderCell("Processing", sortable=False)
         processing.setFixedWidth(150)
         row.addWidget(processing)
-        row.addSpacing(CONTROL_HEIGHT)
+        row.addSpacing(ROW_ACTION_SIZE * 3 + SPACE_SM * 2)
 
         self._column = DEFAULT_SORT_COLUMN
         self._descending = DEFAULT_SORT_DESCENDING
@@ -1954,6 +1958,8 @@ class VideoLibraryList(QScrollArea):
         body.setStyleSheet(f"QWidget#videoListSurface {{ background: {CARD_BG}; }}")
         self._shape: list[_GroupShape] = []
         self._groups: list[DateGroup] = []
+        self._group_expanded: dict[str, bool] = {}
+        self._group_headings: dict[str, QToolButton] = {}
         self._rows: dict[str, VideoRow] = {}
         # A pass can span several clips, and it gets a row under each of them,
         # so one pass id owns a list rather than a widget. Keyed by the widget
@@ -2120,6 +2126,7 @@ class VideoLibraryList(QScrollArea):
                         preview=preview_points(pass_, assets),
                         duration_s=entry.video.duration_s,
                     )
+        self._update_group_headings()
         self._apply_expansion()
         self._apply_selection()
         self._name_width = -1
@@ -2130,6 +2137,10 @@ class VideoLibraryList(QScrollArea):
         row = self._rows.get(video_id)
         if row is not None:
             row.set_expanded(True)
+        for group in self._groups:
+            if any(str(entry.video.id) == video_id for entry in group.entries):
+                self._group_expanded[group.key] = True
+        self._update_group_headings()
         self._set_expanded(video_id, True)
 
     def set_selected(self, video_id: str | None) -> None:
@@ -2191,10 +2202,16 @@ class VideoLibraryList(QScrollArea):
         self._rows = {}
         self._sections = {}
         self._sections_by_video = {}
+        self._group_headings = {}
         for group in groups:
-            self._body_layout.addSpacing(SPACE_MD)
-            heading = SectionHeader(group.title)
-            heading.setStyleSheet(f"background: {BUTTON}; color: {WINDOW_TEXT}; padding: {SPACE_SM}px;")
+            self._body_layout.addSpacing(SPACE_SM)
+            heading = QToolButton()
+            heading.setCheckable(True)
+            heading.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            heading.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            heading.setStyleSheet(f"text-align: left; background: {BUTTON}; color: {WINDOW_TEXT};")
+            heading.toggled.connect(lambda expanded, key=group.key: self._toggle_group(key, expanded))
+            self._group_headings[group.key] = heading
             self._body_layout.addWidget(heading)
             for entry in group.entries:
                 self._add_clip(entry)
@@ -2240,7 +2257,9 @@ class VideoLibraryList(QScrollArea):
 
     def _set_expanded(self, video_id: str, expanded: bool) -> None:
         if expanded:
-            self._expanded.add(video_id)
+            self._expanded = {video_id}
+            for row_id, row in self._rows.items():
+                row.set_expanded(row_id == video_id)
         else:
             self._expanded.discard(video_id)
         self._apply_expansion()
@@ -2249,11 +2268,33 @@ class VideoLibraryList(QScrollArea):
         # it under the cursor.
         self._shape = self._shape_of(self._groups)
 
+    def _update_group_headings(self) -> None:
+        for group in self._groups:
+            complete = sum("complete" in job_filters(entry) for entry in group.entries)
+            expanded = self._group_expanded.get(group.key, complete != len(group.entries))
+            heading = self._group_headings[group.key]
+            heading.blockSignals(True)
+            heading.setChecked(expanded)
+            heading.blockSignals(False)
+            heading.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+            count = len(group.entries)
+            noun = "clip" if count == 1 else "clips"
+            heading.setText(f"{group.title}  ·  {count} {noun}  ·  {complete} complete")
+            heading.setToolTip("Collapse group" if expanded else "Expand group")
+
+    def _toggle_group(self, key: str, expanded: bool) -> None:
+        self._group_expanded[key] = expanded
+        self._update_group_headings()
+        self._apply_expansion()
+
     def _apply_expansion(self) -> None:
-        for video_id, sections in self._sections_by_video.items():
-            visible = video_id in self._expanded
-            for section in sections:
-                section.setVisible(visible)
+        for group in self._groups:
+            expanded = self._group_headings[group.key].isChecked()
+            for entry in group.entries:
+                video_id = str(entry.video.id)
+                self._rows[video_id].setVisible(expanded)
+                for section in self._sections_by_video.get(video_id, []):
+                    section.setVisible(expanded and video_id in self._expanded)
 
     def _on_activated(self, video_id: str) -> None:
         self.set_selected(video_id)

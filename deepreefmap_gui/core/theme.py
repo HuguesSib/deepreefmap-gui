@@ -163,7 +163,7 @@ READING_WIDTH = 900
 # Type scale, in points rather than pixels so it follows the user's font-size
 # preference the way the base font does. The strings are for QSS; the numbers for
 # QFont.setPointSize. FONT_MD matches core.fonts.BASE_POINT_SIZE.
-FONT_XS_PT, FONT_SM_PT, FONT_MD_PT, FONT_LG_PT, FONT_XL_PT = 9, 10, 11, 13, 16
+FONT_XS_PT, FONT_SM_PT, FONT_MD_PT, FONT_LG_PT, FONT_XL_PT = 9, 9, 10, 12, 14
 FONT_XS = f"{FONT_XS_PT}pt"
 FONT_SM = f"{FONT_SM_PT}pt"
 FONT_MD = f"{FONT_MD_PT}pt"

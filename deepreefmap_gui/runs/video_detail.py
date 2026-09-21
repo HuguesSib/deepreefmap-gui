@@ -1,12 +1,4 @@
-"""What one clip is, and what became of the footage.
-
-Footage outlives the runs cut from it: a card copied off the camera is a fact of
-the day's diving whether or not anything has been processed from it yet. This is
-the pane that says so, beside the list on the Videos page.
-
-It lists the passes cut from the clip; picking one fills the pass card
-below with what became of that cut.
-"""
+"""The selected clip, its actions and source file details."""
 
 from __future__ import annotations
 
@@ -15,14 +7,21 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QToolButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import ERROR, SPACE_SM, SUCCESS, WARNING
+from deepreefmap_gui.core.icons import folder_icon, play_icon
+from deepreefmap_gui.core.theme import CARD_BG, CONTROL_HEIGHT, ERROR, FONT_SM, SPACE_SM, SUCCESS, WARNING
 from deepreefmap_gui.core.widgets import (
+    KeyValueList,
+    SectionHeader,
     clip_outcome_color,
+    icon_button,
 )
+from deepreefmap_gui.runs.clip_details import REVIEWS, RIG_POSITIONS
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.runs.video_rows import (
     ARCHIVE_CLIP,
@@ -77,94 +76,85 @@ class VideoDetailPanel(DetailCard):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        layout = self.body
+        self._entry: VideoLibraryEntry | None = None
         self.title.setWordWrap(True)
-        tools_row = QHBoxLayout()
-
-        # A clip whose file is gone can do nothing at all, so it is said in
-        # words at the top of the card rather than left to an icon and a path
-        # that elides in a narrow pane.
         self.unavailable = QLabel(UNAVAILABLE)
         self.unavailable.setStyleSheet(f"color: {ERROR};")
-        self.unavailable.setVisible(False)
-        layout.addWidget(self.unavailable)
+        self.unavailable.hide()
+        self.body.addWidget(self.unavailable)
+        self._build_actions()
+        self._build_file_details()
 
-        # Whether the file is still there, said where the clip is named. It is
-        # live in every state: the folder is where you go to find out what
-        # became of a clip that has gone missing.
-        self.link_btn = QToolButton()
-        self.link_btn.setAccessibleName("Show in folder")
-        self.link_btn.clicked.connect(self._emit_reveal)
-        self.link_btn.setText("Show in folder")
-        self.link_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        tools_row.addWidget(self.link_btn)
-
-        # What a person knows about the clip: camera, rig position, review.
-        self.details_btn = QToolButton()
-        self.details_btn.setText("Details")
-        self.details_btn.setAccessibleName("Clip details")
-        self.details_btn.setProperty("quiet", "true")
-        self.details_btn.setToolTip(
-            "Clip details:\n• Camera and rig position\n• Upside-down mounting\n• Review verdict"
-        )
-        self.details_btn.clicked.connect(self._emit_details)
-        tools_row.addWidget(self.details_btn)
-        tools_row.addStretch(1)
-        layout.addLayout(tools_row)
-
-        # What the registry holds of this clip, painted only from a live probe.
-        self.archive_state = QLabel("")
-        self.archive_state.setVisible(False)
-        layout.addWidget(self.archive_state)
-
-        heading_row = QHBoxLayout()
-        heading_row.setContentsMargins(0, 0, 0, 0)
-        heading_row.setSpacing(SPACE_SM)
-        self.play_btn = QPushButton("Play video")
+    def _build_actions(self) -> None:
+        actions = QHBoxLayout()
+        actions.setSpacing(SPACE_SM)
+        self.play_btn = icon_button(play_icon(), "Play video", "Play video")
         self.play_btn.clicked.connect(
             lambda: self.play_requested.emit(str(self._entry.video.id)) if self._entry else None
         )
-        heading_row.addWidget(self.play_btn)
-        heading_row.addStretch(1)
-        # Beside the pass rows' own actions rather than in the card's title: the
-        # same glyph in the same place as the pass pane's upload button, and the
-        # same place the clip's own row carries it. On request only, so a metered
-        # field uplink is never spent by accident.
-        self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
-        self.archive_btn.clicked.connect(self._emit_archive)
-        # Hidden until a registry is enrolled: a button that sends a clip
-        # nowhere is worse than no button.
-        self.archive_btn.setVisible(False)
-        heading_row.addWidget(self.archive_btn)
-        # Cutting a section belongs to the list it adds to, not to the bottom of
-        # the card: the same + the clip's own row carries, in the same blue.
-        self.queue_btn = QToolButton()
-        self.queue_btn.setText("Cut pass")
+        self.link_btn = icon_button(folder_icon(), "Show in folder", "Show in folder")
+        self.link_btn.clicked.connect(self._emit_reveal)
+        for button in (self.play_btn, self.link_btn):
+            button.setFixedSize(CONTROL_HEIGHT, CONTROL_HEIGHT)
+            actions.addWidget(button)
+        actions.addStretch(1)
+        self.queue_btn = QPushButton("Cut pass")
         self.queue_btn.setAccessibleName("New pass")
         self.queue_btn.setProperty("cta", "true")
         self.queue_btn.clicked.connect(self.queue_requested)
         self._set_queue_available(True)
-        heading_row.addWidget(self.queue_btn)
-        layout.addLayout(heading_row)
+        actions.addWidget(self.queue_btn)
+        self.body.addLayout(actions)
+        self._build_archive_action()
 
-        layout.addStretch(1)
+    def _build_archive_action(self) -> None:
+        self.archive_btn = archive_button(ARCHIVE_CLIP, ARCHIVE_CLIP_TOOLTIP)
+        self.archive_btn.setText("Send to server")
+        self.archive_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.archive_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.archive_btn.setMinimumHeight(CONTROL_HEIGHT)
+        self.archive_btn.clicked.connect(self._emit_archive)
+        self.archive_btn.hide()
+        self.body.addWidget(self.archive_btn)
+        self.archive_state = QLabel("")
+        self.archive_state.hide()
+        self.body.addWidget(self.archive_state)
 
-        self.technical_btn = QToolButton()
-        self.technical_btn.setText("File details")
-        self.technical_btn.setCheckable(True)
-        layout.addWidget(self.technical_btn)
+    def _build_file_details(self) -> None:
+        details = QWidget()
+        details.setObjectName("clipMetadata")
+        details.setStyleSheet(f"QWidget#clipMetadata {{ background: {CARD_BG}; }}")
+        layout = QVBoxLayout(details)
+        layout.setContentsMargins(0, SPACE_SM, 0, 0)
+        heading = QHBoxLayout()
+        heading.addWidget(SectionHeader("Clip details"), 1)
+        self.details_btn = QPushButton("Edit…")
+        self.details_btn.setToolTip("Edit camera, rig position, mounting, review and notes.")
+        self.details_btn.setAccessibleName("Edit clip details")
+        self.details_btn.clicked.connect(self._emit_details)
+        heading.addWidget(self.details_btn)
+        layout.addLayout(heading)
+        self.clip_metadata = KeyValueList()
+        layout.addWidget(self.clip_metadata)
+        layout.addWidget(SectionHeader("File details"))
         self.technical = QLabel()
         self.technical.setWordWrap(True)
+        self.technical.setTextFormat(Qt.TextFormat.PlainText)
+        self.technical.setStyleSheet(f"font-size: {FONT_SM};")
         self.technical.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.technical)
-        self.technical.hide()
-        self.technical_btn.toggled.connect(self.technical.setVisible)
-        self._entry: VideoLibraryEntry | None = None
+        layout.addStretch(1)
+        self.details_area = QScrollArea()
+        self.details_area.setWidgetResizable(True)
+        self.details_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.details_area.setWidget(details)
+        self.body.addWidget(self.details_area, 1)
 
     def _set_queue_available(self, available: bool) -> None:
         """Enable playback and cutting when the source file is available."""
         self.queue_btn.setEnabled(available)
         self.play_btn.setEnabled(available)
+        self.play_btn.setToolTip("Play video" if available else NO_FILE_TOOLTIP)
         self.queue_btn.setToolTip(NEW_SECTION_TOOLTIP if available else NO_FILE_TOOLTIP)
 
     def _emit_reveal(self) -> None:
@@ -227,8 +217,16 @@ class VideoDetailPanel(DetailCard):
             f"File: {entry.video.path}\nChecksum: {entry.video.hash or 'none yet'}"
         )
         self.facts.set_rows(rows)
+        self.clip_metadata.set_rows([
+            ("Camera", entry.video.camera_label or "Not recorded"),
+            ("Rig position", dict(RIG_POSITIONS).get(entry.video.rig_position or "", "Not recorded")),
+            ("Mounting", "Upside down" if entry.video.upside_down else "Upright"),
+            ("Review", dict(REVIEWS).get(entry.video.review, entry.video.review)),
+            ("Notes", entry.video.notes or "None"),
+        ])
 
         apply_link_state(self.link_btn, entry.link_state)
+        self.link_btn.setIcon(folder_icon())
         self.unavailable.setVisible(entry.link_state == LINK_MISSING)
         self._set_queue_available(entry.link_state == LINK_LINKED)
         self._entry = entry

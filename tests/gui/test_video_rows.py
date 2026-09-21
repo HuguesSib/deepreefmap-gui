@@ -1207,3 +1207,48 @@ def test_every_picked_row_paints_itself_picked() -> None:
         video_id for video_id, row in listing.rows().items() if row.property("selected")
     }
     assert painted == {ids[0], ids[1]}
+
+
+def test_completed_group_collapses_and_manual_choice_survives_refresh():
+    entry = make_entry(runs_per_pass=(("succeeded",),))
+    listing = make_list(entry)
+    heading = listing._group_headings["d"]
+    row = listing.rows()[str(entry.video.id)]
+    assert "1 clip" in heading.text()
+    assert "1 complete" in heading.text()
+    assert not heading.isChecked()
+    assert row.isHidden()
+    heading.click()
+    listing.set_groups(one_group(entry), no_name)
+    assert heading.isChecked()
+    assert not row.isHidden()
+
+
+def test_collapsed_group_hides_passes_and_reveal_expands_it():
+    entry = make_entry()
+    listing = make_list(entry)
+    video_id = str(entry.video.id)
+    listing.expand(video_id)
+    section = listing.sections()[str(entry.passes[0].id)]
+    listing._group_headings["d"].click()
+    assert listing.rows()[video_id].isHidden()
+    assert section.isHidden()
+    listing.expand(video_id)
+    assert not listing.rows()[video_id].isHidden()
+    assert not section.isHidden()
+
+
+def test_unfinished_group_stays_open_with_counts_and_quick_actions():
+    complete = make_entry(runs_per_pass=(("succeeded",),))
+    ready = make_entry()
+    listing = make_list(complete, ready)
+    heading = listing._group_headings["d"]
+    assert heading.isChecked()
+    assert "2 clips" in heading.text()
+    assert "1 complete" in heading.text()
+    row = listing.rows()[str(ready.video.id)]
+    assert not row.play_btn.isHidden()
+    assert not row.new_section_btn.isHidden()
+    section = listing.sections()[str(ready.passes[0].id)]
+    assert not section.cart_btn.isHidden()
+    assert not section.trim_btn.isHidden()
