@@ -6,7 +6,7 @@ from deepreefmap.config.classes import load_classes
 # The profiles the pipeline ships. The registry mirrors this list by hand in
 # `deepreefmap-api/src/contract/preset_schema.rs::CAMERA_PROFILES`, and the
 # library's package data is a glob, so a new one ships in silence otherwise.
-BUNDLED_CAMERA_PROFILES = ("gopro_hero_10",)
+BUNDLED_CAMERA_PROFILES = ("gopro_hero_10", "gopro_hero_12")
 
 
 def test_default_classes_and_camera_profiles_load_outside_repo_root(tmp_path, monkeypatch) -> None:

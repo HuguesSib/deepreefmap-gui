@@ -22,13 +22,15 @@ classifiers = [
 dependencies = [
   # loger/gopro match the features the packaged binary ships (scripts/build_config.env
   # in the library previously listed them as BASE_FEATURES). Pinned to a git commit on
-  # the gui-support branch of eceo-epfl/deepreefmap (not PyPI). This direct reference is
+  # the main branch of eceo-epfl/deepreefmap (not PyPI). This direct reference is
   # what dev, CI, and the built wheel's Requires-Dist all resolve, so the PyApp binary's
-  # first-run install pulls the library from GitHub at that commit. gui-support is the
-  # library-only lineage; the deepreefmap-gui branch is the pre-split monolith this
-  # package was extracted from (it still nests the whole app under deepreefmap/gui/), so
-  # never pin to it.
-  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@36110a30cc5a16f002da4a1ff0674a97e5b0fa86",
+  # first-run install pulls the library from GitHub at that commit. Pin to main only:
+  # the gui-support and pipeline-tests lineages this pin used to follow have both been
+  # merged and deleted, and a commit on a deleted branch is one gc away from breaking
+  # every build. The deepreefmap-gui branch is the pre-split monolith this package was
+  # extracted from (it still nests the whole app under deepreefmap/gui/), so never pin
+  # to it either.
+  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@66004ba363876ab8573abd7823c8ab01b909fd86",
   "PySide6>=6.7,<7",
   "httpx>=0.28,<0.29",
   # The app also imports vtkmodules.* directly (viewer/picking.py,
