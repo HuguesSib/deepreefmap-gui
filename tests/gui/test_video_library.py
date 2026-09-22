@@ -751,8 +751,7 @@ def test_an_archive_press_stays_on_the_row_that_made_it(window, qapp, monkeypatc
 
     Expected behaviour: the page does not change; the row shows the upload in
     progress, then the tick once the registry has the outputs."""
-    from deepreefmap_gui.sync import archive_client
-    from deepreefmap_gui.sync import credentials
+    from deepreefmap_gui.sync import archive_client, credentials
 
     store = window._survey_store()
     video = _seed(store, "GX010073.MP4")
