@@ -98,6 +98,7 @@ if TYPE_CHECKING:
         _performance_comparison: PerformanceComparison
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
+        _server_archiving: bool
         # Single-file, but declared anyway: each is assigned an empty literal in
         # its mixin, which mypy cannot infer an element type for on its own.
         _survey_transects: list

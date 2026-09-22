@@ -70,6 +70,10 @@ os.environ.setdefault(
     "DEEPREEFMAP_RUN_TIMINGS",
     os.path.join(tempfile.mkdtemp(prefix="deepreefmap-test-timings-"), "run_timings.json"),
 )
+os.environ.setdefault(
+    "DEEPREEFMAP_PERFORMANCE_JOURNAL",
+    os.path.join(tempfile.mkdtemp(prefix="deepreefmap-test-performance-"), "performance.sqlite3"),
+)
 
 # Keep window construction off the network: an empty mock reads as a fetch
 # failure, so no update badge appears and GitHub is never contacted.

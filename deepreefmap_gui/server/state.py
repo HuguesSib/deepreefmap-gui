@@ -179,6 +179,7 @@ class SyncOutcome:
     push: PushReport | None = None
     pull_failure: Failure | None = None
     push_failure: Failure | None = None
+    performance_waiting: int = 0
 
     @property
     def complete(self) -> bool:

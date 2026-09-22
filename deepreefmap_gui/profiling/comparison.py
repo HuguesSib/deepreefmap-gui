@@ -41,9 +41,13 @@ def observation(manifest: dict, completed: bool) -> dict:
     profile = manifest.get("system_profile") or {}
     gpu = profile.get("gpu") or {}
     provenance = (manifest.get("survey") or {}).get("provenance") or {}
+    config = provenance.get("config") or {}
     settings = {key: (manifest.get("performance_settings") or {}).get(key, manifest.get(key)) for key in SETTING_KEYS}
     settings["taxonomy_hash"] = provenance.get("taxonomy_hash", settings["taxonomy_hash"])
     settings["model_revisions"] = provenance.get("model_versions", settings["model_revisions"])
+    settings["preset_name"] = config.get("preset_name") or (manifest.get("survey") or {}).get("preset_name")
+    settings["preset_version"] = config.get("preset_version")
+    settings["preset_hash"] = config.get("preset_hash")
     return {
         "version": 1,
         "id": (manifest.get("performance_observation") or {}).get("id") or str(uuid.uuid4()),
@@ -180,11 +184,25 @@ def history_observations(path=None) -> list[dict]:
 
     rows = []
     target = path or timings_path()
-    history = dict(_load_all(target))
-    for key, entries in _load_all(target.with_name("performance_runs.json")).items():
-        legacy_entries = [entry for entry in history.get(key, []) if not entry.get("performance_observation")]
-        history[key] = (legacy_entries + entries)[-10:]
-    histories = history.values()
+    if path is None:
+        from deepreefmap_gui.profiling.performance_journal import import_legacy, observations
+
+        import_legacy(target)
+        histories = [
+            [
+                {
+                    "performance_observation": payload["observation"],
+                    "stage_peaks": payload["stage_peaks"],
+                }
+                for payload in observations()
+            ]
+        ]
+    else:
+        history = dict(_load_all(target))
+        for key, entries in _load_all(target.with_name("performance_runs.json")).items():
+            legacy_entries = [entry for entry in history.get(key, []) if not entry.get("performance_observation")]
+            history[key] = legacy_entries + entries
+        histories = list(history.values())
     seen = set()
     for entries in histories:
         for entry in entries:
@@ -229,12 +247,26 @@ def history_observations(path=None) -> list[dict]:
 
 
 def record_observation(manifest: dict, path=None) -> None:
-    """Retain recent display observations independently of timing priors."""
+    """Retain a performance observation independently of survey run storage."""
     from deepreefmap_gui.io.atomic import atomic_write_json
     from deepreefmap_gui.profiling.run_history import _load_all, history_key, timings_path
 
     meta = manifest.get("performance_observation")
     if not meta:
+        return
+    if path is None:
+        from deepreefmap_gui.profiling.performance_journal import store
+
+        run_id = (manifest.get("survey") or {}).get("run_id")
+        store(
+            {
+                "id": meta["id"],
+                "run_id": run_id,
+                "observation": meta,
+                "stage_peaks": manifest.get("stage_peaks") or {},
+                "source": "device",
+            }
+        )
         return
     target = (path or timings_path()).with_name("performance_runs.json")
     settings = meta["settings"]
@@ -248,7 +280,7 @@ def record_observation(manifest: dict, path=None) -> None:
     history = dict(_load_all(target))
     entries = [entry for entry in history.get(key, []) if entry["performance_observation"]["id"] != meta["id"]]
     entries.append({"performance_observation": meta, "stage_peaks": manifest.get("stage_peaks") or {}})
-    history[key] = entries[-10:]
+    history[key] = entries
     try:
         atomic_write_json(target, history)
     except OSError:

@@ -163,6 +163,23 @@ def test_heartbeat_returns_the_answer_without_demanding_a_stamp(registry) -> Non
     assert registry.requests[-1][2] == {"gui_version": "0.3.3"}
 
 
+def test_performance_observations_use_the_independent_endpoint(registry) -> None:
+    registry.reply(
+        "/api/performance/observations",
+        200,
+        {"accepted": ["o-1"], "already_present": [], "rejected": []},
+    )
+    client = make_client(registry, agreed=CONTRACT_VERSION)
+    rows = [{"id": "o-1", "observation": {}, "stage_peaks": {}, "source": "legacy"}]
+
+    answer = client.upload_performance_observations(rows)
+
+    assert answer["accepted"] == ["o-1"]
+    method, path, body, _headers = registry.requests[-1]
+    assert (method, path) == ("POST", "/api/performance/observations")
+    assert body == {"observations": rows}
+
+
 def test_pull_and_push_carry_the_bearer_token(registry) -> None:
     serve_pull(registry, sections={"sites": []})
     registry.reply(

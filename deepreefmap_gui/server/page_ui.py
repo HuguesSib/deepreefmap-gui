@@ -83,7 +83,7 @@ from deepreefmap_gui.survey.preset import (
     resolved_identity,
 )
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport, TransferProgress
+from deepreefmap_gui.sync.archive import ArchiveJob, ArchivePlan, ArchiveReport, TransferProgress
 from deepreefmap_gui.sync.contract import READ_SECTIONS
 from deepreefmap_gui.sync.engine import PullReport, PushReport, SyncEngine
 
@@ -533,7 +533,7 @@ class ServerPageMixin(MixinBase):
             # somebody else's data must not take the push with it: the records
             # made on this laptop exist nowhere else, and a page that fails the
             # same way every sync would strand them for the rest of the season.
-            _heartbeat(client, store)
+            heartbeat = _heartbeat(client, store)
             pulled: PullReport | None = None
             pull_failure: Failure | None = None
             try:
@@ -543,12 +543,26 @@ class ServerPageMixin(MixinBase):
                 pull_failure = describe_failure(exc)
             pushed: PushReport | None = None
             push_failure: Failure | None = None
+            performance_waiting = 0
             try:
                 pushed = engine.push()
             except Exception as exc:
                 logger.warning("The push did not finish: %s", exc)
                 push_failure = describe_failure(exc)
-            outcome = SyncOutcome(pulled, pushed, pull_failure, push_failure)
+            try:
+                performance_waiting = _sync_performance_history(client, heartbeat)
+            except Exception as exc:
+                logger.warning("Performance history did not sync: %s", exc)
+                if push_failure is None:
+                    push_failure = describe_failure(exc)
+                    pushed = None
+            outcome = SyncOutcome(
+                pulled,
+                pushed,
+                pull_failure,
+                push_failure,
+                performance_waiting=performance_waiting,
+            )
             try:
                 self._sig_sync_done.emit(outcome, None)
             except (RuntimeError, TypeError):
@@ -829,7 +843,11 @@ class ServerPageMixin(MixinBase):
         self._server_archive_cancel_btn.setText(CANCELLING_ARCHIVE)
 
     def _on_archive_item(self, event: object, *, repaint: bool = True) -> None:
+        if not isinstance(event, tuple) or len(event) != 3:
+            return
         session, job, phase = event
+        if not isinstance(job, ArchiveJob) or not isinstance(phase, str):
+            return
         if session != self._archive_session or not self._server_archiving:
             return
         self._archive_item_faces[str(job.path)] = phase
@@ -853,11 +871,11 @@ class ServerPageMixin(MixinBase):
             self._paint_archive_badges()
 
     def _on_archive_progress(self, text: object) -> None:
-        if isinstance(text, tuple):
+        if isinstance(text, tuple) and len(text) == 2:
             session, text = text
             if session != self._archive_session:
                 return
-        if self._server_archiving:
+        if self._server_archiving and isinstance(text, str):
             self._set_server_busy(True, text)
 
     def _on_archive_bytes(self, reading: object) -> None:
@@ -1322,7 +1340,13 @@ class ServerPageMixin(MixinBase):
         # badges are worth asking about.
         self._refresh_archive_badges()
         if blocker is None:
-            self._server_notice.show_notice(summarise(outcome.pull, outcome.push))
+            message = summarise(outcome.pull, outcome.push)
+            if outcome.performance_waiting:
+                message += (
+                    f" {outcome.performance_waiting} performance observation(s) are waiting "
+                    "for a registry that supports performance history."
+                )
+            self._server_notice.show_notice(message)
         # After the pull has landed, so it sees the preset row and the
         # assignment in whichever order the registry delivered them.
         self._offer_preset_model_downloads(store)
@@ -1549,7 +1573,7 @@ def summarise_archive(report: ArchiveReport) -> str:
     return line
 
 
-def _heartbeat(client: object, store: SurveyStore | None) -> None:
+def _heartbeat(client: object, store: SurveyStore | None) -> Mapping[str, Any] | None:
     """Best-effort self-report before the sync proper.
 
     Never fatal: the sync matters more than the courtesy, and a registry too
@@ -1560,7 +1584,7 @@ def _heartbeat(client: object, store: SurveyStore | None) -> None:
     so clears nothing.
     """
     if client is None:
-        return
+        return None
     try:
         # The store sits at the survey output root, which is the disk a run
         # fills, so its free space is the one worth reporting.
@@ -1571,10 +1595,47 @@ def _heartbeat(client: object, store: SurveyStore | None) -> None:
         answer = client.heartbeat(report)  # type: ignore[attr-defined]
     except Exception as exc:
         logger.info("Heartbeat not delivered: %s", exc)
-        return
+        return None
     if store is None or not isinstance(answer, Mapping) or "assigned_preset" not in answer:
-        return
+        return answer if isinstance(answer, Mapping) else None
     try:
         remember_assignment(store, answer.get("assigned_preset"))
     except Exception:
         logger.info("Could not record the assigned preset", exc_info=True)
+    return answer
+
+
+def _sync_performance_history(client: object, heartbeat: Mapping[str, Any] | None) -> int:
+    """Send the global journal, returning the count waiting on older registries."""
+    from deepreefmap_gui.paths import run_timings_path
+    from deepreefmap_gui.profiling.performance_journal import (
+        acknowledge,
+        import_legacy,
+        pending,
+    )
+    from deepreefmap_gui.sync import credentials
+
+    held = credentials.load()
+    if held is None:
+        raise RuntimeError("This installation is not connected to a registry")
+    import_legacy(run_timings_path())
+    first = pending(held.base_url, held.device_id, 100)
+    if not heartbeat or heartbeat.get("performance_observations_version") != 1:
+        return len(first)
+    batch = first
+    while batch:
+        response = client.upload_performance_observations(batch)  # type: ignore[attr-defined]
+        rejected = response.get("rejected") or []
+        if rejected:
+            detail = "; ".join(
+                f"{item.get('id', '?')}: {item.get('reason', 'rejected')}" for item in rejected
+            )
+            from deepreefmap_gui.sync.client import RejectedError
+
+            raise RejectedError(f"Performance history was rejected: {detail}")
+        accepted = [str(value) for key in ("accepted", "already_present") for value in response.get(key, [])]
+        if not accepted:
+            raise RuntimeError("The registry acknowledged no performance observations")
+        acknowledge(held.base_url, held.device_id, accepted)
+        batch = pending(held.base_url, held.device_id, 100)
+    return 0

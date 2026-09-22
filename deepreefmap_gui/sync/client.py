@@ -223,6 +223,17 @@ class SyncClient:
             "POST", "/sync/heartbeat", body=dict(report), verify_contract=False
         )
 
+    def upload_performance_observations(
+        self, observations: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Upload immutable performance observations independently of survey rows."""
+        return self._request(
+            "POST",
+            "/performance/observations",
+            body={"observations": list(observations)},
+            verify_contract=False,
+        )
+
     def ping(self) -> dict[str, Any]:
         """Ask the registry who it thinks this device is. Raises like any other exchange.
 

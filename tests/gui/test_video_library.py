@@ -751,7 +751,7 @@ def test_an_archive_press_stays_on_the_row_that_made_it(window, qapp, monkeypatc
 
     Expected behaviour: the page does not change; the row shows the upload in
     progress, then the tick once the registry has the outputs."""
-    from deepreefmap_gui.sync import client as client_mod
+    from deepreefmap_gui.sync import archive_client
     from deepreefmap_gui.sync import credentials
 
     store = window._survey_store()
@@ -762,7 +762,7 @@ def test_an_archive_press_stays_on_the_row_that_made_it(window, qapp, monkeypatc
     run_dir.mkdir()
     (run_dir / "cloud.ply").write_bytes(b"ply")
     credentials.save("https://reef.example.org", "drmd_" + "0" * 16 + "_" + "1" * 64)
-    monkeypatch.setattr(client_mod, "SyncClient", _ArchiveRegistry)
+    monkeypatch.setattr(archive_client, "ArchiveClient", _ArchiveRegistry)
 
     show_videos(window)
     window._select_section(str(pass_.id))

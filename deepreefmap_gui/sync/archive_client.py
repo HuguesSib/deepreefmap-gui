@@ -9,6 +9,7 @@ import threading
 import urllib.error
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
+from email.message import Message
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -85,8 +86,11 @@ class ArchiveClient(SyncClient):
         except ValueError:
             payload = {}
         code = payload.get("code", "") if isinstance(payload, dict) else ""
+        headers = Message()
+        for name, value in response.headers.multi_items():
+            headers.add_header(name, value)
         wrapped = urllib.error.HTTPError(
-            str(response.url), response.status_code, "", response.headers, io.BytesIO(response.content)
+            str(response.url), response.status_code, "", headers, io.BytesIO(response.content)
         )
         described = self._http_error(wrapped, authorise=True)
         try:
