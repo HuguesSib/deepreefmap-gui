@@ -42,6 +42,23 @@ def _delete_buttons(panel: CameraProfilesPanel) -> list[QPushButton]:
     return [b for b in panel.findChildren(QPushButton) if b.text() == "Delete"]
 
 
+def _bundled_count() -> int:
+    """How many profiles the pipeline ships.
+
+    Counted rather than written out: the assertions below are about which cards
+    offer a control, not about how many profiles the library happens to bundle,
+    and tests/packaging/test_packaged_resources.py is what holds that set to
+    account.
+    """
+    from importlib.resources import files
+
+    return sum(
+        1
+        for entry in files("deepreefmap.resources.camera_profiles").iterdir()
+        if entry.name.endswith(".json")
+    )
+
+
 @pytest.fixture
 def panel(qapp):
     widget = CameraProfilesPanel()
@@ -205,7 +222,7 @@ def test_publishing_is_offered_only_once_a_registry_is_enrolled(panel):
 
     panel.set_server_connected(True)
 
-    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 2
+    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == _bundled_count() + 1
 
     panel.set_server_connected(False)
 
@@ -217,7 +234,7 @@ def test_a_bundled_profile_is_published_to_bring_the_registry_up_to_the_pipeline
     it: a newer install is what knows what the current set is."""
     panel.set_server_connected(True)
 
-    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == 1
+    assert len([b for b in panel.findChildren(QPushButton) if b.text() == "Publish"]) == _bundled_count()
 
 
 def test_a_profile_the_registry_gave_this_laptop_is_neither_published_nor_deleted(panel):
@@ -231,7 +248,7 @@ def test_a_profile_the_registry_gave_this_laptop_is_neither_published_nor_delete
     panel.refresh()
 
     buttons = [b.text() for b in panel.findChildren(QPushButton)]
-    assert buttons.count("Publish") == 1, "the bundled one only"
+    assert buttons.count("Publish") == _bundled_count(), "the bundled ones only"
     assert "Delete" not in buttons
     assert module.FROM_REGISTRY in _text(panel)
 
