@@ -268,3 +268,26 @@ def test_a_new_transect_drawn_here_carries_the_picked_site(store):
     dialog._save_new_transect()
 
     assert store.list_transects()[0].site_id == site.id
+
+
+def test_a_new_pass_opens_with_no_comment(store):
+    dialog = TransectPickerDialog(None, store)
+
+    assert dialog.notes_choice() == ""
+
+
+def test_the_comment_typed_is_the_one_answered_trimmed(store):
+    dialog = TransectPickerDialog(None, store)
+
+    dialog.comment.setPlainText("  Vis 5 m, strong surge\nTape snapped at 40 m  \n")
+
+    assert dialog.notes_choice() == "Vis 5 m, strong surge\nTape snapped at 40 m"
+
+
+def test_the_section_it_is_editing_opens_on_its_own_comment(store):
+    transect = make_transect("T1")
+    store.add_transect(transect)
+    dialog = TransectPickerDialog(None, store, transect_id=transect.id, direction="forward", notes="Low vis")
+
+    assert dialog.comment.toPlainText() == "Low vis"
+    assert dialog.notes_choice() == "Low vis"

@@ -456,6 +456,9 @@ class SectionDetailPanel(DetailCard):
             # has said which line it followed.
 
             ("Length", _length(pass_)),
+            # Escaped because the facts render rich text, and a comment is
+            # whatever a diver typed, angle brackets included.
+            ("Comment", html.escape(pass_.notes).replace("\n", "<br>") if pass_.notes else "None"),
         ]
         # What this cut has cost so far, which is the figure worth having when
         # deciding whether to run it again.

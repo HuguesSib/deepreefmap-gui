@@ -1126,6 +1126,7 @@ class VideoLibraryMixin(MixinBase):
             direction=direction,
             campaign_id=campaign_id,
             quality=assign.quality_choice() if accepted else None,
+            notes=assign.notes_choice() if accepted else "",
             surveyed_on=captured_day(clip.video.captured_at),
         )
         store.add_pass(pass_)
@@ -1357,12 +1358,14 @@ class VideoLibraryMixin(MixinBase):
             transect_id=pass_.transect_id,
             direction=pass_.direction,
             quality=pass_.quality,
+            notes=pass_.notes,
             ok_label="Save",
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         pass_.transect_id, pass_.direction = dialog.choice()
         pass_.quality = dialog.quality_choice()
+        pass_.notes = dialog.notes_choice()
         pass_.campaign_id = dialog.campaign_choice()
         store.update_pass(pass_)
         self._refresh_video_library()

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -128,6 +129,7 @@ class TransectPickerDialog(QDialog):
         transect_id: uuid.UUID | None = None,
         direction: str | None = None,
         quality: str | None = None,
+        notes: str = "",
         ok_label: str = "Save",
     ) -> None:
         super().__init__(parent)
@@ -199,6 +201,15 @@ class TransectPickerDialog(QDialog):
         self.campaign.activated.connect(lambda _index: self._refresh_campaign_edit())
         direction_row.addRow("Campaign", campaign_row)
         self._fill_campaigns(self._store.default_campaign_id())
+        # Free text the field sheet has no box for: visibility, surge, a tape
+        # that snapped, why the swim was cut short. Stored as the pass's notes.
+        self.comment = QPlainTextEdit(notes)
+        self.comment.setPlaceholderText("Visibility, surge, anything odd about this swim…")
+        self.comment.setToolTip("A comment on this pass. Kept with it and synced to the registry.")
+        self.comment.setAccessibleName("Pass comment")
+        self.comment.setTabChangesFocus(True)
+        self.comment.setFixedHeight(self.comment.fontMetrics().lineSpacing() * 4 + 2 * SPACE_SM)
+        direction_row.addRow("Comment", self.comment)
         side.addLayout(direction_row)
 
         buttons_row = QHBoxLayout()
@@ -546,6 +557,10 @@ class TransectPickerDialog(QDialog):
 
     def quality_choice(self) -> str | None:
         return self.quality.currentData()
+
+    def notes_choice(self) -> str:
+        """The comment as typed, trimmed. Empty means none."""
+        return self.comment.toPlainText().strip()
 
     def campaign_choice(self) -> uuid.UUID | None:
         """The expedition picked here, remembered as the survey's new default."""
