@@ -51,7 +51,7 @@ from deepreefmap_gui.survey.analysis import (
     reproducibility_groups,
 )
 from deepreefmap_gui.survey.models import direction_arrow
-from deepreefmap_gui.survey.models.exporters import save_long_format_csv, save_repeatability_csv
+from deepreefmap_gui.survey.models.exporters import pass_column_names, save_long_format_csv, save_repeatability_csv
 
 logger = logging.getLogger(__name__)
 
@@ -292,13 +292,16 @@ class SimpleAnalysisMixin(MixinBase):
                 passes=aggregate.n,
             )
             return
+        # Each bar is named after the clip it was cut from, as in the exports,
+        # with the arrow for which way the tape was swum.
+        names = pass_column_names(covers)
         series = [
             (
-                f"{index} {direction_arrow(c.direction)}",
+                f"{name} {direction_arrow(c.direction)}",
                 c.cover,
-                pass_color(c.direction, index - 1),
+                pass_color(c.direction, index),
             )
-            for index, c in enumerate(covers, start=1)
+            for index, (name, c) in enumerate(zip(names, covers, strict=True))
         ]
         self._analysis_chart.set_data(
             cover_labels(covers, _CHART_MIN_FRACTION),

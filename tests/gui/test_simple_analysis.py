@@ -51,7 +51,9 @@ def test_analysis_export_csv(analysis_window, tmp_path, monkeypatch):
     analysis_window._on_analysis_export_csv()
     content = out_path.read_text()
     assert "mean_fraction" in content
-    assert "t1__p01" in content
+    # Pass columns carry the clip's file name, not the run folder.
+    assert "GX010001.MP4" in content.splitlines()[0]
+    assert "t1__p01" not in content
 
 
 def test_analysis_level_switch_recomputes(analysis_window):
@@ -121,6 +123,10 @@ def test_the_toggle_puts_every_pass_back_on_its_own(analysis_window, out_root):
     assert len(chart._series) == len(w._analysis_covers)
     assert chart._keys == [str(c.pass_id) for c in w._analysis_covers]
     assert "each pass" in w._analysis_estimate_label.text()
+    # Each bar is named after the clip it was cut from, not a bare number.
+    names = [name for name, _values, _colour in chart._series]
+    assert all(name.startswith(c.video_name) for name, c in zip(names, w._analysis_covers, strict=True))
+    assert all(c.video_name for c in w._analysis_covers)
 
 
 def test_the_mode_is_remembered_for_next_time(analysis_window):
