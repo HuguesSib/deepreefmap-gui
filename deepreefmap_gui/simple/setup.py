@@ -105,7 +105,9 @@ def measure_bytes_per_footage_minute(out_root: Path, limit: int = _SIZED_RUNS) -
     from deepreefmap_gui.survey.catalogue import dir_size_bytes
 
     try:
-        manifests = sorted(out_root.glob("*/run_manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        from deepreefmap_gui.survey.run_dirs import manifest_paths
+
+        manifests = sorted(manifest_paths(out_root), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return None
     rates: list[float] = []

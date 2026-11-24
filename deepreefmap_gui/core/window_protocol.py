@@ -322,6 +322,7 @@ if TYPE_CHECKING:
         _sig_run_sizes_done = Signal(object)
         _sig_clip_links_done = Signal(object)
         _sig_videos_probed = Signal(object)
+        _sig_expedition_imported = Signal(object)
         _sig_storage_usage = Signal(object)
         _sig_storage_page = Signal(object)
         _sig_envs_done = Signal(object)

@@ -156,7 +156,10 @@ def seed_run_dir_from_match(
         logger.warning("Not seeding: the camera profile %s did not load", camera_profile_name)
         return None
     try:
-        candidates = [d for d in search_root.iterdir() if d.is_dir() and d != output_dir]
+        from deepreefmap_gui.survey.run_dirs import run_dir_candidates
+
+        # Flat runs and runs in an expedition tree's RESULTS folders alike.
+        candidates = [d for d in run_dir_candidates(search_root) if d != output_dir]
     except OSError:
         return None
     matches = []

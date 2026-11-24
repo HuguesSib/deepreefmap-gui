@@ -228,6 +228,21 @@ class VideoLibraryMixin(MixinBase):
         self._video_hidden_check.setVisible(False)
         top_row.addWidget(self._video_hidden_check)
         top_row.addStretch(1)
+        # An expedition folder is a workspace of its own: opening one makes it
+        # the output root, files its tree, and lists what it still lacks.
+        self._expedition_open_btn = QPushButton("Open expedition folder…")
+        self._expedition_open_btn.setProperty("quiet", "true")
+        self._expedition_open_btn.setToolTip(
+            "Read a folder laid out as expedition / transect / pass_NN_condition / fwd|bwd, "
+            "file every clip in it, and keep the results in each pass's RESULTS folder."
+        )
+        self._expedition_open_btn.clicked.connect(self._on_expedition_open)
+        top_row.addWidget(self._expedition_open_btn)
+        self._missing_data_btn = QPushButton("Missing data…")
+        self._missing_data_btn.setProperty("quiet", "true")
+        self._missing_data_btn.setToolTip("What the expedition still lacks: coordinates, dates, trims, cameras.")
+        self._missing_data_btn.clicked.connect(self._on_missing_data)
+        top_row.addWidget(self._missing_data_btn)
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
         self._video_add_btn.setProperty("cta", "true")
@@ -377,6 +392,126 @@ class VideoLibraryMixin(MixinBase):
             self._status_label.setText(f"Could not write {Path(path_str).name}: {exc}")
             return
         self._status_label.setText(f"Exported metadata for {written} clip row(s) to {Path(path_str).name}.")
+
+    # --- the expedition workspace -------------------------------------------
+
+    def _on_expedition_open(self) -> None:
+        """Make an expedition folder the workspace and file everything in it."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from deepreefmap_gui.survey.expedition import scan_expedition
+
+        if self._survey_worker_running:
+            self._status_label.setText("Wait for the running batch to finish before opening another expedition.")
+            return
+        start = str(Path(self._out_root_input.text()).expanduser().parent)
+        chosen = QFileDialog.getExistingDirectory(self, "Open expedition folder", start)
+        if not chosen:
+            return
+        layout = scan_expedition(Path(chosen))
+        if not layout.transects and not layout.loose:
+            self._status_label.setText(
+                f"{Path(chosen).name} has no transect with pass folders (pass_NN_…/fwd or bwd)."
+            )
+            return
+        recordings = sum(len(t.recordings) for t in layout.transects)
+        lines = [
+            f"Expedition: {layout.name}",
+            f"Transects: {', '.join(t.name for t in layout.transects) or 'none'}",
+            f"Recordings in pass folders: {recordings}",
+            f"Clips in all: {layout.clip_count}",
+            "",
+            "This folder becomes the output folder: the survey database and every "
+            "result are kept inside it, results in each pass's RESULTS folder.",
+            "Reading every clip can take a few minutes.",
+        ]
+        if layout.warnings:
+            lines += ["", "Check:", *layout.warnings[:8]]
+        answer = QMessageBox.question(self, "Open expedition folder", "\n".join(lines))
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._out_root_input.setText(chosen)
+        store = self._try_survey_store()
+        if store is None:
+            self._status_label.setText("Cannot import: the survey database in that folder will not open.")
+            return
+        self._status_label.setText(f"Reading {layout.clip_count} clip(s) from {layout.name}…")
+        self._expedition_open_btn.setEnabled(False)
+
+        def worker() -> None:
+            from deepreefmap_gui.survey.expedition import import_expedition
+
+            try:
+                report = import_expedition(store, layout)
+            except Exception as exc:  # reported, not raised: the window must stay up
+                logger.exception("Expedition import failed")
+                self._sig_expedition_imported.emit((layout.name, None, str(exc)))
+                return
+            self._sig_expedition_imported.emit((layout.name, report, None))
+
+        self._expedition_thread = threading.Thread(target=worker, daemon=True)
+        self._expedition_thread.start()
+
+    def _on_expedition_imported(self, result: object) -> None:
+        name, report, error = result  # type: ignore[misc]
+        self._expedition_open_btn.setEnabled(True)
+        if error is not None:
+            self._status_label.setText(f"Import of {name} stopped: {error}")
+            return
+        self._status_label.setText(report.summary())
+        self._refresh_data_manager()
+        self._refresh_video_library()
+        store = self._try_survey_store()
+        campaign = next(
+            (c for c in store.list_campaigns() if c.name.lower() == name.lower()), None
+        ) if store is not None else None
+        if campaign is not None:
+            self._show_missing_data(campaign.id)
+
+    def _on_missing_data(self) -> None:
+        store = self._try_survey_store()
+        if store is None:
+            return
+        chosen = self._video_campaign_filter.currentData()
+        campaign_id = None
+        if chosen not in (None, "all", "unassigned"):
+            campaign_id = uuid.UUID(str(chosen))
+        campaign_id = campaign_id or store.default_campaign_id()
+        if campaign_id is None:
+            self._status_label.setText("Pick a campaign in the filter, or open an expedition folder first.")
+            return
+        self._show_missing_data(campaign_id)
+
+    def _show_missing_data(self, campaign_id: uuid.UUID) -> None:
+        from deepreefmap_gui.simple.expedition_dialog import MissingDataDialog
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        previous = getattr(self, "_missing_dialog", None)
+        if previous is not None:
+            previous.close()
+        dialog = MissingDataDialog(self, store, campaign_id, self._open_gap)
+        self._missing_dialog = dialog
+        dialog.show()
+
+    def _open_gap(self, gap) -> None:
+        """Take a checklist line to the editor that fills it."""
+        from deepreefmap_gui.survey.completeness import CLIP, EXPEDITION, PASS, TRANSECT
+
+        if gap.level == EXPEDITION:
+            from deepreefmap_gui.simple.catalogue_dialogs import CampaignDialog
+
+            store = self._try_survey_store()
+            campaign = store.get_campaign(gap.record_id) if store is not None else None
+            if campaign is not None:
+                CampaignDialog(self, store, campaign).exec()
+        elif gap.level == TRANSECT:
+            self._open_transect_page(gap.record_id)
+        elif gap.level == PASS:
+            self._select_section(str(gap.record_id))
+        elif gap.level == CLIP:
+            self._on_clip_details(str(gap.record_id))
 
     def _set_video_column(self, column: str, visible: bool) -> None:
         self._settings.setValue(f"video_column_{column}", visible)

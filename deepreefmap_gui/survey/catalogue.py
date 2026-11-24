@@ -27,6 +27,7 @@ from deepreefmap_gui.survey.models.survey_batch import SurveyBatch, session_labe
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.run_dirs import run_dir_candidates, run_dir_name
 from deepreefmap_gui.survey.statuses import (
     CLIP_FAILED,
     CLIP_PENDING,
@@ -261,21 +262,23 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
     entries: list[RunEntry] = []
     if not out_root.is_dir():
         return entries
-    for child in out_root.iterdir():
+    for child in run_dir_candidates(out_root):
         manifest_path = child / "run_manifest.json"
-        if not (child.is_dir() and manifest_path.exists()):
+        if not manifest_path.exists():
             continue
         manifest: dict = {}
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Unreadable manifest in %s", child)
-        entries.append(_entry_from_manifest(child, manifest, manifest_path.stat().st_mtime))
+        entries.append(
+            _entry_from_manifest(child, manifest, manifest_path.stat().st_mtime, run_dir_name(out_root, child))
+        )
     entries.sort(key=lambda e: e.sort_key, reverse=True)
     return entries
 
 
-def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntry:
+def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float, dir_name: str | None = None) -> RunEntry:
     name = manifest.get("name")
     # The name the person gave it, alone. The folder is machine-safe and
     # unique but says nothing, and it is one hover away in the row's tooltip
@@ -288,7 +291,7 @@ def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntr
     points = manifest.get("semantic_reference_points") or manifest.get("metric_points")
     return RunEntry(
         run_dir=run_dir,
-        dir_name=run_dir.name,
+        dir_name=dir_name or run_dir.name,
         manifest=manifest,
         display_name=display,
         sort_key=run_sort_key(manifest, mtime),
@@ -324,18 +327,19 @@ def scan_incomplete_runs(
     if not out_root.is_dir():
         return entries
     records = {r.run_dir_name for r in store.list_runs()} if store is not None else set()
-    for child in out_root.iterdir():
-        if not child.is_dir() or child.name in known:
+    for child in run_dir_candidates(out_root):
+        name = run_dir_name(out_root, child)
+        if name in known:
             continue
         if (child / "run_manifest.json").exists():
             continue
-        if child.name not in records and not (child / "run.log").exists():
+        if name not in records and not (child / "run.log").exists():
             continue
         try:
             mtime = child.stat().st_mtime
         except OSError:
             mtime = 0.0
-        entries.append(_incomplete_entry(child, mtime))
+        entries.append(_incomplete_entry(child, mtime, name))
     return entries
 
 
@@ -384,10 +388,10 @@ def _missing_entry(out_root: Path, run: RunRecord) -> RunEntry:
     )
 
 
-def _incomplete_entry(run_dir: Path, mtime: float) -> RunEntry:
+def _incomplete_entry(run_dir: Path, mtime: float, dir_name: str | None = None) -> RunEntry:
     return RunEntry(
         run_dir=run_dir,
-        dir_name=run_dir.name,
+        dir_name=dir_name or run_dir.name,
         manifest={},
         display_name=run_dir.name,
         sort_key=mtime,

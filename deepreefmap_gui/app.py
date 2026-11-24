@@ -131,6 +131,7 @@ class DeepReefMapWindow(
     _sig_run_sizes_done = Signal(object)
     _sig_clip_links_done = Signal(object)
     _sig_videos_probed = Signal(object)
+    _sig_expedition_imported = Signal(object)
     _sig_storage_usage = Signal(object)
     _sig_storage_page = Signal(object)
     # Installed versions of the app, not the user's run data: the three storage
@@ -193,6 +194,7 @@ class DeepReefMapWindow(
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
         self._sig_clip_links_done.connect(self._apply_clip_link_states)
         self._sig_videos_probed.connect(self._on_videos_probed)
+        self._sig_expedition_imported.connect(self._on_expedition_imported)
         self._sig_storage_usage.connect(self._apply_storage_usage)
         self._sig_storage_page.connect(self._apply_storage_page_scan)
         self._sig_notify.connect(self._notify_post)

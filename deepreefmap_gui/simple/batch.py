@@ -2393,6 +2393,18 @@ class SimpleBatchMixin(MixinBase):
         only thing it has to be recognised by in a folder listing.
         """
         prior = store.runs_for_pass(pass_.id)
+        # A pass whose clips sit in an expedition tree under this root runs into
+        # that tree's RESULTS folder, one attempt per folder like everywhere else.
+        out_root = Path(self._out_root_input.text()).expanduser()
+        first = store.get_video(pass_.video_id)
+        if first is not None:
+            from deepreefmap_gui.survey.expedition import results_dir_for
+
+            attempt = len(prior) + 1
+            while (name := results_dir_for(out_root, first, attempt)) is not None:
+                if store.run_by_dir_name(name) is None and not (out_root / name).exists():
+                    return name
+                attempt += 1
         if prior:
             base = re.sub(r"__r\d+$", "", prior[0].run_dir_name)
             out_root = Path(self._out_root_input.text()).expanduser()

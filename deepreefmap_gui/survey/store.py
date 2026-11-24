@@ -2847,8 +2847,11 @@ class SurveyStore:
         app said, not of what the survey is.
         """
         report = RebuildReport()
-        for manifest_path in sorted(out_root.glob("*/run_manifest.json")):
-            run_dir_name = manifest_path.parent.name
+        from deepreefmap_gui.survey.run_dirs import manifest_paths
+        from deepreefmap_gui.survey.run_dirs import run_dir_name as relative_run_dir
+
+        for manifest_path in manifest_paths(out_root):
+            run_dir_name = relative_run_dir(out_root, manifest_path.parent)
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
