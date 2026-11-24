@@ -1744,6 +1744,15 @@ class SurveyStore:
     def list_videos(self) -> list[VideoAsset]:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
 
+    def camera_labels(self) -> list[str]:
+        """Every camera name already given to a live clip, for picking rather than retyping."""
+        rows = self._conn().execute(
+            "SELECT DISTINCT camera_label FROM video_asset "
+            f"WHERE {_live('video_asset')} AND camera_label IS NOT NULL AND camera_label != '' "
+            "ORDER BY camera_label COLLATE NOCASE"
+        ).fetchall()
+        return [str(r[0]) for r in rows]
+
     def update_video(self, asset: VideoAsset) -> None:
         asset.updated_at = self._stamp()
         self._update("video_asset", asset)

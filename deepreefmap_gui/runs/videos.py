@@ -348,6 +348,35 @@ class VideoLibraryMixin(MixinBase):
             action.toggled.connect(lambda checked, key=column: self._set_video_column(key, checked))
         self._video_columns.setMenu(menu)
         title.addWidget(self._video_columns)
+        self._video_export_btn = QPushButton("Export metadata…")
+        self._video_export_btn.setProperty("quiet", "true")
+        self._video_export_btn.setToolTip(
+            "One CSV row per clip in each pass: filing, comments, camera, review and "
+            "what the container recorded. Clips no pass uses are listed too."
+        )
+        self._video_export_btn.clicked.connect(self._on_video_metadata_export)
+        title.addWidget(self._video_export_btn)
+
+    def _on_video_metadata_export(self) -> None:
+        """Write the footage metadata table where the person chooses."""
+        from deepreefmap_gui.survey.metadata_export import build_metadata_rows, save_metadata_csv
+
+        store = self._try_survey_store()
+        if store is None:
+            self._status_label.setText("Cannot export: the survey database is unavailable.")
+            return
+        root = Path(self._out_root_input.text()).expanduser()
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Export footage metadata", str(root / "footage_metadata.csv"), "CSV files (*.csv)"
+        )
+        if not path_str:
+            return
+        try:
+            written = save_metadata_csv(Path(path_str), build_metadata_rows(store))
+        except OSError as exc:
+            self._status_label.setText(f"Could not write {Path(path_str).name}: {exc}")
+            return
+        self._status_label.setText(f"Exported metadata for {written} clip row(s) to {Path(path_str).name}.")
 
     def _set_video_column(self, column: str, visible: bool) -> None:
         self._settings.setValue(f"video_column_{column}", visible)
@@ -1277,7 +1306,9 @@ class VideoLibraryMixin(MixinBase):
         video = store.get_video(clip.video.id)
         if video is None:
             return
-        dialog = ClipDetailsDialog(self, video, note=lock_note(video, own_device_id()))
+        dialog = ClipDetailsDialog(
+            self, video, note=lock_note(video, own_device_id()), known_cameras=store.camera_labels()
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         dialog.apply_to(video)

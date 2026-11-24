@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -9,7 +11,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLabel,
-    QLineEdit,
     QPlainTextEdit,
     QWidget,
 )
@@ -27,7 +28,13 @@ REVIEWS = (
 class ClipDetailsDialog(QDialog):
     """Camera, rig position, mounting and the review verdict on one clip."""
 
-    def __init__(self, parent: QWidget | None, video: VideoAsset, note: str = "") -> None:
+    def __init__(
+        self,
+        parent: QWidget | None,
+        video: VideoAsset,
+        note: str = "",
+        known_cameras: Sequence[str] = (),
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Clip details: {video.file_name}")
         form = QFormLayout(self)
@@ -35,8 +42,14 @@ class ClipDetailsDialog(QDialog):
             hint = QLabel(note)
             hint.setWordWrap(True)
             form.addRow(hint)
-        self.camera_input = QLineEdit(video.camera_label or "")
-        self.camera_input.setPlaceholderText("GoPro_3, cam1")
+        # Editable: the names already in the survey are offered so a rig keeps one
+        # spelling per camera, and a new camera is still just typed in.
+        self.camera_input = QComboBox()
+        self.camera_input.setEditable(True)
+        self.camera_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.camera_input.addItems(list(dict.fromkeys(known_cameras)))
+        self.camera_input.setCurrentText(video.camera_label or "")
+        self.camera_input.lineEdit().setPlaceholderText("GoPro_3, cam1")
         self.camera_input.setToolTip("The camera's name on the rig, as the field team labels it.")
         form.addRow("Camera", self.camera_input)
         self.rig_input = QComboBox()
@@ -64,7 +77,7 @@ class ClipDetailsDialog(QDialog):
         form.addRow(buttons)
 
     def apply_to(self, video: VideoAsset) -> None:
-        video.camera_label = self.camera_input.text().strip() or None
+        video.camera_label = self.camera_input.currentText().strip() or None
         video.rig_position = self.rig_input.currentData()
         video.upside_down = self.upside_down_input.isChecked()
         video.review = str(self.review_input.currentData() or "unreviewed")
