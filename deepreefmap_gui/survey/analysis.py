@@ -47,6 +47,8 @@ class PassCover:
     counts: dict[str, float]
     denominator: float
     created_at: str
+    # The clip the pass was cut from, which is what a person recognises it by.
+    video_name: str = ""
 
 
 @dataclass(slots=True)
@@ -102,6 +104,7 @@ def _read_succeeded_covers(
             counts={name: float(entry["count"]) for name, entry in grouped.items()},
             denominator=denom,
             created_at=run.created_at,
+            video_name=video.file_name if video is not None else "",
         ))
     return covers
 

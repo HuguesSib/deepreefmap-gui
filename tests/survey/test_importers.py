@@ -306,3 +306,28 @@ def test_transect_csv_round_trips_the_end_depths(tmp_path):
     assert imported.start_depth_m == 5.0
     assert imported.end_depth_m == 11.0
     assert imported.depth_m == 8.0
+
+
+def test_repeatability_columns_are_named_after_the_video_file(tmp_path):
+    """A reader knows a pass by its clip, not by the run folder the app chose."""
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.models.exporters import save_repeatability_csv
+
+    def cover(run, video, begin, end):
+        return SimpleNamespace(
+            run_dir_name=run, video_name=video, begin_s=begin, end_s=end, cover={"coral": 0.4}
+        )
+
+    covers = [
+        cover("VC_6m_01/pass_01_control/fwd/RESULTS/Cam1__r01", "GX010099.MP4", 27.5, 204.8),
+        cover("VC_6m_01__p02__a35ecf01", "GX010050.MP4", 28.7, 204.6),
+        # Two passes cut from one clip are told apart by their window.
+        cover("t__p03", "GX010034.MP4", 0.0, 100.0),
+        cover("t__p04", "GX010034.MP4", 100.0, 200.0),
+    ]
+    path = tmp_path / "repeatability.csv"
+    save_repeatability_csv(path, ["coral"], {}, covers)
+
+    header = next(csv.reader(path.open()))
+    assert header[5:] == ["GX010099.MP4", "GX010050.MP4", "GX010034.MP4 0-100s", "GX010034.MP4 100-200s"]

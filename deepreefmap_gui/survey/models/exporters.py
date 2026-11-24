@@ -65,6 +65,20 @@ def save_transects_csv(
             ])
 
 
+def pass_column_names(covers: Sequence[Any]) -> list[str]:
+    """One column name per pass: the video file it was cut from.
+
+    Two passes cut from one clip would share a name, so those also carry their
+    window; a cover with no clip name falls back to its run folder.
+    """
+    names = [getattr(c, "video_name", "") or c.run_dir_name for c in covers]
+    repeated = {name for name in names if names.count(name) > 1}
+    return [
+        f"{name} {c.begin_s:.0f}-{c.end_s:.0f}s" if name in repeated else name
+        for name, c in zip(names, covers, strict=True)
+    ]
+
+
 def save_repeatability_csv(
     path: Path,
     labels: list[str],
@@ -76,7 +90,7 @@ def save_repeatability_csv(
         writer = csv.writer(f)
         writer.writerow(
             ["class", "mean_fraction", "std", "cv", "range"]
-            + [c.run_dir_name for c in covers]
+            + pass_column_names(covers)
         )
         for label in labels:
             entry = stats.get(label, {})
