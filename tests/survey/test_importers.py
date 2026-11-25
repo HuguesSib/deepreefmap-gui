@@ -331,3 +331,18 @@ def test_repeatability_columns_are_named_after_the_video_file(tmp_path):
 
     header = next(csv.reader(path.open()))
     assert header[5:] == ["GX010099.MP4", "GX010050.MP4", "GX010034.MP4 0-100s", "GX010034.MP4 100-200s"]
+
+
+def test_repeatability_columns_stay_distinct_for_reruns(tmp_path):
+    """Reruns of one pass share clip and window; the run folder tells them apart."""
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.models.exporters import pass_column_names
+
+    def cover(run):
+        return SimpleNamespace(run_dir_name=run, video_name="GX010099.MP4", begin_s=27.5, end_s=204.8)
+
+    names = pass_column_names([cover("T/p/bwd/RESULTS/Cam1__1a2b3c4d"), cover("T/p/bwd/RESULTS/Cam1__1a2b3c4d__r02")])
+
+    assert names == ["GX010099.MP4 28-205s (Cam1__1a2b3c4d)", "GX010099.MP4 28-205s (Cam1__1a2b3c4d__r02)"]
+    assert len(set(names)) == 2

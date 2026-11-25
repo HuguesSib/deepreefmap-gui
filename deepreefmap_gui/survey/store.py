@@ -2901,34 +2901,31 @@ class SurveyStore:
 
     def _restore_transect(self, snapshot: dict[str, Any], report: RebuildReport) -> uuid.UUID:
         transect_id = uuid.UUID(snapshot["id"])
-        if not self.holds_id("transects", transect_id) and snapshot.get("deleted_at") is None:
-            # A live line of that name on the same site is this line made again.
-            site_id = self._restore_site(snapshot.get("site"), report)
-            row = self._conn().execute(
-                "SELECT id FROM transect WHERE deleted_at IS NULL AND site_id IS ? AND LOWER(name) = LOWER(?)",
-                (None if site_id is None else str(site_id), snapshot["name"]),
-            ).fetchone()
-            if row is not None:
-                return uuid.UUID(row[0])
-        if not self.holds_id("transects", transect_id):
-            # A line the run was swum on after it had been retired comes back
-            # retired. It still names and scales the run, and reviving it would
-            # put a withdrawn line back in front of whoever withdrew it.
-            self.add_transect(Transect(
-                id=transect_id,
-                name=snapshot["name"],
-                start_lat=snapshot.get("start_lat"),
-                start_lon=snapshot.get("start_lon"),
-                end_lat=snapshot.get("end_lat"),
-                end_lon=snapshot.get("end_lon"),
-                site_id=self._restore_site(snapshot.get("site"), report),
-                length_m=snapshot.get("length_m"),
-                depth_m=snapshot.get("depth_m"),
-                start_depth_m=snapshot.get("start_depth_m"),
-                end_depth_m=snapshot.get("end_depth_m"),
-                deleted_at=snapshot.get("deleted_at"),
-            ))
-            report.transects += 1
+        if self.holds_id("transects", transect_id):
+            return transect_id
+        site_id = self._restore_site(snapshot.get("site"), report)
+        if snapshot.get("deleted_at") is None:
+            same = self._same_transect(snapshot["name"], site_id)
+            if same is not None:
+                return same
+        # A line the run was swum on after it had been retired comes back
+        # retired. It still names and scales the run, and reviving it would
+        # put a withdrawn line back in front of whoever withdrew it.
+        self.add_transect(Transect(
+            id=transect_id,
+            name=snapshot["name"],
+            start_lat=snapshot.get("start_lat"),
+            start_lon=snapshot.get("start_lon"),
+            end_lat=snapshot.get("end_lat"),
+            end_lon=snapshot.get("end_lon"),
+            site_id=site_id,
+            length_m=snapshot.get("length_m"),
+            depth_m=snapshot.get("depth_m"),
+            start_depth_m=snapshot.get("start_depth_m"),
+            end_depth_m=snapshot.get("end_depth_m"),
+            deleted_at=snapshot.get("deleted_at"),
+        ))
+        report.transects += 1
         return transect_id
 
     def _restore_site(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
@@ -2936,7 +2933,13 @@ class SurveyStore:
             return None
         site_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("sites", site_id):
-            same = self._live_named("site", snapshot.get("name"))
+            # Sites are unique by country and name, so both have to agree.
+            row = self._conn().execute(
+                "SELECT id FROM site WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?) "
+                "AND LOWER(COALESCE(country, '')) = LOWER(COALESCE(?, ''))",
+                (snapshot.get("name") or "Recovered site", snapshot.get("country")),
+            ).fetchone()
+            same = uuid.UUID(row[0]) if row is not None else None
             if same is not None:
                 return same
             self.add_site(Site(
@@ -3015,6 +3018,30 @@ class SurveyStore:
             video_ids.append(asset.id)
         return video_ids
 
+    def _same_transect(self, name: str, site_id: uuid.UUID | None) -> uuid.UUID | None:
+        """A live transect that is this line made again: same name, same site.
+
+        An expedition import makes transects without a site, so a site-less one
+        of that name is the same line too, and it takes the site the run knew.
+        """
+        rows = self._conn().execute(
+            "SELECT id, site_id FROM transect WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?)", (name,)
+        ).fetchall()
+        wanted = None if site_id is None else str(site_id)
+        exact = next((row for row in rows if row[1] == wanted), None)
+        if exact is not None:
+            return uuid.UUID(exact[0])
+        siteless = next((row for row in rows if row[1] is None), None)
+        if siteless is None:
+            return None
+        found = uuid.UUID(siteless[0])
+        if site_id is not None:
+            transect = self.get_transect(found)
+            if transect is not None:
+                transect.site_id = site_id
+                self.update_transect(transect)
+        return found
+
     def _live_named(self, table: str, name: Any) -> uuid.UUID | None:
         """A live row of ``table`` with this name, ignoring case."""
         if not isinstance(name, str) or not name.strip():
@@ -3039,13 +3066,15 @@ class SurveyStore:
         same = self.pass_with_window(video_ids[0], snapshot["begin_s"], snapshot["end_s"])
         if same is not None:
             return same.id
+        from deepreefmap_gui.survey.completeness import is_untrimmed
+
         videos = {v.id: v for v in self.list_videos()}
         for candidate in self.list_passes(video_id=video_ids[0]):
             if candidate.video_ids() != video_ids or self.runs_for_pass(candidate.id):
                 continue
-            total = sum(videos[v].duration_s or 0.0 for v in candidate.video_ids() if v in videos)
-            untrimmed = candidate.begin_s <= 0.0 and total > 0 and abs(candidate.end_s - total) <= 0.5
-            if not untrimmed or (transect_id is not None and candidate.transect_id not in (None, transect_id)):
+            if not is_untrimmed(candidate, videos) or (
+                transect_id is not None and candidate.transect_id not in (None, transect_id)
+            ):
                 continue
             candidate.begin_s = snapshot["begin_s"]
             candidate.end_s = snapshot["end_s"]

@@ -27,7 +27,9 @@ output root, which is what ``RunRecord.run_dir_name`` has always been.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,7 +49,7 @@ _SKIPPED = {RESULTS_DIR.lower(), ANALYSIS_DIR.lower()}
 _PASS_DIR = re.compile(r"^pass_?(?P<number>\d+)(?:_(?P<condition>.+))?$", re.IGNORECASE)
 _DEPTH = re.compile(r"(?:^|_)(?P<depth>\d+(?:[.,]\d+)?)m(?:_|$)", re.IGNORECASE)
 _CAMERA = re.compile(r"(?:^|[_\-\s])cam[_\-]?(?P<n>\d+)(?:[_\-\s.]|$)", re.IGNORECASE)
-# GoPro names a recording GX<chapter:2><number:4>; HERO cameras before 6 used GOPR/GP.
+# GoPro names a recording G<X|H|L><chapter:2><number:4> (HERO6 on); older GOPR/GP names stand alone.
 _GOPRO = re.compile(r"G[XHL](?P<chapter>\d{2})(?P<number>\d{4})", re.IGNORECASE)
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +100,8 @@ class ImportReport:
     skipped_other: int = 0
     # Clips an earlier import took from those folders, removed while still unused.
     removed_other: int = 0
+    # Transects whose name another expedition already uses on no site.
+    shared_transects: list[str] = field(default_factory=list)
     # (copy, original): files whose content is already a clip somewhere else.
     duplicates: list[tuple[str, str]] = field(default_factory=list)
 
@@ -119,6 +123,10 @@ class ImportReport:
             parts.append(f"{self.skipped_other} clip(s) outside pass folders left out")
         if self.duplicates:
             parts.append(f"{len(self.duplicates)} duplicate file(s) left out")
+        if self.shared_transects:
+            parts.append(
+                f"{', '.join(self.shared_transects)} shared with another expedition (give each a site to separate them)"
+            )
         if self.removed_other:
             parts.append(f"{self.removed_other} earlier non-pass clip(s) removed from the library")
         return "Imported: " + ", ".join(parts) + "."
@@ -250,8 +258,28 @@ def _campaign(store, name: str, report: ImportReport) -> Campaign:
     return campaign
 
 
-def _transect(store, folder: TransectFolder, report: ImportReport) -> Transect:
-    found = next((t for t in store.list_transects() if t.name.lower() == folder.name.lower()), None)
+def _transect(store, folder: TransectFolder, campaign: Campaign, report: ImportReport) -> Transect:
+    """The transect this folder is, preferring the one this expedition already uses.
+
+    A name like T1 is reused across expeditions and sites, so a same-named line
+    is only taken when this campaign already files passes under it, or when no
+    other campaign does.
+    """
+    named = [t for t in store.list_transects() if t.name.lower() == folder.name.lower()]
+    users: dict[object, set] = {}
+    for pass_ in store.list_passes():
+        if pass_.transect_id is not None:
+            users.setdefault(pass_.transect_id, set()).add(pass_.campaign_id)
+    found = next((t for t in named if campaign.id in users.get(t.id, set())), None)
+    if found is None:
+        found = next((t for t in named if users.get(t.id, set()) <= {None}), None)
+    if found is None:
+        # Another expedition's line holds the name on the same (absent) site,
+        # and the store keeps one name per site, so it is shared rather than
+        # refused; the report says so, since only a site tells the two apart.
+        found = next((t for t in named if t.site_id is None), None)
+        if found is not None:
+            report.shared_transects.append(folder.name)
     if found is not None:
         if found.depth_m is None and folder.depth_m is not None:
             found.depth_m = folder.depth_m
@@ -269,7 +297,7 @@ def _clip(store, path: Path, probe: Probe, report: ImportReport) -> VideoAsset |
     # Same content at another path that still exists is a copy, not a move:
     # repointing the clip would flip it between the two folders on every
     # import, so the copy is left out and named instead.
-    if prior is not None and prior.path != str(path) and Path(prior.path).exists():
+    if prior is not None and prior.path != str(path) and _another_file(Path(prior.path), path):
         report.duplicates.append((str(path), prior.path))
         return None
     measured = probe(path)
@@ -297,6 +325,18 @@ def _clip(store, path: Path, probe: Probe, report: ImportReport) -> VideoAsset |
     return stored
 
 
+def _another_file(known: Path, found: Path) -> bool:
+    """Whether a clip's recorded path is a second, existing file, not this one.
+
+    Compared as files rather than strings, so a clip first added through a
+    symlink or another spelling of the mount is not its own duplicate.
+    """
+    try:
+        return known.exists() and not os.path.samefile(known, found)
+    except OSError:
+        return False
+
+
 def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = None) -> ImportReport:
     """File everything the layout describes. Safe to run again after the tree changes."""
     probe = probe or _decoded_length
@@ -313,7 +353,7 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
     report.removed_other = _forget_unused_role_clips(store, layout)
 
     for folder in layout.transects:
-        transect = _transect(store, folder, report)
+        transect = _transect(store, folder, campaign, report)
         for recording in folder.recordings:
             videos = [_clip(store, path, probe, report) for path in recording.clips]
             if any(v is None for v in videos):
@@ -353,8 +393,13 @@ def _forget_unused_role_clips(store, layout: ExpeditionLayout) -> int:
         path = Path(video.path)
         if video.id in used or not video.notes.startswith("[") or "]" not in video.notes:
             continue
-        tag, _, rest = video.notes.partition("]")
+        tag, _, rest = video.notes[1:].partition("]")
         if rest.strip() or video.camera_label or video.rig_position or video.review != "unreviewed":
+            continue
+        # Only the tag earlier builds wrote: the clip's own folder name (or
+        # "<transect>/<folder>" for a folder of a transect without passes). A
+        # note like "[blurry]" is a person's and is left alone.
+        if tag != path.parent.name and not tag.endswith("/" + path.parent.name):
             continue
         try:
             inside = str(path.resolve()).startswith(root + "/")
@@ -383,13 +428,14 @@ def _direction_dir(clip_path: Path) -> Path | None:
     return None
 
 
-def results_dir_for(out_root: Path, first_clip: VideoAsset, attempt: int) -> str | None:
-    """``VC_6m_01/pass_01_control/fwd/RESULTS/Cam1__r01``, relative to ``out_root``.
+def results_dir_for(out_root: Path, first_clip: VideoAsset, pass_id: uuid.UUID) -> str | None:
+    """``VC_6m_01/pass_01_control/fwd/RESULTS/Cam1__1a2b3c4d``, relative to ``out_root``.
 
-    None when the clip is not in an expedition tree under this root, and the
-    caller names the run the way it always has. The camera names the run when it
-    is known, so the four cameras of one pass land side by side; the clip's own
-    name otherwise.
+    The base name of a pass's runs when its clip sits in an expedition tree
+    under this root; None otherwise, and the caller names the run the way it
+    always has. The camera (or the clip's own name) comes first so the cameras
+    of one pass read side by side; the pass's short id keeps two passes from one
+    camera apart, so every attempt number counts attempts at one pass.
     """
     direction_dir = _direction_dir(Path(first_clip.path))
     if direction_dir is None:
@@ -400,7 +446,7 @@ def results_dir_for(out_root: Path, first_clip: VideoAsset, attempt: int) -> str
         return None
     stem = first_clip.camera_label or Path(first_clip.file_name).stem
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "run"
-    return (relative / RESULTS_DIR / f"{stem}__r{attempt:02d}").as_posix()
+    return (relative / RESULTS_DIR / f"{stem}__{pass_id.hex[:8]}").as_posix()
 
 
 def is_expedition_root(root: Path) -> bool:

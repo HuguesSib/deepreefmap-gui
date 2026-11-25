@@ -18,6 +18,22 @@ PASS = "pass"
 CLIP = "clip"
 LEVELS = (EXPEDITION, TRANSECT, PASS, CLIP)
 
+# The gaps, by code.
+EXPEDITION_DATES = "expedition_dates"
+TRANSECT_COORDINATES = "transect_coordinates"
+TRANSECT_LENGTH = "transect_length"
+TRANSECT_DEPTH = "transect_depth"
+TRANSECT_SITE = "transect_site"
+PASS_TRANSECT = "pass_transect"
+PASS_DIRECTION = "pass_direction"
+PASS_UNTRIMMED = "pass_untrimmed"
+PASS_QUALITY = "pass_quality"
+PASS_NOT_RUN = "pass_not_run"
+PASS_RUN_FAILED = "pass_run_failed"
+CLIP_CAMERA = "clip_camera"
+CLIP_RIG = "clip_rig"
+CLIP_REVIEW = "clip_review"
+
 # A window within this much of the whole recording is taken as never trimmed.
 _UNTRIMMED_TOLERANCE_S = 0.5
 
@@ -28,6 +44,7 @@ class Gap:
     subject: str  # what the record is called, as the person knows it
     item: str  # what is missing, in a few words
     record_id: uuid.UUID
+    code: str = ""  # which gap, for code to act on rather than reading ``item``
 
 
 def capture_span(store: Any, campaign_id: uuid.UUID) -> tuple[str | None, str | None]:
@@ -53,8 +70,9 @@ def capture_span(store: Any, campaign_id: uuid.UUID) -> tuple[str | None, str | 
     return (min(days), max(days)) if days else (None, None)
 
 
-def _untrimmed(pass_: Any, videos: dict[uuid.UUID, Any]) -> bool:
-    total = sum((videos[v].duration_s or 0.0) for v in [pass_.video_id, *pass_.extra_video_ids] if v in videos)
+def is_untrimmed(pass_: Any, videos: dict[uuid.UUID, Any]) -> bool:
+    """Whether a pass still spans its whole recording, as an import leaves it."""
+    total = sum((videos[v].duration_s or 0.0) for v in pass_.video_ids() if v in videos)
     return pass_.begin_s <= 0.0 and total > 0 and abs(pass_.end_s - total) <= _UNTRIMMED_TOLERANCE_S
 
 
@@ -69,7 +87,7 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
 
     gaps: list[Gap] = []
     if not campaign.begin_date or not campaign.end_date:
-        gaps.append(Gap(EXPEDITION, campaign.name, "start and end dates", campaign.id))
+        gaps.append(Gap(EXPEDITION, campaign.name, "start and end dates", campaign.id, EXPEDITION_DATES))
 
     seen_transects: list[uuid.UUID] = []
     for pass_ in passes:
@@ -80,13 +98,13 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
         if transect is None:
             continue
         if transect.end_points() is None:
-            gaps.append(Gap(TRANSECT, transect.name, "start and end coordinates", transect.id))
+            gaps.append(Gap(TRANSECT, transect.name, "start and end coordinates", transect.id, TRANSECT_COORDINATES))
         if transect.length_m is None:
-            gaps.append(Gap(TRANSECT, transect.name, "tape length", transect.id))
+            gaps.append(Gap(TRANSECT, transect.name, "tape length", transect.id, TRANSECT_LENGTH))
         if transect.depth_m is None:
-            gaps.append(Gap(TRANSECT, transect.name, "depth", transect.id))
+            gaps.append(Gap(TRANSECT, transect.name, "depth", transect.id, TRANSECT_DEPTH))
         if transect.site_id is None:
-            gaps.append(Gap(TRANSECT, transect.name, "site", transect.id))
+            gaps.append(Gap(TRANSECT, transect.name, "site", transect.id, TRANSECT_SITE))
 
     seen_clips: list[uuid.UUID] = []
     for pass_ in passes:
@@ -97,18 +115,18 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
             part for part in (transect.name if transect else "Unassigned", pass_.label, pass_.direction, camera) if part
         )
         if pass_.transect_id is None:
-            gaps.append(Gap(PASS, subject, "transect", pass_.id))
+            gaps.append(Gap(PASS, subject, "transect", pass_.id, PASS_TRANSECT))
         if pass_.direction is None:
-            gaps.append(Gap(PASS, subject, "direction", pass_.id))
-        if _untrimmed(pass_, videos):
-            gaps.append(Gap(PASS, subject, "start and end of the swim (not trimmed)", pass_.id))
+            gaps.append(Gap(PASS, subject, "direction", pass_.id, PASS_DIRECTION))
+        if is_untrimmed(pass_, videos):
+            gaps.append(Gap(PASS, subject, "start and end of the swim (not trimmed)", pass_.id, PASS_UNTRIMMED))
         if pass_.quality is None:
-            gaps.append(Gap(PASS, subject, "quality", pass_.id))
+            gaps.append(Gap(PASS, subject, "quality", pass_.id, PASS_QUALITY))
         runs = store.runs_for_pass(pass_.id)
         if not runs:
-            gaps.append(Gap(PASS, subject, "not processed yet", pass_.id))
+            gaps.append(Gap(PASS, subject, "not processed yet", pass_.id, PASS_NOT_RUN))
         elif runs[-1].status == "failed":
-            gaps.append(Gap(PASS, subject, "last run failed", pass_.id))
+            gaps.append(Gap(PASS, subject, "last run failed", pass_.id, PASS_RUN_FAILED))
         for video_id in [pass_.video_id, *pass_.extra_video_ids]:
             if video_id not in seen_clips:
                 seen_clips.append(video_id)
@@ -118,9 +136,9 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
         if video is None:
             continue
         if not video.camera_label:
-            gaps.append(Gap(CLIP, video.file_name, "camera", video.id))
+            gaps.append(Gap(CLIP, video.file_name, "camera", video.id, CLIP_CAMERA))
         if not video.rig_position:
-            gaps.append(Gap(CLIP, video.file_name, "rig position", video.id))
+            gaps.append(Gap(CLIP, video.file_name, "rig position", video.id, CLIP_RIG))
         if video.review == "unreviewed":
-            gaps.append(Gap(CLIP, video.file_name, "review", video.id))
+            gaps.append(Gap(CLIP, video.file_name, "review", video.id, CLIP_REVIEW))
     return gaps

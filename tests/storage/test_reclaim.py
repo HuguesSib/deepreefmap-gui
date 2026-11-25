@@ -274,3 +274,66 @@ def test_a_file_that_is_already_gone_is_refused_rather_than_reported_as_freed(tm
 
     with pytest.raises(ReclaimError):
         delete_input_clip(mount_clip(asset), store, confirmed_name="GX010042.MP4")
+
+
+# --- an expedition folder as the output root --------------------------------
+
+
+def _expedition(out_root: Path) -> tuple[Path, Path]:
+    """A transect with footage, and a finished run in its pass's RESULTS."""
+    transect = out_root / "VC_6m_01"
+    raw = transect / "pass_01_control" / "bwd" / "RAW"
+    raw.mkdir(parents=True)
+    (raw / "GX010099.MP4").write_bytes(b"v" * 2048)
+    run = write_run_tree(transect / "pass_01_control" / "bwd" / "RESULTS", "Cam1__1a2b3c4d")
+    (run / "run_manifest.json").write_text("{}")
+    return transect, run
+
+
+def test_a_transect_folder_is_never_deletable_as_a_run(out_root) -> None:
+    """Under an expedition root a transect is a direct child: it is the footage."""
+    transect, _run = _expedition(out_root)
+    item = MountItem(kind=KIND_ABORTED_RUN, label=transect.name, path=transect, size_bytes=4096)
+
+    with pytest.raises(ValueError, match="footage"):
+        delete_other(out_root, item)
+
+    assert (transect / "pass_01_control" / "bwd" / "RAW" / "GX010099.MP4").exists()
+
+
+def test_a_run_in_a_results_folder_can_be_removed(out_root) -> None:
+    _transect, run = _expedition(out_root)
+
+    freed = delete_run_folder(out_root, run)
+
+    assert not run.exists() and freed.items == 1
+    assert (out_root / "VC_6m_01" / "pass_01_control" / "bwd" / "RAW" / "GX010099.MP4").exists()
+
+
+def test_a_plain_folder_in_results_is_not_a_run(out_root) -> None:
+    """Somebody's own folder beside the runs carries no run files, so it stays."""
+    _transect, _run = _expedition(out_root)
+    notes = out_root / "VC_6m_01" / "pass_01_control" / "bwd" / "RESULTS" / "notes"
+    notes.mkdir()
+
+    with pytest.raises(ValueError):
+        delete_run_folder(out_root, notes)
+
+    assert notes.exists()
+
+
+def test_deleting_a_nested_run_takes_its_record(out_root) -> None:
+    from _factories import seed_pass
+
+    from deepreefmap_gui.survey import catalogue
+    from deepreefmap_gui.survey.models import RunRecord
+
+    _transect, run = _expedition(out_root)
+    store = SurveyStore(out_root / "survey.db")
+    _t, _v, pass_ = seed_pass(store)
+    record = RunRecord(pass_id=pass_.id, run_dir_name="VC_6m_01/pass_01_control/bwd/RESULTS/Cam1__1a2b3c4d")
+    store.add_run(record)
+
+    catalogue.delete_run_dir(out_root, run, store)
+
+    assert store.run_by_dir_name(record.run_dir_name) is None

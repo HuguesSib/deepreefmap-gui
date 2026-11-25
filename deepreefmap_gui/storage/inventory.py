@@ -31,6 +31,7 @@ from deepreefmap_gui.survey.catalogue import (
     LINK_UNKNOWN,
     RunEntry,
     VideoLibraryEntry,
+    holds_survey_footage,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,10 @@ def classify_mount(
 
     ``children`` is the output root's own listing as (name, is_dir, size), which
     the caller has already walked. A run directory is one this app wrote and the
-    catalogue knows; anything else directly under the output root is residue and
-    is listed but never pre-selected.
+    catalogue knows, directly under the output root or in an expedition's
+    RESULTS folders; anything else directly under the root is residue and is
+    listed but never pre-selected, except a folder holding footage, which is
+    not listed at all.
     """
     holds_out_root = volume_root(str(out_root), ismount=ismount) == root
     by_name = {entry.dir_name: entry for entry in entries if not entry.data_missing}
@@ -205,9 +208,31 @@ def classify_mount(
                     )
                 )
                 continue
+            # Under an expedition root the transects are direct children too;
+            # they are the footage, never residue to clear away.
+            if is_dir and holds_survey_footage(out_root / name):
+                continue
             item = _residue(out_root, name, is_dir=is_dir, size=size)
             if item is not None:
                 others.append(item)
+        # Runs inside an expedition tree's RESULTS folders, named by their path.
+        for name, entry in by_name.items():
+            if "/" not in name:
+                continue
+            run_dir = out_root / name
+            if not run_dir.is_dir():
+                continue
+            runs.append(
+                MountRun(
+                    dir_name=name,
+                    run_dir=run_dir,
+                    display_name=entry.display_name or name,
+                    status=entry.status_label,
+                    aborted=_aborted(run_dir),
+                    breakdown=breakdowns.get(name),
+                    total_hint=entry.size_bytes,
+                )
+            )
 
     return MountInventory(
         root=root,

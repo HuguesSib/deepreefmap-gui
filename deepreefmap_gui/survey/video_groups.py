@@ -40,6 +40,8 @@ VIEW_KEYS = tuple(key for key, _ in VIEWS)
 ELSEWHERE_KEY, ELSEWHERE_TITLE = "folder:elsewhere", "Outside this folder"
 # Folders that only hold the clips of the folder above them, so the tree skips them.
 _TRANSPARENT_FOLDERS = {"raw"}
+# fwd before bwd: the order a pass is swum. Everything else by name.
+_FOLDER_RANK = {"fwd": 0, "forward": 0, "bwd": 2, "back": 2, "reverse": 2}
 
 PERIOD_KEYS = tuple(key for key, _ in PERIODS)
 
@@ -209,10 +211,6 @@ def group_by_folder(entries: Iterable[VideoLibraryEntry], root: Path) -> list[Da
         elsewhere.sort(key=lambda e: e.video.path)
         groups.append(DateGroup(key=ELSEWHERE_KEY, title=ELSEWHERE_TITLE, entries=elsewhere))
     return groups
-
-
-# fwd before bwd: the order a pass is swum. Everything else by name.
-_FOLDER_RANK = {"fwd": 0, "forward": 0, "bwd": 2, "back": 2, "reverse": 2}
 
 
 def clip_sort_fact(entry: VideoLibraryEntry, column: str) -> str | float | None:

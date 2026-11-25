@@ -2279,23 +2279,29 @@ class VideoLibraryList(QScrollArea):
         # it under the cursor.
         self._shape = self._shape_of(self._groups)
 
-    def _subtree_entries(self, key: str) -> list[VideoLibraryEntry]:
-        """A group's clips and those of every group nested under it."""
+    def _tree(self) -> tuple[dict[str, DateGroup], dict[str | None, list[DateGroup]]]:
+        """The groups by key and by parent, built once per pass over the list."""
+        by_key = {group.key: group for group in self._groups}
         children: dict[str | None, list[DateGroup]] = {}
         for group in self._groups:
             children.setdefault(group.parent, []).append(group)
-        by_key = {group.key: group for group in self._groups}
+        return by_key, children
+
+    @staticmethod
+    def _subtree_entries(
+        group: DateGroup, children: dict[str | None, list[DateGroup]]
+    ) -> list[VideoLibraryEntry]:
+        """A group's clips and those of every group nested under it."""
         found: list[VideoLibraryEntry] = []
-        stack = [by_key[key]]
+        stack = [group]
         while stack:
-            group = stack.pop()
-            found.extend(group.entries)
-            stack.extend(children.get(group.key, []))
+            current = stack.pop()
+            found.extend(current.entries)
+            stack.extend(children.get(current.key, []))
         return found
 
-    def _ancestors_open(self, group: DateGroup) -> bool:
+    def _ancestors_open(self, group: DateGroup, by_key: dict[str, DateGroup]) -> bool:
         """Whether every group above this one is unfolded."""
-        by_key = {g.key: g for g in self._groups}
         parent = by_key.get(group.parent) if group.parent else None
         while parent is not None:
             if not self._group_headings[parent.key].isChecked():
@@ -2304,10 +2310,11 @@ class VideoLibraryList(QScrollArea):
         return True
 
     def _update_group_headings(self) -> None:
+        _by_key, children = self._tree()
         for group in self._groups:
             # A folder counts what lies below it too, so a transect heading says
             # how much footage it holds even though its clips sit in its passes.
-            entries = self._subtree_entries(group.key)
+            entries = self._subtree_entries(group, children)
             complete = sum("complete" in job_filters(entry) for entry in entries)
             expanded = self._group_expanded.get(group.key, complete != len(entries))
             heading = self._group_headings[group.key]
@@ -2326,8 +2333,9 @@ class VideoLibraryList(QScrollArea):
         self._apply_expansion()
 
     def _apply_expansion(self) -> None:
+        by_key, _children = self._tree()
         for group in self._groups:
-            shown = self._ancestors_open(group)
+            shown = self._ancestors_open(group, by_key)
             self._group_headings[group.key].setVisible(shown)
             expanded = shown and self._group_headings[group.key].isChecked()
             for entry in group.entries:

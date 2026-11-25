@@ -1105,9 +1105,11 @@ class InterfaceShellMixin(MixinBase):
         """
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
         store = self._survey_store_obj
-        if store is not None and store.path != db_path and self._survey_worker_running:
+        if store is not None and store.path != db_path and (
+            self._survey_worker_running or self._expedition_importing
+        ):
             logger.warning(
-                "Output root changed to %s while a batch is running; keeping %s until it ends",
+                "Output root changed to %s while a batch or import is running; keeping %s until it ends",
                 db_path,
                 store.path,
             )

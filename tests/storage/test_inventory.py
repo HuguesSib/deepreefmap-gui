@@ -197,3 +197,22 @@ def test_video_ids_survive_the_trip() -> None:
     (found,) = clips_on("/", [entry], ismount=ismount)
     assert isinstance(found.video_id, uuid.UUID)
     assert found.video_id == entry.video.id
+
+
+def test_an_expedition_root_lists_its_runs_and_never_its_transects(tmp_path) -> None:
+    raw = tmp_path / "VC_6m_01" / "pass_01_control" / "bwd" / "RAW"
+    raw.mkdir(parents=True)
+    (raw / "GX010099.MP4").write_bytes(b"v")
+    nested = "VC_6m_01/pass_01_control/bwd/RESULTS/Cam1__1a2b3c4d"
+    (tmp_path / nested).mkdir(parents=True)
+    (tmp_path / nested / "run_manifest.json").write_text("{}")
+    entry = run_entry(nested, run_dir=tmp_path / nested)
+
+    found = classify_mount(
+        str(tmp_path), tmp_path, entries=[entry], clips=[],
+        children=[("VC_6m_01", True, 4096)], breakdowns={},
+        ismount=lambda p: p == str(tmp_path),
+    )
+
+    assert [run.dir_name for run in found.runs] == [nested]
+    assert found.others == ()

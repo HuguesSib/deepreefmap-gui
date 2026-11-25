@@ -2381,33 +2381,23 @@ class SimpleBatchMixin(MixinBase):
     def _pass_dir_name(self, pass_: TransectPass, transect: Transect | None, store: SurveyStore) -> str:
         """A directory of its own for every attempt at a pass.
 
-        The first attempt is named ``{stem}__pNN__{passid8}``. A later attempt
-        derives from the first run's recorded name and appends ``__rNN``, so a
-        renamed transect or a deleted sibling cannot move a pass that already
-        ran. Attempts never share a directory: repeats are the reproducibility
-        data, and each keeps its own log and manifest. Resume speed relies on
-        seed_run_dir_from_match scanning every sibling, earlier attempts
-        included, and hard-linking matching frames.
+        The first attempt is named ``{stem}__pNN__{passid8}`` under the output
+        root, or, when the pass's clip sits in an expedition tree under it,
+        ``<transect>/<pass>/<dir>/RESULTS/{camera|clip}__{passid8}`` beside the
+        footage. A later attempt derives from the first run's recorded name and
+        appends ``__rNN``, so a renamed transect, a deleted sibling or a moved
+        clip cannot move a pass that already ran. Attempts never share a
+        directory: repeats are the reproducibility data, and each keeps its own
+        log and manifest. Resume speed relies on seed_run_dir_from_match scanning
+        every sibling, earlier attempts included, and hard-linking matching frames.
 
         A pass with no transect is named after its clip instead, which is the
         only thing it has to be recognised by in a folder listing.
         """
-        prior = store.runs_for_pass(pass_.id)
-        # A pass whose clips sit in an expedition tree under this root runs into
-        # that tree's RESULTS folder, one attempt per folder like everywhere else.
         out_root = Path(self._out_root_input.text()).expanduser()
-        first = store.get_video(pass_.video_id)
-        if first is not None:
-            from deepreefmap_gui.survey.expedition import results_dir_for
-
-            attempt = len(prior) + 1
-            while (name := results_dir_for(out_root, first, attempt)) is not None:
-                if store.run_by_dir_name(name) is None and not (out_root / name).exists():
-                    return name
-                attempt += 1
+        prior = store.runs_for_pass(pass_.id)
         if prior:
             base = re.sub(r"__r\d+$", "", prior[0].run_dir_name)
-            out_root = Path(self._out_root_input.text()).expanduser()
             attempt = len(prior) + 1
             while True:
                 name = f"{base}__r{attempt:02d}"
@@ -2415,6 +2405,13 @@ class SimpleBatchMixin(MixinBase):
                 if taken is None and not (out_root / name).exists():
                     return name
                 attempt += 1
+        first = store.get_video(pass_.video_id)
+        if first is not None:
+            from deepreefmap_gui.survey.expedition import results_dir_for
+
+            in_tree = results_dir_for(out_root, first, pass_.id)
+            if in_tree is not None:
+                return in_tree
         if transect is not None:
             siblings = store.list_passes(transect_id=pass_.transect_id)
             stem = transect.name
@@ -2430,6 +2427,9 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_start(self) -> None:
         if self._survey_preset is None or self._survey_worker_running:
+            return
+        if self._expedition_importing:
+            self._status_label.setText("Wait for the expedition import to finish before starting a batch.")
             return
         remaining = self._survey_remaining_rows()
         # Confirm before any run records are written, so a Cancel leaves the

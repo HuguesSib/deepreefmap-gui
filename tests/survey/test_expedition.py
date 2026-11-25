@@ -1,6 +1,7 @@
 """An expedition folder as a workspace: reading the tree, filing it, placing results."""
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -148,10 +149,11 @@ def test_results_go_beside_the_clips(tree, store):
     raw = next(v for v in store.list_videos() if v.file_name == "GX010100.MP4")
     loose = make_video("e" * 32, file_name="GX010028.MP4", path=str(tree / "VC_tests_Hugues" / "GX010028.MP4"))
 
-    assert results_dir_for(tree, named, 1) == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r01"
-    assert results_dir_for(tree, raw, 2) == "VC_6m_01/pass_02_angle/fwd/RESULTS/GX010100__r02"
-    assert results_dir_for(tree, loose, 1) is None
-    assert results_dir_for(tree.parent / "elsewhere", named, 1) is None
+    pid = uuid.UUID("1a2b3c4d" + "0" * 24)
+    assert results_dir_for(tree, named, pid) == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__1a2b3c4d"
+    assert results_dir_for(tree, raw, pid) == "VC_6m_01/pass_02_angle/fwd/RESULTS/GX010100__1a2b3c4d"
+    assert results_dir_for(tree, loose, pid) is None
+    assert results_dir_for(tree.parent / "elsewhere", named, pid) is None
 
 
 def test_runs_in_results_folders_are_found_and_named_by_their_path(tmp_path):
@@ -216,8 +218,51 @@ def test_the_batch_names_an_expedition_run_after_its_results_folder(tree, store)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name=first, status="failed"))
     second = SimpleBatchMixin._pass_dir_name(window, pass_, None, store)
 
-    assert first == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r01"
-    assert second == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r02"
+    tag = pass_.id.hex[:8]
+    assert first == f"VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__{tag}"
+    assert second == f"VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__{tag}__r02"
+
+
+def test_two_passes_from_one_camera_never_share_a_run_folder(tree, store):
+    """Two windows cut from one recording: each counts its own attempts."""
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.simple.batch import SimpleBatchMixin
+    from deepreefmap_gui.survey.models import TransectPass
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    named = next(v for v in store.list_videos() if v.camera_label == "Cam2")
+    whole = store.list_passes(video_id=named.id)[0]
+    second_window = TransectPass(
+        transect_id=whole.transect_id, video_id=named.id, begin_s=50.0, end_s=90.0, direction="reverse"
+    )
+    store.add_pass(second_window)
+    window = SimpleNamespace(
+        _out_root_input=SimpleNamespace(text=lambda: str(tree)),
+        _sanitize_run_name=lambda name: name,
+    )
+
+    names = {SimpleBatchMixin._pass_dir_name(window, p, None, store) for p in (whole, second_window)}
+
+    assert len(names) == 2
+
+
+def test_a_pass_with_flat_runs_keeps_its_runs_together(tree, store):
+    """Runs made before the import stay where their first attempt was."""
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.simple.batch import SimpleBatchMixin
+    from deepreefmap_gui.survey.models import RunRecord
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    pass_ = store.list_passes()[0]
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="VC_6m_01__p01__045876c3", status="succeeded"))
+    window = SimpleNamespace(
+        _out_root_input=SimpleNamespace(text=lambda: str(tree)),
+        _sanitize_run_name=lambda name: name,
+    )
+
+    assert SimpleBatchMixin._pass_dir_name(window, pass_, None, store) == "VC_6m_01__p01__045876c3__r02"
 
 
 def test_non_pass_clips_an_earlier_import_added_are_taken_out_while_unused(tree, store):
@@ -322,3 +367,103 @@ def test_an_old_run_copied_into_results_joins_the_imported_records(tree, store):
     assert (passes[0].begin_s, passes[0].end_s) == (12.0, 80.0)  # the run's trim
     assert [r.run_dir_name for r in store.runs_for_pass(imported.id)] == [nested]
     assert store.rebuild_from_scan(tree).runs == 0  # and once only
+
+
+def test_an_old_run_with_a_site_joins_the_imported_site_less_transect(tree, store):
+    """The import makes transects without a site; a run that knew one fills it in."""
+    from deepreefmap_gui.survey.models import RunRecord, Site, TransectPass
+    from deepreefmap_gui.survey.models.campaign import Campaign
+    from deepreefmap_gui.survey.models.convert import survey_manifest_block
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    clip = next(v for v in store.list_videos() if v.camera_label == "Cam2")
+    imported = store.list_passes(video_id=clip.id)[0]
+    site = Site(name="Aqaba", country="Jordan")
+    old_transect = make_transect("VC_6m_01", site_id=site.id)
+    old_pass = TransectPass(
+        transect_id=old_transect.id, video_id=clip.id, begin_s=10.0, end_s=70.0, direction="reverse"
+    )
+    old_run = RunRecord(pass_id=old_pass.id, run_dir_name="x", status="succeeded")
+    write_run(
+        tree, "VC_6m_01/pass_01_control/bwd/RESULTS/old",
+        input_videos=[clip.path], video_hashes=[clip.hash],
+        survey=survey_manifest_block(
+            old_run, old_pass, old_transect, None, site=site, campaign=Campaign(name="2026_11_JO_EXPE")
+        ),
+    )
+
+    store.rebuild_from_scan(tree)
+
+    six = [t for t in store.list_transects() if t.name == "VC_6m_01"]
+    assert len(six) == 1 and six[0].site_id == site.id
+    assert [p.id for p in store.list_passes(video_id=clip.id)] == [imported.id]
+
+
+def test_a_note_in_brackets_written_by_a_person_is_not_taken_for_a_tag(tree, store):
+    noted = store.upsert_video(make_video(
+        "b1" * 16, file_name="GX010092.MP4", path=str(tree / "VC_6m_01" / "context" / "GX010092.MP4"),
+        notes="[blurry]",
+    ))
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    assert report.removed_other == 0
+    assert noted.id in {v.id for v in store.list_videos()}
+
+
+def test_a_transect_this_expedition_already_uses_is_preferred(tree, store):
+    """T names repeat across trips: the line this expedition files under wins."""
+    from deepreefmap_gui.survey.models import Site, TransectPass
+    from deepreefmap_gui.survey.models.campaign import Campaign
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    ours = next(t for t in store.list_transects() if t.name == "VC_12m_01")
+    other_trip = Campaign(name="2025_10_eritrea")
+    store.add_campaign(other_trip)
+    elsewhere = Site(name="Massawa", country="Eritrea")
+    store.add_site(elsewhere)
+    theirs = make_transect("VC_12m_01", site_id=elsewhere.id)
+    store.add_transect(theirs)
+    clip = store.upsert_video(make_video("c2" * 16, path="/elsewhere/X.MP4"))
+    store.add_pass(
+        TransectPass(transect_id=theirs.id, video_id=clip.id, begin_s=0, end_s=10, campaign_id=other_trip.id)
+    )
+    (tree / "VC_12m_01" / "pass_02_new" / "fwd").mkdir(parents=True)
+    _clip(tree / "VC_12m_01" / "pass_02_new" / "fwd" / "GX010300.MP4")
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    new_pass = next(p for p in store.list_passes() if p.label == "pass_02_new")
+    assert new_pass.transect_id == ours.id
+    assert report.shared_transects == []
+
+
+def test_a_name_another_expedition_holds_without_a_site_is_shared_and_said(tree, store):
+    from deepreefmap_gui.survey.models import TransectPass
+    from deepreefmap_gui.survey.models.campaign import Campaign
+
+    other_trip = Campaign(name="2025_10_eritrea")
+    store.add_campaign(other_trip)
+    theirs = make_transect("VC_12m_01")
+    store.add_transect(theirs)
+    clip = store.upsert_video(make_video("c3" * 16, path="/elsewhere/Y.MP4"))
+    store.add_pass(
+        TransectPass(transect_id=theirs.id, video_id=clip.id, begin_s=0, end_s=10, campaign_id=other_trip.id)
+    )
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    assert report.shared_transects == ["VC_12m_01"]
+    assert "shared with another expedition" in report.summary()
+
+
+def test_a_clip_first_added_through_a_symlink_is_not_its_own_duplicate(tree, store, tmp_path):
+    link = tmp_path / "links" / tree.name  # same expedition, reached another way
+    link.parent.mkdir()
+    link.symlink_to(tree)
+    import_expedition(store, scan_expedition(link), probe=_probe)
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    assert report.duplicates == []
+    assert report.passes_created == 0

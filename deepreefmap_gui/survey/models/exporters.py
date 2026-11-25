@@ -66,17 +66,21 @@ def save_transects_csv(
 
 
 def pass_column_names(covers: Sequence[Any]) -> list[str]:
-    """One column name per pass: the video file it was cut from.
+    """One distinct column name per pass: the video file it was cut from.
 
-    Two passes cut from one clip would share a name, so those also carry their
-    window; a cover with no clip name falls back to its run folder.
+    Two passes cut from one clip would share that name, so those also carry
+    their window; reruns of one pass, or two cameras' same-named files over the
+    same window, still would, so those add their run folder's own name. A cover
+    with no clip name falls back to its run folder.
     """
     names = [getattr(c, "video_name", "") or c.run_dir_name for c in covers]
+    names = _disambiguate(names, covers, lambda name, c: f"{name} {c.begin_s:.0f}-{c.end_s:.0f}s")
+    return _disambiguate(names, covers, lambda name, c: f"{name} ({Path(c.run_dir_name).name})")
+
+
+def _disambiguate(names: list[str], covers: Sequence[Any], extend: Any) -> list[str]:
     repeated = {name for name in names if names.count(name) > 1}
-    return [
-        f"{name} {c.begin_s:.0f}-{c.end_s:.0f}s" if name in repeated else name
-        for name, c in zip(names, covers, strict=True)
-    ]
+    return [extend(name, c) if name in repeated else name for name, c in zip(names, covers, strict=True)]
 
 
 def save_repeatability_csv(

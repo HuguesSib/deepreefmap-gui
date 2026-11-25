@@ -172,6 +172,8 @@ class VideoLibraryMixin(MixinBase):
 
     _video_clip_filter: str = "all"
     _video_period: str = DEFAULT_PERIOD
+    # True while an expedition import writes the store from its worker thread.
+    _expedition_importing: bool = False
     _video_sort_column: str = DEFAULT_SORT_COLUMN
     _video_sort_descending: bool = DEFAULT_SORT_DESCENDING
     _selected_pass_id: str | None = None
@@ -405,8 +407,8 @@ class VideoLibraryMixin(MixinBase):
 
         from deepreefmap_gui.survey.expedition import scan_expedition
 
-        if self._survey_worker_running:
-            self._status_label.setText("Wait for the running batch to finish before opening another expedition.")
+        if self._survey_worker_running or self._expedition_importing:
+            self._status_label.setText("Wait for the running batch or import to finish before opening an expedition.")
             return
         start = str(Path(self._out_root_input.text()).expanduser().parent)
         chosen = QFileDialog.getExistingDirectory(self, "Open expedition folder", start)
@@ -435,13 +437,17 @@ class VideoLibraryMixin(MixinBase):
         answer = QMessageBox.question(self, "Open expedition folder", "\n".join(lines))
         if answer != QMessageBox.StandardButton.Yes:
             return
+        previous_root = self._out_root_input.text()
         self._out_root_input.setText(chosen)
         store = self._try_survey_store()
         if store is None:
+            self._out_root_input.setText(previous_root)
             self._status_label.setText("Cannot import: the survey database in that folder will not open.")
             return
         self._status_label.setText(f"Reading {in_passes} clip(s) from {layout.name}…")
         self._expedition_open_btn.setEnabled(False)
+        # Pins the store (see _survey_store) and holds off a batch until done.
+        self._expedition_importing = True
 
         def worker() -> None:
             from deepreefmap_gui.survey.expedition import import_expedition
@@ -450,15 +456,16 @@ class VideoLibraryMixin(MixinBase):
                 report = import_expedition(store, layout)
             except Exception as exc:  # reported, not raised: the window must stay up
                 logger.exception("Expedition import failed")
-                self._sig_expedition_imported.emit((layout.name, None, str(exc)))
+                self._sig_expedition_imported.emit((layout.name, None, str(exc), store))
                 return
-            self._sig_expedition_imported.emit((layout.name, report, None))
+            self._sig_expedition_imported.emit((layout.name, report, None, store))
 
         self._expedition_thread = threading.Thread(target=worker, daemon=True)
         self._expedition_thread.start()
 
     def _on_expedition_imported(self, result: object) -> None:
-        name, report, error = result  # type: ignore[misc]
+        name, report, error, imported_into = result  # type: ignore[misc]
+        self._expedition_importing = False
         self._expedition_open_btn.setEnabled(True)
         if error is not None:
             self._status_label.setText(f"Import of {name} stopped: {error}")
@@ -487,10 +494,12 @@ class VideoLibraryMixin(MixinBase):
             )
         self._refresh_data_manager()
         self._refresh_video_library()
+        # The checklist belongs to the database the import wrote, and only makes
+        # sense while that is still the one the window shows.
         store = self._try_survey_store()
-        campaign = next(
-            (c for c in store.list_campaigns() if c.name.lower() == name.lower()), None
-        ) if store is not None else None
+        if store is None or store.path != imported_into.path:
+            return
+        campaign = next((c for c in store.list_campaigns() if c.name.lower() == name.lower()), None)
         if campaign is not None:
             self._show_missing_data(campaign.id)
 

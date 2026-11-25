@@ -21,6 +21,7 @@ from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.survey.completeness import (
     CLIP,
     EXPEDITION,
+    EXPEDITION_DATES,
     LEVELS,
     PASS,
     TRANSECT,
@@ -117,7 +118,7 @@ class MissingDataDialog(QDialog):
             group.setExpanded(level != CLIP)
         self.summary.setText(COMPLETE_NOTE if not gaps else f"{len(gaps)} item(s) missing. {OPEN_HINT}")
         begin, end = capture_span(self._store, self._campaign_id)
-        dates_missing = any(g.level == EXPEDITION and "dates" in g.item for g in gaps)
+        dates_missing = any(g.code == EXPEDITION_DATES for g in gaps)
         self.dates_btn.setVisible(dates_missing and begin is not None)
         if begin is not None:
             self.dates_btn.setText(f"Use clip dates for the expedition ({begin} to {end})")
