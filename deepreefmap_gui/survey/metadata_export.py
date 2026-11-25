@@ -54,6 +54,7 @@ METADATA_COLUMNS = [
     # What a person said about the clip.
     "camera_label",
     "rig_position",
+    "view",
     "upside_down",
     "review",
     "clip_notes",
@@ -107,6 +108,7 @@ def _clip_columns(video: VideoAsset | None, ordinal: int | None) -> dict[str, An
         "size_bytes": video.size_bytes,
         "camera_label": video.camera_label,
         "rig_position": video.rig_position,
+        "view": video.view,
         "upside_down": video.upside_down,
         "review": video.review,
         "clip_notes": video.notes,

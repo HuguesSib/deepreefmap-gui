@@ -65,6 +65,7 @@ from deepreefmap_gui.survey.completeness import (
 )
 from deepreefmap_gui.survey.models.importers import parse_latlon
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS, PASS_QUALITIES
+from deepreefmap_gui.survey.models.video_asset import VIEW_DOWN
 from deepreefmap_gui.survey.store import SurveyStore
 
 LEVEL_TITLES = {
@@ -556,8 +557,13 @@ class MissingDataDialog(QDialog):
         return bool(name) and self._set_on_videos(gaps, "camera_label", name)
 
     def _fill_rig(self, gaps: Sequence[Gap]) -> bool:
-        choices = [(label, code) for code, label in RIG_POSITIONS]
-        value = self._choose(f"Rig position of {self._for(gaps)}", "Rig position", choices)
+        # A down-looking camera is offered here too, since that is where someone
+        # going through the rig's cameras says so; it marks the clip, not a side.
+        choices = [*((label, code) for code, label in RIG_POSITIONS), ("Looks down (not processed)", VIEW_DOWN)]
+        note = "Down-looking clips keep their details but are left out of processing."
+        value = self._choose(f"Rig position of {self._for(gaps)}", "Rig position", choices, note)
+        if value == VIEW_DOWN:
+            return self._set_on_videos(gaps, "view", VIEW_DOWN)
         return self._set_on_videos(gaps, "rig_position", value)
 
     def _fill_review(self, gaps: Sequence[Gap]) -> bool:

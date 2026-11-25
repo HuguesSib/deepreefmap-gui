@@ -454,8 +454,8 @@ def _forget_unused_role_clips(store, layout: ExpeditionLayout) -> int:
         if video.id in used or not video.notes.startswith("[") or "]" not in video.notes:
             continue
         tag, _, rest = video.notes[1:].partition("]")
-        if rest.strip() or video.camera_label or video.rig_position or video.review != "unreviewed":
-            continue
+        if rest.strip() or any(getattr(video, f) != d for f, d in VideoAsset.REVIEW_DEFAULTS.items() if f != "notes"):
+            continue  # somebody has described it
         # Only the tag earlier builds wrote: the clip's own folder name (or
         # "<transect>/<folder>" for a folder of a transect without passes). A
         # note like "[blurry]" is a person's and is left alone.

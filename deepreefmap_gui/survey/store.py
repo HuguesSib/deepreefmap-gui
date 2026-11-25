@@ -899,6 +899,15 @@ _MIGRATIONS: list[Migration] = [
         "run performance observations",
         "ALTER TABLE run_record ADD COLUMN performance_observation TEXT;",
     ),
+    # Which way a clip's camera looks. A down-looking camera rides the same rig
+    # and is described like the rest, but the pipeline reconstructs oblique
+    # footage only, so a down clip is kept out of processing.
+    Migration(
+        25,
+        "a clip records which way its camera looks",
+        "ALTER TABLE video_asset ADD COLUMN view TEXT NOT NULL DEFAULT 'oblique' "
+        "CHECK (view IN ('oblique', 'down'));",
+    ),
 ]
 
 
@@ -1743,6 +1752,15 @@ class SurveyStore:
 
     def list_videos(self) -> list[VideoAsset]:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
+
+    def pass_looks_down(self, pass_id: uuid.UUID) -> bool:
+        """Whether the pass was shot by a down-looking camera, and so is never processed."""
+        row = self._conn().execute(
+            "SELECT 1 FROM transect_pass JOIN video_asset ON video_asset.id = transect_pass.video_id "
+            "WHERE transect_pass.id = ? AND video_asset.view = 'down'",
+            (str(pass_id),),
+        ).fetchone()
+        return row is not None
 
     def camera_labels(self) -> list[str]:
         """Every camera name already given to a live clip, for picking rather than retyping."""

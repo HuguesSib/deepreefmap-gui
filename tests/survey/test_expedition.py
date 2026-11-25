@@ -489,3 +489,45 @@ def test_a_transect_folder_renamed_on_disk_takes_its_passes_and_details(tree, st
     assert len(store.list_passes(transect_id=new.id)) == 1
     assert report.passes_created == 0
     assert report.transects_renamed == ["VC_12m_01 → VCX_12m_01"]
+
+
+def test_a_down_looking_clip_owes_details_but_no_trim_or_run(tree, store):
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    pass_ = next(p for p in store.list_passes() if store.get_video(p.video_id).file_name == "GX010200.MP4")
+    video = store.get_video(pass_.video_id)
+    video.view = "down"
+    store.update_video(video)
+
+    owed = {(g.record_id, g.item) for g in missing_data(store, pass_.campaign_id)}
+
+    assert store.pass_looks_down(pass_.id)
+    assert (pass_.id, "quality") in owed
+    assert (video.id, "camera") in owed
+    assert not {item for rid, item in owed if rid == pass_.id} & {
+        "start and end of the swim (not trimmed)", "not processed yet"
+    }
+    assert (video.id, "rig position") not in owed
+    # And it survives a reopen, through the migration's column.
+    assert SurveyStore(tree / "survey.db").get_video(video.id).view == "down"
+
+
+def test_the_queue_refuses_a_pass_shot_looking_down(tree, store):
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.simple.batch import SimpleBatchMixin
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    down, oblique = store.list_passes()[:2]
+    video = store.get_video(down.video_id)
+    video.view = "down"
+    store.update_video(video)
+    carted = []
+    window = SimpleNamespace(
+        _survey_store=lambda: store,
+        _ensure_cart_batch=lambda: SimpleNamespace(id=None),
+    )
+    store.add_batch_item = carted.append  # only membership is under test
+
+    assert SimpleBatchMixin._cart_add(window, down.id) is False
+    assert carted == []
+    assert store.pass_looks_down(oblique.id) is False

@@ -95,7 +95,8 @@ def test_a_clip_leaves_its_disk_location_behind():
 
     row = wire.rows_to_wire("videos", [video])[0]
 
-    assert {"path", "mtime", "probed_at"}.isdisjoint(row)
+    # view too, until the registry's contract carries it.
+    assert {"path", "mtime", "probed_at", "view"}.isdisjoint(row)
     assert row["file_name"] == video.file_name
     assert (row["hash"], row["gravity"], row["gps"]) == (video.hash, video.gravity, video.gps)
     assert row["id"] == str(video.id)

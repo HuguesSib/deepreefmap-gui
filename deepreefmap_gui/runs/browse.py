@@ -715,6 +715,7 @@ class BrowseMixin(MixinBase):
         store = self._survey_store()
         added: set[uuid.UUID] = set()
         skipped = 0
+        down = 0  # shot looking down: described, never processed
         for entry in entries:
             try:
                 pass_ = catalogue.ensure_pass_for_entry(store, entry)
@@ -723,9 +724,11 @@ class BrowseMixin(MixinBase):
                 continue
             if pass_.id in added:
                 continue
-            self._cart_add(pass_.id)
+            if not self._cart_add(pass_.id):
+                down += 1
+                continue
             added.add(pass_.id)
-        if not added and not skipped:
+        if not added and not skipped and not down:
             return
         if added:
             self._refresh_survey_batch_tab()
@@ -737,6 +740,8 @@ class BrowseMixin(MixinBase):
         )
         if skipped:
             message += f" Skipped {skipped} with no recoverable time range."
+        if down:
+            message += f" Left out {down} shot looking down (not processed)."
         self._status_label.setText(message)
 
     def _focus_browse_on_session(self, batch_id: uuid.UUID) -> None:

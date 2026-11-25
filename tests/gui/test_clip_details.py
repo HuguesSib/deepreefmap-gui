@@ -35,3 +35,14 @@ def test_a_blank_camera_is_none():
     dialog.apply_to(video)
 
     assert video.camera_label is None
+
+
+def test_a_clip_can_be_marked_as_looking_down():
+    video = make_video()
+    dialog = ClipDetailsDialog(None, video)
+    assert dialog.view_input.currentData() == "oblique"
+
+    dialog.view_input.setCurrentIndex(dialog.view_input.findData("down"))
+    dialog.apply_to(video)
+
+    assert video.view == "down"

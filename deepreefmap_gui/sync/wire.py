@@ -93,7 +93,8 @@ _assert_sections_match_the_contract()
 # once, in one session, and which runs went through together is provenance the
 # console groups by.
 _DEVICE_LOCAL: dict[str, tuple[str, ...]] = {
-    "videos": ("path", "mtime", "probed_at"),
+    # view is not in the registry's contract yet, so it stays on this device.
+    "videos": ("path", "mtime", "probed_at", "view"),
     "passes": ("batch_id", "video_id", "extra_video_ids"),
 }
 

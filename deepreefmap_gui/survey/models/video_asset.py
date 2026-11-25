@@ -32,6 +32,11 @@ def container_fields(meta: VideoMeta, mtime: str | None) -> dict[str, object]:
     }
 
 
+VIEW_OBLIQUE = "oblique"
+VIEW_DOWN = "down"
+VIEWS = ((VIEW_OBLIQUE, "Oblique"), (VIEW_DOWN, "Down (not processed)"))
+
+
 @dataclass(slots=True)
 class VideoAsset:
     """One clip on disk. Identity is ``hash``; ``path`` is advisory and may go stale."""
@@ -57,6 +62,9 @@ class VideoAsset:
     camera_label: str | None = None
     rig_position: str | None = None
     upside_down: bool = False
+    # Where the camera looks: oblique footage is what the pipeline reconstructs;
+    # a down-looking camera is recorded alongside it but never processed.
+    view: str = "oblique"
     review: str = "unreviewed"
     notes: str = ""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
@@ -107,6 +115,7 @@ class VideoAsset:
         "camera_label",
         "rig_position",
         "upside_down",
+        "view",
         "review",
         "notes",
     )
@@ -114,6 +123,7 @@ class VideoAsset:
         "camera_label": None,
         "rig_position": None,
         "upside_down": False,
+        "view": "oblique",
         "review": "unreviewed",
         "notes": "",
     }

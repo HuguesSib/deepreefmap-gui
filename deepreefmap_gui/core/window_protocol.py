@@ -510,7 +510,7 @@ if TYPE_CHECKING:
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
         def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
         def _take_pass_out_of_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
-        def _cart_add(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
+        def _cart_add(self, pass_id: uuid.UUID) -> bool: ...  # SimpleBatchMixin
         def _refresh_survey_transect_names(self) -> None: ...  # SimpleBatchMixin
         def _rows_over_memory(self) -> int: ...  # SimpleBatchMixin
         def _refresh_settings_cells(self) -> None: ...  # SimpleBatchMixin

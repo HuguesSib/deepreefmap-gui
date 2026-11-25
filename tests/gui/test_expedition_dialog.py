@@ -281,3 +281,16 @@ def test_the_real_form_hands_back_what_was_typed(store, expedition):
 
     stored = store.get_campaign(campaign.id)
     assert (stored.begin_date, stored.end_date) == ("2026-11-20", "2026-11-27")
+
+
+def test_the_rig_question_can_mark_clips_as_looking_down(store, expedition, monkeypatch):
+    campaign, _t, passes = expedition
+    dialog = MissingDataDialog(None, store, campaign.id, Spy(store).actions())
+    _select(dialog, _lines(dialog, CLIP_RIG))
+    monkeypatch.setattr(MissingDataDialog, "_choose", lambda self, title, label, choices, note="": "down")
+
+    dialog.fill_selected()
+
+    assert {store.get_video(p.video_id).view for p in passes} == {"down"}
+    assert {store.get_video(p.video_id).rig_position for p in passes} == {None}
+    assert _lines(dialog, CLIP_RIG) == [] and _lines(dialog, PASS_UNTRIMMED) == []

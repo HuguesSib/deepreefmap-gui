@@ -34,6 +34,7 @@ from deepreefmap_gui.survey.catalogue import (
     LINK_MISSING,
     VideoLibraryEntry,
 )
+from deepreefmap_gui.survey.models.video_asset import VIEWS
 from deepreefmap_gui.survey.statuses import clip_spec
 
 UNAVAILABLE = "Video unavailable"
@@ -222,6 +223,7 @@ class VideoDetailPanel(DetailCard):
         self.clip_metadata.set_rows([
             ("Camera", entry.video.camera_label or "Not recorded"),
             ("Rig position", dict(RIG_POSITIONS).get(entry.video.rig_position or "", "Not recorded")),
+            ("View", dict(VIEWS).get(entry.video.view, entry.video.view)),
             ("Mounting", "Upside down" if entry.video.upside_down else "Upright"),
             ("Review", dict(REVIEWS).get(entry.video.review, entry.video.review)),
             ("Notes", entry.video.notes or "None"),

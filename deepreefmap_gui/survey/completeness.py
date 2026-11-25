@@ -12,6 +12,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from deepreefmap_gui.survey.models.video_asset import VIEW_DOWN
+
 EXPEDITION = "expedition"
 TRANSECT = "transect"
 PASS = "pass"
@@ -120,15 +122,18 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
             gaps.append(Gap(PASS, subject, "transect", pass_.id, PASS_TRANSECT))
         if pass_.direction is None:
             gaps.append(Gap(PASS, subject, "direction", pass_.id, PASS_DIRECTION))
-        if is_untrimmed(pass_, videos):
-            gaps.append(Gap(PASS, subject, "start and end of the swim (not trimmed)", pass_.id, PASS_UNTRIMMED))
+        if first is not None and first.view == VIEW_DOWN:
+            pass  # a down-looking camera is never processed, so no trim or run is owed
+        else:
+            if is_untrimmed(pass_, videos):
+                gaps.append(Gap(PASS, subject, "start and end of the swim (not trimmed)", pass_.id, PASS_UNTRIMMED))
+            runs = store.runs_for_pass(pass_.id)
+            if not runs:
+                gaps.append(Gap(PASS, subject, "not processed yet", pass_.id, PASS_NOT_RUN))
+            elif runs[-1].status == "failed":
+                gaps.append(Gap(PASS, subject, "last run failed", pass_.id, PASS_RUN_FAILED))
         if pass_.quality is None:
             gaps.append(Gap(PASS, subject, "quality", pass_.id, PASS_QUALITY))
-        runs = store.runs_for_pass(pass_.id)
-        if not runs:
-            gaps.append(Gap(PASS, subject, "not processed yet", pass_.id, PASS_NOT_RUN))
-        elif runs[-1].status == "failed":
-            gaps.append(Gap(PASS, subject, "last run failed", pass_.id, PASS_RUN_FAILED))
         where = " · ".join(
             part for part in (transect.name if transect else "Unassigned", pass_.label, pass_.direction) if part
         )
@@ -141,7 +146,7 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
         video = videos[video_id]
         if not video.camera_label:
             gaps.append(Gap(CLIP, subject, "camera", video.id, CLIP_CAMERA))
-        if not video.rig_position:
+        if not video.rig_position and video.view != VIEW_DOWN:
             gaps.append(Gap(CLIP, subject, "rig position", video.id, CLIP_RIG))
         if video.review == "unreviewed":
             gaps.append(Gap(CLIP, subject, "review", video.id, CLIP_REVIEW))
