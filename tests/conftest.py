@@ -7,6 +7,40 @@ import time
 
 import pytest
 
+_QSETTINGS_DIR = tempfile.mkdtemp(prefix="deepreefmap-test-qsettings-")
+
+
+def _sandbox_qsettings() -> None:
+    """Make every QSettings the app creates an INI file under a temp dir.
+
+    Runs at import, before any test module imports the app: the app builds
+    ``QSettings("ECEO", "deepreefmap")``, which is NativeFormat, and on macOS
+    NativeFormat is CFPreferences (~/Library/Preferences/com.eceo.deepreefmap.plist),
+    where ``QSettings.setPath`` has no effect. The suite then overwrote the
+    developer's own output folder and hidden-clip list. Swapping in a subclass
+    that turns the (organization, application) form into an IniFormat instance
+    routes it through the redirected INI path on every platform, the Windows
+    registry included.
+    """
+    from PySide6 import QtCore
+
+    real = QtCore.QSettings
+    for fmt in (real.Format.NativeFormat, real.Format.IniFormat):
+        real.setPath(fmt, real.Scope.UserScope, _QSETTINGS_DIR)
+        real.setPath(fmt, real.Scope.SystemScope, _QSETTINGS_DIR)
+    real.setDefaultFormat(real.Format.IniFormat)
+
+    class SandboxedQSettings(real):
+        def __init__(self, *args, **kwargs):
+            if len(args) == 2 and not kwargs and all(isinstance(a, str) for a in args):
+                args = (real.Format.IniFormat, real.Scope.UserScope, *args)
+            super().__init__(*args, **kwargs)
+
+    QtCore.QSettings = SandboxedQSettings
+
+
+_sandbox_qsettings()
+
 
 def _headless() -> None:
     """Keep the suite off the developer's screen: `Xvfb` if there is one, else `offscreen`.
@@ -187,21 +221,16 @@ def _isolate_camera_profiles(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_qsettings():
-    """Redirect all QSettings storage to a tempdir for the whole test session.
-
-    setDefaultFormat(IniFormat) does not flip QSettings(org, app) instances under
-    PySide6, so redirect the NativeFormat path itself. On Windows that path is the
-    registry, where setPath has no effect.
+    """Every QSettings of the session lives in a temp dir (see _sandbox_qsettings).
 
     A missing PySide6 is raised, not swallowed: yielding without isolation would
     let the rest of the session write to the developer's real config.
     """
     from PySide6.QtCore import QSettings
 
-    tmp = tempfile.mkdtemp(prefix="deepreefmap-test-qsettings-")
-    for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
-        QSettings.setPath(fmt, QSettings.Scope.UserScope, tmp)
-        QSettings.setPath(fmt, QSettings.Scope.SystemScope, tmp)
+    # The class swap happens at import (_sandbox_qsettings); this only checks it
+    # took, so a session never runs against the real settings unnoticed.
+    assert QSettings.__name__ == "SandboxedQSettings", "QSettings sandbox was not installed"
     yield
 
 
