@@ -184,8 +184,9 @@ def test_missing_data_lists_what_the_folders_cannot_say(tree, store):
     assert sum("not trimmed" in g.item for g in by_level[PASS]) == 5
     assert sum(g.item == "not processed yet" for g in by_level[PASS]) == 5
     cameras = [g.subject for g in by_level[CLIP] if g.item == "camera"]
-    assert "VC_6m_01_pass01_bwd_Cam2_GX010051.MP4" not in cameras
-    assert "GX010099.MP4" in cameras
+    assert not any(c.endswith("_Cam2_GX010051.MP4") for c in cameras)
+    # Named by where they were swum, so same-named clips can be told apart.
+    assert "VC_6m_01 · pass_01_control · forward · GX010099.MP4" in cameras
 
 
 def test_the_expedition_dates_can_come_from_the_clips(tree, store):

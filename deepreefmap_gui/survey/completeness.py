@@ -106,7 +106,9 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
         if transect.site_id is None:
             gaps.append(Gap(TRANSECT, transect.name, "site", transect.id, TRANSECT_SITE))
 
-    seen_clips: list[uuid.UUID] = []
+    # Each clip named by where it was swum, so a clip list of GX0100…s can be
+    # told apart and picked out a pass at a time.
+    seen_clips: dict[uuid.UUID, str] = {}
     for pass_ in passes:
         transect = transects.get(pass_.transect_id) if pass_.transect_id else None
         first = videos.get(pass_.video_id)
@@ -127,18 +129,20 @@ def missing_data(store: Any, campaign_id: uuid.UUID) -> list[Gap]:
             gaps.append(Gap(PASS, subject, "not processed yet", pass_.id, PASS_NOT_RUN))
         elif runs[-1].status == "failed":
             gaps.append(Gap(PASS, subject, "last run failed", pass_.id, PASS_RUN_FAILED))
-        for video_id in [pass_.video_id, *pass_.extra_video_ids]:
-            if video_id not in seen_clips:
-                seen_clips.append(video_id)
+        where = " · ".join(
+            part for part in (transect.name if transect else "Unassigned", pass_.label, pass_.direction) if part
+        )
+        for video_id in pass_.video_ids():
+            video = videos.get(video_id)
+            if video is not None and video_id not in seen_clips:
+                seen_clips[video_id] = f"{where} · {video.file_name}"
 
-    for video_id in seen_clips:
-        video = videos.get(video_id)
-        if video is None:
-            continue
+    for video_id, subject in seen_clips.items():
+        video = videos[video_id]
         if not video.camera_label:
-            gaps.append(Gap(CLIP, video.file_name, "camera", video.id, CLIP_CAMERA))
+            gaps.append(Gap(CLIP, subject, "camera", video.id, CLIP_CAMERA))
         if not video.rig_position:
-            gaps.append(Gap(CLIP, video.file_name, "rig position", video.id, CLIP_RIG))
+            gaps.append(Gap(CLIP, subject, "rig position", video.id, CLIP_RIG))
         if video.review == "unreviewed":
-            gaps.append(Gap(CLIP, video.file_name, "review", video.id, CLIP_REVIEW))
+            gaps.append(Gap(CLIP, subject, "review", video.id, CLIP_REVIEW))
     return gaps

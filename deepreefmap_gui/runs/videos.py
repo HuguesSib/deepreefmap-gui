@@ -518,7 +518,8 @@ class VideoLibraryMixin(MixinBase):
         self._show_missing_data(campaign_id)
 
     def _show_missing_data(self, campaign_id: uuid.UUID) -> None:
-        from deepreefmap_gui.simple.expedition_dialog import MissingDataDialog
+        from deepreefmap_gui.simple.expedition_dialog import ChecklistActions, MissingDataDialog
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
 
         store = self._try_survey_store()
         if store is None:
@@ -526,27 +527,18 @@ class VideoLibraryMixin(MixinBase):
         previous = getattr(self, "_missing_dialog", None)
         if previous is not None:
             previous.close()
-        dialog = MissingDataDialog(self, store, campaign_id, self._open_gap)
+        dialog = MissingDataDialog(
+            self,
+            store,
+            campaign_id,
+            ChecklistActions(
+                trim=lambda pass_id: self._on_section_retrim(str(pass_id)),
+                queue=self._add_pass_to_cart,
+                read_only=lambda row: read_only(row, own_device_id()),
+            ),
+        )
         self._missing_dialog = dialog
         dialog.show()
-
-    def _open_gap(self, gap) -> None:
-        """Take a checklist line to the editor that fills it."""
-        from deepreefmap_gui.survey.completeness import CLIP, EXPEDITION, PASS, TRANSECT
-
-        if gap.level == EXPEDITION:
-            from deepreefmap_gui.simple.catalogue_dialogs import CampaignDialog
-
-            store = self._try_survey_store()
-            campaign = store.get_campaign(gap.record_id) if store is not None else None
-            if campaign is not None:
-                CampaignDialog(self, store, campaign).exec()
-        elif gap.level == TRANSECT:
-            self._open_transect_page(gap.record_id)
-        elif gap.level == PASS:
-            self._select_section(str(gap.record_id))
-        elif gap.level == CLIP:
-            self._on_clip_details(str(gap.record_id))
 
     def _set_video_column(self, column: str, visible: bool) -> None:
         self._settings.setValue(f"video_column_{column}", visible)

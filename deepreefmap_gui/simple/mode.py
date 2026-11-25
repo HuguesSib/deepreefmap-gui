@@ -1109,8 +1109,9 @@ class InterfaceShellMixin(MixinBase):
             self._survey_worker_running or self._expedition_importing
         ):
             logger.warning(
-                "Output root changed to %s while a batch or import is running; keeping %s until it ends",
+                "Output root changed to %s while %s; keeping %s until it ends",
                 db_path,
+                "a batch is running" if self._survey_worker_running else "an expedition import is running",
                 store.path,
             )
             return store
