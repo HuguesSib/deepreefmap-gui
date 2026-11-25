@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from deepreefmap_gui.survey import statuses
+from deepreefmap_gui.survey.models.video_asset import VIEW_DOWN
 
 if TYPE_CHECKING:
     from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
@@ -42,6 +43,9 @@ def job_filters(entry: VideoLibraryEntry) -> set[str]:
     filters = {"all"}
     if not entry.passes:
         filters.add("organise")
+    elif entry.video.view == VIEW_DOWN:
+        # Never processed, so neither waiting for it nor done with it.
+        states = []
     elif all(state == "succeeded" for state in states):
         filters.add("complete")
     if any(state not in {"succeeded", "failed"} for state in states):
@@ -59,6 +63,8 @@ def clip_summary(entry: VideoLibraryEntry) -> str:
     """Return a readable summary of defined passes and their current work."""
     if not entry.passes:
         return "No passes defined"
+    if entry.video.view == VIEW_DOWN:
+        return "Looks down · not processed"
     counts = Counter(clip_states(entry))
     labels = {"succeeded": "complete", "ready": "ready to run"}
     return " · ".join(

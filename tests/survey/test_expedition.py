@@ -531,3 +531,21 @@ def test_the_queue_refuses_a_pass_shot_looking_down(tree, store):
     assert SimpleBatchMixin._cart_add(window, down.id) is False
     assert carted == []
     assert store.pass_looks_down(oblique.id) is False
+
+
+def test_a_down_clip_is_not_listed_as_to_process():
+    from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
+    from deepreefmap_gui.survey.jobs import clip_summary, job_filters
+    from deepreefmap_gui.survey.models import TransectPass
+    from deepreefmap_gui.survey.statuses import CLIP_LOOKS_DOWN, clip_spec
+
+    video = make_video("d" * 32, view="down")
+    pass_ = TransectPass(transect_id=uuid.uuid4(), video_id=video.id, begin_s=0.0, end_s=10.0)
+    entry = VideoLibraryEntry(video=video, pass_count=1, run_count=0, passes=[pass_])
+
+    assert job_filters(entry) == {"all"}
+    assert entry.outcome == CLIP_LOOKS_DOWN
+    assert clip_spec(entry.outcome).label == "Looks down (not processed)"
+    assert clip_summary(entry) == "Looks down · not processed"
+    video.view = "oblique"
+    assert "process" in job_filters(entry)

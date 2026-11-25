@@ -27,10 +27,11 @@ from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch, session_label
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
-from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.models.video_asset import VIEW_DOWN, VideoAsset
 from deepreefmap_gui.survey.run_dirs import run_dir_candidates, run_dir_name
 from deepreefmap_gui.survey.statuses import (
     CLIP_FAILED,
+    CLIP_LOOKS_DOWN,
     CLIP_PENDING,
     CLIP_PROCESSED,
     CLIP_UNPROCESSED,
@@ -735,6 +736,8 @@ class VideoLibraryEntry:
         """
         if self.orphan:
             return VIDEO_UNPROCESSED
+        if self.video.view == VIEW_DOWN:
+            return CLIP_LOOKS_DOWN
         states = clip_states(self)
         if any(state in {"failed", "interrupted", "incomplete"} for state in states):
             return VIDEO_FAILED

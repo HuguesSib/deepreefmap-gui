@@ -101,6 +101,9 @@ CLIP_UNPROCESSED, CLIP_PENDING, CLIP_FAILED, CLIP_PROCESSED = (
     "failed",
     "processed",
 )
+# Shot by a down-looking camera: described like the rest, never processed, so
+# nothing is left to do with it beyond its details.
+CLIP_LOOKS_DOWN = "looks_down"
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ CLIP_OUTCOMES: tuple[ClipSpec, ...] = (
     ClipSpec(CLIP_PENDING, "To process", TONE_IDLE),
     ClipSpec(CLIP_FAILED, "Needs attention", TONE_BAD),
     ClipSpec(CLIP_PROCESSED, "Complete", TONE_GOOD),
+    ClipSpec(CLIP_LOOKS_DOWN, "Looks down (not processed)", TONE_IDLE),
 )
 
 _CLIP_BY_KEY = {spec_.key: spec_ for spec_ in CLIP_OUTCOMES}
