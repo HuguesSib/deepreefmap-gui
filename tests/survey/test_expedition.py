@@ -468,3 +468,24 @@ def test_a_clip_first_added_through_a_symlink_is_not_its_own_duplicate(tree, sto
 
     assert report.duplicates == []
     assert report.passes_created == 0
+
+
+def test_a_transect_folder_renamed_on_disk_takes_its_passes_and_details(tree, store):
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    old = next(t for t in store.list_transects() if t.name == "VC_12m_01")
+    old.start_lat, old.start_lon, old.end_lat, old.end_lon, old.length_m = 29.1, 34.9, 29.2, 34.8, 50.0
+    store.update_transect(old)
+    (tree / "VC_12m_01").rename(tree / "VCX_12m_01")
+    # A blank same-named line an earlier import left behind goes too.
+    store.add_transect(make_transect("VCX_12m_01", start_lat=None, start_lon=None, end_lat=None, end_lon=None,
+                                     length_m=None))
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    names = sorted(t.name for t in store.list_transects())
+    assert names == ["VCX_12m_01", "VC_6m_01"]
+    new = next(t for t in store.list_transects() if t.name == "VCX_12m_01")
+    assert (new.start_lat, new.end_lon, new.length_m) == (29.1, 34.8, 50.0)
+    assert len(store.list_passes(transect_id=new.id)) == 1
+    assert report.passes_created == 0
+    assert report.transects_renamed == ["VC_12m_01 → VCX_12m_01"]

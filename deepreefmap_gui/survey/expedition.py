@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -95,6 +96,8 @@ class ImportReport:
     clips_relinked: int = 0
     passes_created: int = 0
     passes_kept: int = 0
+    # "old → new": transect folders renamed on disk, their passes moved along.
+    transects_renamed: list[str] = field(default_factory=list)
     unreadable: list[str] = field(default_factory=list)
     # Footage outside pass folders: left on disk, kept out of the library.
     skipped_other: int = 0
@@ -117,6 +120,8 @@ class ImportReport:
         parts.append(f"{self.passes_created} new pass(es)")
         if self.passes_kept:
             parts.append(f"{self.passes_kept} already filed")
+        if self.transects_renamed:
+            parts.append(f"renamed {', '.join(self.transects_renamed)}")
         if self.unreadable:
             parts.append(f"{len(self.unreadable)} unreadable")
         if self.skipped_other:
@@ -281,6 +286,7 @@ def _transect(store, folder: TransectFolder, campaign: Campaign, report: ImportR
         if found is not None:
             report.shared_transects.append(folder.name)
     if found is not None:
+        _drop_empty_twins(store, named, found)
         if found.depth_m is None and folder.depth_m is not None:
             found.depth_m = folder.depth_m
             store.update_transect(found)
@@ -289,6 +295,56 @@ def _transect(store, folder: TransectFolder, campaign: Campaign, report: ImportR
     store.add_transect(transect)
     report.transects_created.append(folder.name)
     return transect
+
+
+def _is_blank(transect: Transect) -> bool:
+    """Nothing a person entered: no ends, no length, no site (depth comes from the name)."""
+    return transect.end_points() is None and transect.length_m is None and transect.site_id is None
+
+
+def _drop_empty_twins(store, named: list[Transect], kept: Transect) -> None:
+    """Retire same-named transects an earlier import left with nothing on them."""
+    for twin in named:
+        if twin.id != kept.id and _is_blank(twin) and not store.list_passes(transect_id=twin.id):
+            store.delete_transect(twin.id)
+
+
+# What a renamed transect hands to the one its folder is now called.
+_CARRIED = (
+    "start_lat", "start_lon", "start_accuracy_m", "end_lat", "end_lon", "end_accuracy_m",
+    "length_m", "depth_m", "start_depth_m", "end_depth_m", "site_id",
+)
+
+
+def _follow_the_folder(store, kept, transect: Transect, campaign: Campaign, moved: dict) -> None:
+    """File this expedition's passes under the transect their folder now names."""
+    for pass_ in kept:
+        if pass_.campaign_id == campaign.id and pass_.transect_id not in (None, transect.id):
+            moved.setdefault(pass_.transect_id, transect.id)
+            pass_.transect_id = transect.id
+            store.update_pass(pass_)
+
+
+def _retire_renamed(store, moved: dict, folder_names: set[str], report: ImportReport) -> None:
+    """An old transect left with no passes gives its details to its new name and goes."""
+    for old_id, new_id in moved.items():
+        old, new = store.get_transect(old_id), store.get_transect(new_id)
+        if old is None or new is None or old.name.lower() in folder_names:
+            continue
+        if store.list_passes(transect_id=old_id):
+            continue  # another expedition still swims it under that name
+        store.delete_transect(old_id)
+        for attr in _CARRIED:
+            if getattr(new, attr) is None and getattr(old, attr) is not None:
+                setattr(new, attr, getattr(old, attr))
+        if not new.description and old.description:
+            new.description = old.description
+        try:
+            store.update_transect(new)
+        except sqlite3.IntegrityError:  # its site already has a line of the new name
+            new.site_id = None
+            store.update_transect(new)
+        report.transects_renamed.append(f"{old.name} → {new.name}")
 
 
 def _clip(store, path: Path, probe: Probe, report: ImportReport) -> VideoAsset | None:
@@ -352,6 +408,7 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
     )
     report.removed_other = _forget_unused_role_clips(store, layout)
 
+    moved: dict[uuid.UUID, uuid.UUID] = {}
     for folder in layout.transects:
         transect = _transect(store, folder, campaign, report)
         for recording in folder.recordings:
@@ -359,8 +416,10 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
             if any(v is None for v in videos):
                 continue  # an unreadable or duplicated chapter leaves no whole swim to file
             first = videos[0]
-            if store.list_passes(video_id=first.id):
+            kept = store.list_passes(video_id=first.id)
+            if kept:
                 report.passes_kept += 1
+                _follow_the_folder(store, kept, transect, campaign, moved)
                 continue
             store.add_pass(TransectPass(
                 transect_id=transect.id,
@@ -374,6 +433,7 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
                 surveyed_on=(first.captured_at or "").split("T")[0] or None,
             ))
             report.passes_created += 1
+    _retire_renamed(store, moved, {f.name.lower() for f in layout.transects}, report)
     return report
 
 
