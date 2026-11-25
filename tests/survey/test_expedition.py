@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import make_video, write_run
+from _factories import make_transect, make_video, write_run
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.completeness import CLIP, EXPEDITION, PASS, TRANSECT, capture_span, missing_data
@@ -284,3 +284,41 @@ def test_a_clip_that_really_moved_is_relinked(tree, store):
     assert report.duplicates == []
     clip = next(v for v in store.list_videos() if v.file_name == "GX010100.MP4")
     assert clip.path == str(new)
+
+
+def test_an_old_run_copied_into_results_joins_the_imported_records(tree, store):
+    """The drive's case: runs made before the import, copied into RESULTS, carry
+    their own ids for the campaign, transect and pass. Rebuilding must file them
+    under the imported records rather than fail on the names they share."""
+    from deepreefmap_gui.survey.models import RunRecord, TransectPass
+    from deepreefmap_gui.survey.models.campaign import Campaign
+    from deepreefmap_gui.survey.models.convert import survey_manifest_block
+
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    clip = next(v for v in store.list_videos() if v.camera_label == "Cam2")
+    imported = store.list_passes(video_id=clip.id)[0]
+
+    old_campaign = Campaign(name="2026_11_jo_expe")  # same expedition, other id and case
+    old_transect = make_transect("VC_6m_01")
+    old_pass = TransectPass(
+        transect_id=old_transect.id, video_id=clip.id, begin_s=12.0, end_s=80.0,
+        direction="reverse", campaign_id=old_campaign.id,
+    )
+    old_run = RunRecord(pass_id=old_pass.id, run_dir_name="VC_6m_01__p01__045876c3", status="succeeded")
+    nested = "VC_6m_01/pass_01_control/bwd/RESULTS/VC_6m_01__p01__045876c3"
+    write_run(
+        tree, nested,
+        input_videos=[clip.path], video_hashes=[clip.hash], begin_s=12.0, end_s=80.0,
+        survey=survey_manifest_block(old_run, old_pass, old_transect, None, campaign=old_campaign),
+    )
+
+    report = store.rebuild_from_scan(tree)
+
+    assert report.runs == 1 and not report.skipped
+    assert len(store.list_campaigns()) == 1
+    assert sorted(t.name for t in store.list_transects()) == ["VC_12m_01", "VC_6m_01"]
+    passes = store.list_passes(video_id=clip.id)
+    assert [p.id for p in passes] == [imported.id]  # no second pass beside it
+    assert (passes[0].begin_s, passes[0].end_s) == (12.0, 80.0)  # the run's trim
+    assert [r.run_dir_name for r in store.runs_for_pass(imported.id)] == [nested]
+    assert store.rebuild_from_scan(tree).runs == 0  # and once only

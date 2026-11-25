@@ -2901,6 +2901,15 @@ class SurveyStore:
 
     def _restore_transect(self, snapshot: dict[str, Any], report: RebuildReport) -> uuid.UUID:
         transect_id = uuid.UUID(snapshot["id"])
+        if not self.holds_id("transects", transect_id) and snapshot.get("deleted_at") is None:
+            # A live line of that name on the same site is this line made again.
+            site_id = self._restore_site(snapshot.get("site"), report)
+            row = self._conn().execute(
+                "SELECT id FROM transect WHERE deleted_at IS NULL AND site_id IS ? AND LOWER(name) = LOWER(?)",
+                (None if site_id is None else str(site_id), snapshot["name"]),
+            ).fetchone()
+            if row is not None:
+                return uuid.UUID(row[0])
         if not self.holds_id("transects", transect_id):
             # A line the run was swum on after it had been retired comes back
             # retired. It still names and scales the run, and reviving it would
@@ -2927,6 +2936,9 @@ class SurveyStore:
             return None
         site_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("sites", site_id):
+            same = self._live_named("site", snapshot.get("name"))
+            if same is not None:
+                return same
             self.add_site(Site(
                 id=site_id,
                 name=snapshot.get("name") or "Recovered site",
@@ -2941,6 +2953,12 @@ class SurveyStore:
             return None
         campaign_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("campaigns", campaign_id):
+            # The same expedition made again under another id (an expedition
+            # folder imported before its old runs were copied in) is the one to
+            # file under: a second row by that name is refused anyway.
+            same = self._live_named("campaign", snapshot.get("name"))
+            if same is not None:
+                return same
             self.add_campaign(Campaign(
                 id=campaign_id,
                 name=snapshot.get("name") or "Recovered campaign",
@@ -2997,6 +3015,47 @@ class SurveyStore:
             video_ids.append(asset.id)
         return video_ids
 
+    def _live_named(self, table: str, name: Any) -> uuid.UUID | None:
+        """A live row of ``table`` with this name, ignoring case."""
+        if not isinstance(name, str) or not name.strip():
+            return None
+        row = self._conn().execute(
+            f"SELECT id FROM {table} WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?)", (name,)
+        ).fetchone()
+        return uuid.UUID(row[0]) if row is not None else None
+
+    def _adopt_pass_for_run(
+        self, snapshot: dict[str, Any], transect_id: uuid.UUID | None, video_ids: list[uuid.UUID]
+    ) -> uuid.UUID | None:
+        """The pass already filed for this clip that a restored run belongs to.
+
+        A pass over the same window is that pass. Failing that, one an expedition
+        import made and nobody has touched yet (no run, still the whole
+        recording) takes the run's trim: the run is the record of where the swim
+        was cut, and a second pass beside it would only be the same swim untrimmed.
+        """
+        if not video_ids:
+            return None
+        same = self.pass_with_window(video_ids[0], snapshot["begin_s"], snapshot["end_s"])
+        if same is not None:
+            return same.id
+        videos = {v.id: v for v in self.list_videos()}
+        for candidate in self.list_passes(video_id=video_ids[0]):
+            if candidate.video_ids() != video_ids or self.runs_for_pass(candidate.id):
+                continue
+            total = sum(videos[v].duration_s or 0.0 for v in candidate.video_ids() if v in videos)
+            untrimmed = candidate.begin_s <= 0.0 and total > 0 and abs(candidate.end_s - total) <= 0.5
+            if not untrimmed or (transect_id is not None and candidate.transect_id not in (None, transect_id)):
+                continue
+            candidate.begin_s = snapshot["begin_s"]
+            candidate.end_s = snapshot["end_s"]
+            candidate.direction = candidate.direction or snapshot.get("direction")
+            candidate.quality = candidate.quality or snapshot.get("quality")
+            candidate.transect_id = candidate.transect_id or transect_id
+            self.update_pass(candidate)
+            return candidate.id
+        return None
+
     def _restore_pass(
         self,
         snapshot: dict[str, Any],
@@ -3007,6 +3066,9 @@ class SurveyStore:
     ) -> uuid.UUID:
         pass_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("passes", pass_id):
+            adopted = self._adopt_pass_for_run(snapshot, transect_id, video_ids)
+            if adopted is not None:
+                return adopted
             self.add_pass(TransectPass(
                 id=pass_id,
                 transect_id=transect_id,
