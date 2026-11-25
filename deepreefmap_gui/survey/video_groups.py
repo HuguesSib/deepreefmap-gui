@@ -9,8 +9,9 @@ list-building rules and the widgets only paint what comes back.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
@@ -30,6 +31,15 @@ PERIODS: tuple[tuple[str, str], ...] = (
 )
 
 DEFAULT_PERIOD = "day"
+
+# Not a period: the clips laid out as the folders they sit in, which for an
+# expedition is expedition / transect / pass / direction.
+FOLDER_VIEW = "folder"
+VIEWS: tuple[tuple[str, str], ...] = (*PERIODS, (FOLDER_VIEW, "Folders"))
+VIEW_KEYS = tuple(key for key, _ in VIEWS)
+ELSEWHERE_KEY, ELSEWHERE_TITLE = "folder:elsewhere", "Outside this folder"
+# Folders that only hold the clips of the folder above them, so the tree skips them.
+_TRANSPARENT_FOLDERS = {"raw"}
 
 PERIOD_KEYS = tuple(key for key, _ in PERIODS)
 
@@ -61,6 +71,10 @@ class DateGroup:
     key: str
     title: str
     entries: list[VideoLibraryEntry] = field(default_factory=list)
+    # Where the group sits in a tree: 0 is the top. The date groups are all top
+    # level; the folder view nests, and folding a group hides everything below.
+    depth: int = 0
+    parent: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +159,62 @@ def group_by_period(
     return groups
 
 
+def group_by_folder(entries: Iterable[VideoLibraryEntry], root: Path) -> list[DateGroup]:
+    """Clips as a tree of the folders they sit in, relative to ``root``.
+
+    One group per folder, parents before their children and siblings by name,
+    so ``VC_6m_01`` comes before ``VC_6m_01/pass_01_control`` and that before its
+    ``bwd``; ``fwd`` sorts before ``bwd`` so a pass reads in the order it was swum.
+    A ``RAW`` folder is folded into the one above it. Clips that do not live
+    under ``root`` are listed last, under their own heading.
+    """
+    try:
+        base = root.expanduser().resolve()
+    except OSError:
+        base = root
+    by_folder: dict[tuple[str, ...], list[VideoLibraryEntry]] = {}
+    elsewhere: list[VideoLibraryEntry] = []
+    for entry in entries:
+        try:
+            parts = Path(entry.video.path).resolve().relative_to(base).parts[:-1]
+        except (OSError, ValueError):
+            elsewhere.append(entry)
+            continue
+        folder = tuple(part for part in parts if part.lower() not in _TRANSPARENT_FOLDERS)
+        by_folder.setdefault(folder, []).append(entry)
+
+    # Every ancestor gets a group too, so the tree has somewhere to hang.
+    nodes = set(by_folder)
+    for folder in list(by_folder):
+        nodes.update(folder[:depth] for depth in range(1, len(folder)))
+    nodes.discard(())
+
+    def order(folder: tuple[str, ...]) -> tuple:
+        return tuple((_FOLDER_RANK.get(part.lower(), 1), part.lower()) for part in folder)
+
+    groups = []
+    if () in by_folder:  # clips right in the root
+        groups.append(DateGroup(key="folder:", title=base.name or str(base), entries=by_folder[()]))
+    groups.extend(
+        DateGroup(
+            key="folder:" + "/".join(folder),
+            title=folder[-1],
+            entries=list(by_folder.get(folder, [])),
+            depth=len(folder) - 1,
+            parent="folder:" + "/".join(folder[:-1]) if len(folder) > 1 else None,
+        )
+        for folder in sorted(nodes, key=order)
+    )
+    if elsewhere:
+        elsewhere.sort(key=lambda e: e.video.path)
+        groups.append(DateGroup(key=ELSEWHERE_KEY, title=ELSEWHERE_TITLE, entries=elsewhere))
+    return groups
+
+
+# fwd before bwd: the order a pass is swum. Everything else by name.
+_FOLDER_RANK = {"fwd": 0, "forward": 0, "bwd": 2, "back": 2, "reverse": 2}
+
+
 def clip_sort_fact(entry: VideoLibraryEntry, column: str) -> str | float | None:
     """The value a clip orders by under one column, or None when it has none."""
     if column == SORT_NAME:
@@ -189,11 +259,7 @@ def sort_groups(
     the date grouping is the page's organising principle and the sort works
     within it."""
     return [
-        DateGroup(
-            key=group.key,
-            title=group.title,
-            entries=sort_clips(group.entries, column, descending=descending),
-        )
+        replace(group, entries=sort_clips(group.entries, column, descending=descending))
         for group in groups
     ]
 

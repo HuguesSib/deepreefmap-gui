@@ -1252,3 +1252,35 @@ def test_unfinished_group_stays_open_with_counts_and_quick_actions():
     section = listing.sections()[str(ready.passes[0].id)]
     assert not section.cart_btn.isHidden()
     assert not section.trim_btn.isHidden()
+
+
+
+def test_folding_a_folder_hides_everything_under_it() -> None:
+    """The folder view nests: a transect heading folds its passes and their clips."""
+    clip_a, clip_b = make_entry(), make_entry()
+    groups = [
+        DateGroup(key="folder:T", title="T"),
+        DateGroup(key="folder:T/pass_01", title="pass_01", depth=1, parent="folder:T"),
+        DateGroup(key="folder:T/pass_01/fwd", title="fwd", entries=[clip_a], depth=2, parent="folder:T/pass_01"),
+        DateGroup(key="folder:T/pass_01/bwd", title="bwd", entries=[clip_b], depth=2, parent="folder:T/pass_01"),
+    ]
+    listing = VideoLibraryList()
+    listing.set_groups(groups, no_name)
+    rows = listing.rows()
+    headings = listing._group_headings
+
+    # Counts take in what lies below: the transect holds both clips.
+    assert "2 clips" in headings["folder:T"].text()
+    assert not rows[str(clip_a.video.id)].isHidden()
+
+    headings["folder:T"].click()  # fold the transect
+
+    assert not headings["folder:T"].isHidden()
+    assert headings["folder:T/pass_01"].isHidden()
+    assert headings["folder:T/pass_01/fwd"].isHidden()
+    assert rows[str(clip_a.video.id)].isHidden() and rows[str(clip_b.video.id)].isHidden()
+
+    headings["folder:T"].click()  # and back
+
+    assert not headings["folder:T/pass_01/bwd"].isHidden()
+    assert not rows[str(clip_b.video.id)].isHidden()

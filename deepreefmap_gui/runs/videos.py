@@ -72,8 +72,11 @@ from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
     DEFAULT_SORT_COLUMN,
     DEFAULT_SORT_DESCENDING,
-    PERIODS,
+    FOLDER_VIEW,
     SORT_COLUMNS,
+    VIEW_KEYS,
+    VIEWS,
+    group_by_folder,
     group_by_period,
     pass_status,
     sort_groups,
@@ -98,7 +101,7 @@ _SEARCH_WIDTH = 240
 _DETAIL_SHARE = 0.30
 _DETAIL_MIN_WIDTH = 260
 
-_PERIOD_TOOLTIP = "The gap between clips that starts a new group."
+_PERIOD_TOOLTIP = "Group clips by when they were shot, or by the folders they sit in."
 
 # The sort order lands in QSettings as one of these words rather than a bool:
 # some backends hand a stored bool back as the string "false", which is truthy.
@@ -184,7 +187,8 @@ class VideoLibraryMixin(MixinBase):
         # Paths a single-clip recheck is already asking about, so a double click
         # on a sleeping drive queues one stat rather than two.
         self._clip_link_rechecking: set[str] = set()
-        self._video_period = str(self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD)
+        stored_period = str(self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD)
+        self._video_period = stored_period if stored_period in VIEW_KEYS else DEFAULT_PERIOD
         stored_column = str(self._settings.value("video_sort_column", DEFAULT_SORT_COLUMN) or "")
         self._video_sort_column = stored_column if stored_column in SORT_COLUMNS else DEFAULT_SORT_COLUMN
         stored_order = str(self._settings.value("video_sort_order", "") or "")
@@ -200,7 +204,7 @@ class VideoLibraryMixin(MixinBase):
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
         top_row.addWidget(QLabel("Group by"))
-        self._video_period_chips = FilterChips(PERIODS)
+        self._video_period_chips = FilterChips(VIEWS)
         self._video_period_chips.setToolTip(_PERIOD_TOOLTIP)
         self._video_period_chips.set_current(self._video_period)
         self._video_period_chips.changed.connect(self._on_video_period_changed)
@@ -851,8 +855,14 @@ class VideoLibraryMixin(MixinBase):
             entry.queued_pass_ids = set(queued)
         self._refresh_video_metadata()
         clips = self._visible_clips()
+        if self._video_period == FOLDER_VIEW:
+            # The clips as the folders they sit in: for an expedition folder,
+            # transect / pass / direction, the same tree the field team keeps.
+            grouped = group_by_folder(clips, Path(self._out_root_input.text()))
+        else:
+            grouped = group_by_period(clips, self._video_period)
         groups = sort_groups(
-            group_by_period(clips, self._video_period),
+            grouped,
             self._video_sort_column,
             descending=self._video_sort_descending,
         )

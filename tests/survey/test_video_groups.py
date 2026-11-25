@@ -11,6 +11,7 @@ from deepreefmap_gui.survey.models import RunRecord, TransectPass
 from deepreefmap_gui.survey.video_groups import (
     ALL_KEY,
     DEFAULT_PERIOD,
+    ELSEWHERE_KEY,
     PERIOD_KEYS,
     SORT_LENGTH,
     SORT_NAME,
@@ -19,6 +20,7 @@ from deepreefmap_gui.survey.video_groups import (
     UNDATED_KEY,
     UNDATED_TITLE,
     DateGroup,
+    group_by_folder,
     group_by_period,
     pass_status,
     sort_clips,
@@ -258,3 +260,54 @@ def test_sorting_stays_within_the_groups():
 def test_an_unknown_sort_column_is_refused():
     with pytest.raises(ValueError):
         sort_clips([clip()], "colour")
+
+
+
+# --- the folder view ---------------------------------------------------------
+
+
+def _at(root, relative: str) -> VideoLibraryEntry:
+    entry = clip(relative.rsplit("/", 1)[-1])
+    entry.video.path = str(root / relative)
+    return entry
+
+
+def test_the_folder_view_is_the_expedition_tree(tmp_path):
+    """Transect, then pass, then fwd before bwd; RAW folds into its direction."""
+    root = tmp_path / "2026_11_JO_EXPE"
+    a = _at(root, "VC_6m_01/pass_01_control/bwd/RAW/GX010099.MP4")
+    b = _at(root, "VC_6m_01/pass_01_control/fwd/RAW/GX010100.MP4")
+    c = _at(root, "VC_6m_01/pass_02_angle/fwd/GX010101.MP4")
+    d = _at(root, "KR_6m_01/pass_01_control/fwd/GX010200.MP4")
+    away = clip("X.MP4")
+    away.video.path = str(tmp_path / "elsewhere" / "X.MP4")
+
+    groups = group_by_folder([a, b, c, d, away], root)
+
+    assert [(g.key, g.depth, g.parent) for g in groups] == [
+        ("folder:KR_6m_01", 0, None),
+        ("folder:KR_6m_01/pass_01_control", 1, "folder:KR_6m_01"),
+        ("folder:KR_6m_01/pass_01_control/fwd", 2, "folder:KR_6m_01/pass_01_control"),
+        ("folder:VC_6m_01", 0, None),
+        ("folder:VC_6m_01/pass_01_control", 1, "folder:VC_6m_01"),
+        ("folder:VC_6m_01/pass_01_control/fwd", 2, "folder:VC_6m_01/pass_01_control"),
+        ("folder:VC_6m_01/pass_01_control/bwd", 2, "folder:VC_6m_01/pass_01_control"),
+        ("folder:VC_6m_01/pass_02_angle", 1, "folder:VC_6m_01"),
+        ("folder:VC_6m_01/pass_02_angle/fwd", 2, "folder:VC_6m_01/pass_02_angle"),
+        (ELSEWHERE_KEY, 0, None),
+    ]
+    by_key = {g.key: g for g in groups}
+    assert by_key["folder:VC_6m_01/pass_01_control/bwd"].entries == [a]
+    assert by_key["folder:VC_6m_01/pass_01_control"].entries == []
+    assert by_key["folder:VC_6m_01/pass_01_control/bwd"].title == "bwd"
+    assert by_key[ELSEWHERE_KEY].entries == [away]
+
+
+def test_sorting_keeps_the_tree_shape(tmp_path):
+    root = tmp_path / "E"
+    groups = group_by_folder([_at(root, "T/pass_01/fwd/B.MP4"), _at(root, "T/pass_01/fwd/A.MP4")], root)
+
+    sorted_groups = sort_groups(groups, SORT_NAME)
+
+    assert [(g.key, g.depth, g.parent) for g in sorted_groups] == [(g.key, g.depth, g.parent) for g in groups]
+    assert [e.video.file_name for e in sorted_groups[-1].entries] == ["A.MP4", "B.MP4"]
