@@ -17,6 +17,7 @@ import logging
 import threading
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -81,6 +82,9 @@ from deepreefmap_gui.survey.video_groups import (
     pass_status,
     sort_groups,
 )
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.survey.expedition import ImportReport
 
 logger = logging.getLogger(__name__)
 
@@ -464,10 +468,10 @@ class VideoLibraryMixin(MixinBase):
         self._expedition_thread.start()
 
     def _on_expedition_imported(self, result: object) -> None:
-        name, report, error, imported_into = result  # type: ignore[misc]
+        name, report, error, imported_into = cast("tuple[str, ImportReport | None, str | None, Any]", result)
         self._expedition_importing = False
         self._expedition_open_btn.setEnabled(True)
-        if error is not None:
+        if error is not None or report is None:
             self._status_label.setText(f"Import of {name} stopped: {error}")
             return
         self._status_label.setText(report.summary())

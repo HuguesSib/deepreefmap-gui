@@ -14,7 +14,6 @@ import sqlite3
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QKeyEvent
@@ -185,13 +184,12 @@ class MissingDataDialog(QDialog):
         # summary; whatever was opened or folded since is kept across refreshes.
         folded: set = set()
         opened: set = set()
-        for i in range(self.tree.topLevelItemCount()):
-            group = self.tree.topLevelItem(i)
-            if not group.isExpanded():
-                folded.add(group.data(0, GAP_ROLE))
-            for j in range(group.childCount()):
-                if group.child(j).isExpanded():
-                    opened.add((group.data(0, GAP_ROLE), group.child(j).data(0, GAP_ROLE)))
+        for old in self._groups():
+            if not old.isExpanded():
+                folded.add(old.data(0, GAP_ROLE))
+            for branch in _children(old):
+                if branch.isExpanded():
+                    opened.add((old.data(0, GAP_ROLE), branch.data(0, GAP_ROLE)))
         gaps = self.gaps()
         self.tree.clear()
         for level in LEVELS:
@@ -204,10 +202,10 @@ class MissingDataDialog(QDialog):
             self.tree.addTopLevelItem(group)
             # One branch per kind of gap, so "every clip's review" is one line
             # to select: Enter on it fills the whole branch at once.
-            kinds: dict[str, list[Gap]] = {}
+            by_kind: dict[str, list[Gap]] = {}
             for gap in at_level:
-                kinds.setdefault(gap.code, []).append(gap)
-            for code, of_kind in kinds.items():
+                by_kind.setdefault(gap.code, []).append(gap)
+            for code, of_kind in by_kind.items():
                 kind = QTreeWidgetItem([f"{of_kind[0].item} ({len(of_kind)})", "all of these"])
                 kind.setData(0, GAP_ROLE, code)
                 kind.setToolTip(0, f"Select to fill in {of_kind[0].item} for all {len(of_kind)} at once.")
@@ -230,21 +228,15 @@ class MissingDataDialog(QDialog):
 
     def lines(self) -> list[QTreeWidgetItem]:
         """Every gap line, top to bottom, folded branches included."""
-        return [
-            kind.child(k)
-            for i in range(self.tree.topLevelItemCount())
-            for j in range(self.tree.topLevelItem(i).childCount())
-            for kind in (self.tree.topLevelItem(i).child(j),)
-            for k in range(kind.childCount())
-        ]
+        return [line for kind in self.kinds() for line in _children(kind)]
 
     def kinds(self) -> list[QTreeWidgetItem]:
         """Every kind branch, top to bottom."""
-        return [
-            self.tree.topLevelItem(i).child(j)
-            for i in range(self.tree.topLevelItemCount())
-            for j in range(self.tree.topLevelItem(i).childCount())
-        ]
+        return [kind for group in self._groups() for kind in _children(group)]
+
+    def _groups(self) -> list[QTreeWidgetItem]:
+        items = (self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount()))
+        return [item for item in items if item is not None]
 
     def _select_at(self, items: list[QTreeWidgetItem], row: int) -> None:
         if not items:
@@ -365,11 +357,12 @@ class MissingDataDialog(QDialog):
         note = "Suggested from the clips' recording times." if suggested_begin else ""
         if not self._ask(f"Dates of {campaign.name}", [("First day", begin), ("Last day", end)], note):
             return False
-        first, last = begin.date().toPython(), end.date().toPython()
-        if last < first:
+        first = begin.date().toString("yyyy-MM-dd")
+        last = end.date().toString("yyyy-MM-dd")
+        if last < first:  # ISO days order as text
             QMessageBox.warning(self, "Dates", "The last day comes before the first.")
             return False
-        campaign.begin_date, campaign.end_date = first.isoformat(), last.isoformat()
+        campaign.begin_date, campaign.end_date = first, last
         self._store.update_campaign(campaign)
         return True
 
@@ -549,7 +542,8 @@ class MissingDataDialog(QDialog):
         combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         combo.addItems(self._store.camera_labels())
         combo.setCurrentText("")
-        combo.lineEdit().setPlaceholderText("Cam1")
+        if (line := combo.lineEdit()) is not None:
+            line.setPlaceholderText("Cam1")
         note = "The camera's name on the rig. Pick one already used or type a new one."
         if not self._ask(f"Camera of {self._for(gaps)}", [("Camera", combo)], note):
             return False
@@ -572,11 +566,16 @@ class MissingDataDialog(QDialog):
         return self._set_on_videos(gaps, "review", value)
 
 
+def _children(item: QTreeWidgetItem) -> list[QTreeWidgetItem]:
+    children = (item.child(i) for i in range(item.childCount()))
+    return [child for child in children if child is not None]
+
+
 def _date_edit(value: str | None) -> QDateEdit:
     edit = QDateEdit()
     edit.setCalendarPopup(True)
     edit.setDisplayFormat("yyyy-MM-dd")
-    edit.setDate(QDate(date.fromisoformat(value)) if value else QDate.currentDate())
+    edit.setDate(QDate.fromString(value, "yyyy-MM-dd") if value else QDate.currentDate())
     return edit
 
 

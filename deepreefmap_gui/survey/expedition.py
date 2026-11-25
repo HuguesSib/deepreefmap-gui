@@ -204,14 +204,14 @@ def _read_transect(directory: Path, layout: ExpeditionLayout) -> TransectFolder 
             if not directions:
                 layout.warnings.append(f"{directory.name}/{child.name} has no fwd or bwd folder.")
             for direction_dir in directions:
-                for clips in _group_chapters(_direction_clips(direction_dir)):
+                for chapters in _group_chapters(_direction_clips(direction_dir)):
                     folder.recordings.append(
-                        Recording(child.name, DIRECTIONS[direction_dir.name.lower()], clips)
+                        Recording(child.name, DIRECTIONS[direction_dir.name.lower()], chapters)
                     )
             continue
-        clips = _videos(child)
-        if clips:
-            folder.other[child.name] = clips
+        role_clips = _videos(child)
+        if role_clips:
+            folder.other[child.name] = role_clips
     clips_here = _videos(directory)
     if clips_here:
         folder.other[""] = clips_here
@@ -219,9 +219,9 @@ def _read_transect(directory: Path, layout: ExpeditionLayout) -> TransectFolder 
         return None
     # Only a folder with pass folders is a transect; anything else is loose footage.
     if not folder.recordings:
-        for role, clips in folder.other.items():
+        for role, found in folder.other.items():
             key = f"{directory.name}/{role}" if role else directory.name
-            layout.loose[key] = clips
+            layout.loose[key] = found
         return None
     return folder
 
@@ -412,8 +412,9 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
     for folder in layout.transects:
         transect = _transect(store, folder, campaign, report)
         for recording in folder.recordings:
-            videos = [_clip(store, path, probe, report) for path in recording.clips]
-            if any(v is None for v in videos):
+            maybe = [_clip(store, path, probe, report) for path in recording.clips]
+            videos = [v for v in maybe if v is not None]
+            if len(videos) < len(maybe):
                 continue  # an unreadable or duplicated chapter leaves no whole swim to file
             first = videos[0]
             kept = store.list_passes(video_id=first.id)

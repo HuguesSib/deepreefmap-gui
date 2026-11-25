@@ -49,7 +49,8 @@ class ClipDetailsDialog(QDialog):
         self.camera_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.camera_input.addItems(list(dict.fromkeys(known_cameras)))
         self.camera_input.setCurrentText(video.camera_label or "")
-        self.camera_input.lineEdit().setPlaceholderText("GoPro_3, cam1")
+        if (line := self.camera_input.lineEdit()) is not None:
+            line.setPlaceholderText("GoPro_3, cam1")
         self.camera_input.setToolTip("The camera's name on the rig, as the field team labels it.")
         form.addRow("Camera", self.camera_input)
         self.rig_input = QComboBox()
