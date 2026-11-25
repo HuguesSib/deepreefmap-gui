@@ -257,3 +257,27 @@ def test_after_a_whole_kind_the_cursor_is_on_the_next_kind(store, expedition, mo
     dialog.fill_selected()
 
     assert dialog.tree.currentItem().text(0) == "review (2)"
+
+
+@pytest.mark.real_modal
+def test_the_real_form_hands_back_what_was_typed(store, expedition):
+    """No stand-in for the form: its fields must still be readable after OK."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QDateEdit
+
+    campaign, _t, _p = expedition
+    dialog = MissingDataDialog(None, store, campaign.id, Spy(store).actions())
+    _select(dialog, dialog.lines()[:1])
+
+    def press_ok():
+        form = QApplication.activeModalWidget()
+        first, last = form.findChildren(QDateEdit)
+        first.setDate(QDate(2026, 11, 20))
+        last.setDate(QDate(2026, 11, 27))
+        form.accept()
+
+    QTimer.singleShot(0, press_ok)
+    dialog.fill_selected()
+
+    stored = store.get_campaign(campaign.id)
+    assert (stored.begin_date, stored.end_date) == ("2026-11-20", "2026-11-27")

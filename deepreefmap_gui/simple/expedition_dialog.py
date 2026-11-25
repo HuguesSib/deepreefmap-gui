@@ -332,7 +332,13 @@ class MissingDataDialog(QDialog):
         form.addRow(buttons)
         if rows:
             rows[0][1].setFocus()
-        return dialog.exec() == QDialog.DialogCode.Accepted
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        # The caller reads the fields after this returns, but the form owns
+        # them and goes with it, so take them back first.
+        for _label, field in rows:
+            field.setParent(None)
+        dialog.deleteLater()
+        return accepted
 
     def _choose(self, title: str, label: str, choices: Sequence[tuple[str, object]], note: str = "") -> object:
         """One pick from a list, or CANCELLED."""
