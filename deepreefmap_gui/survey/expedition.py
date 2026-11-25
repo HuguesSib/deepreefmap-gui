@@ -7,7 +7,7 @@ The field team sorts footage into a tree before anyone opens the app::
         pass_01_control/                  a pass: one condition, every camera
           fwd/  *.MP4  or  RAW/*.MP4      the clips swum forward
           bwd/  ...                       and back
-        colour_charts/  context/  ...     footage of the transect that is not a pass
+        colour_charts/  context/  ...     other footage: left out of the library
 
 Everything the tree says is taken from it, so nobody types it again: the
 campaign, the transects (with the depth a name like ``VC_6m_01`` carries), and
@@ -49,14 +49,6 @@ _DEPTH = re.compile(r"(?:^|_)(?P<depth>\d+(?:[.,]\d+)?)m(?:_|$)", re.IGNORECASE)
 _CAMERA = re.compile(r"(?:^|[_\-\s])cam[_\-]?(?P<n>\d+)(?:[_\-\s.]|$)", re.IGNORECASE)
 # GoPro names a recording GX<chapter:2><number:4>; HERO cameras before 6 used GOPR/GP.
 _GOPRO = re.compile(r"G[XHL](?P<chapter>\d{2})(?P<number>\d{4})", re.IGNORECASE)
-
-ROLE_TAG = "[{role}]"
-
-
-def role_tag(role: str) -> str:
-    """The marker a non-pass clip carries in its notes until the registry has a field for it."""
-    return ROLE_TAG.format(role=role)
-
 
 @dataclass(frozen=True, slots=True)
 class Recording:
@@ -102,6 +94,12 @@ class ImportReport:
     passes_created: int = 0
     passes_kept: int = 0
     unreadable: list[str] = field(default_factory=list)
+    # Footage outside pass folders: left on disk, kept out of the library.
+    skipped_other: int = 0
+    # Clips an earlier import took from those folders, removed while still unused.
+    removed_other: int = 0
+    # (copy, original): files whose content is already a clip somewhere else.
+    duplicates: list[tuple[str, str]] = field(default_factory=list)
 
     def summary(self) -> str:
         parts = []
@@ -117,6 +115,12 @@ class ImportReport:
             parts.append(f"{self.passes_kept} already filed")
         if self.unreadable:
             parts.append(f"{len(self.unreadable)} unreadable")
+        if self.skipped_other:
+            parts.append(f"{self.skipped_other} clip(s) outside pass folders left out")
+        if self.duplicates:
+            parts.append(f"{len(self.duplicates)} duplicate file(s) left out")
+        if self.removed_other:
+            parts.append(f"{self.removed_other} earlier non-pass clip(s) removed from the library")
         return "Imported: " + ", ".join(parts) + "."
 
 
@@ -259,17 +263,23 @@ def _transect(store, folder: TransectFolder, report: ImportReport) -> Transect:
     return transect
 
 
-def _clip(store, path: Path, probe: Probe, report: ImportReport, *, note_tag: str | None = None) -> VideoAsset | None:
+def _clip(store, path: Path, probe: Probe, report: ImportReport) -> VideoAsset | None:
+    asset = VideoAsset.from_path(path)
+    prior = store.find_video_by_hash(asset.hash) if asset.hash else store.find_video_by_path(str(path))
+    # Same content at another path that still exists is a copy, not a move:
+    # repointing the clip would flip it between the two folders on every
+    # import, so the copy is left out and named instead.
+    if prior is not None and prior.path != str(path) and Path(prior.path).exists():
+        report.duplicates.append((str(path), prior.path))
+        return None
     measured = probe(path)
     if measured is None:
         report.unreadable.append(str(path))
         return None
-    asset = VideoAsset.from_path(path)
     asset.duration_s, asset.fps = measured
-    # The folder above a clip here is fwd, RAW or colour_charts, never a camera,
-    # so the camera comes from the file name or stays unknown.
+    # The folder above a clip here is fwd or RAW, never a camera, so the camera
+    # comes from the file name or stays unknown.
     asset.camera_label = camera_from_name(path.name)
-    prior = store.find_video_by_hash(asset.hash) if asset.hash else store.find_video_by_path(str(path))
     stored = store.upsert_video(asset)
     if prior is None:
         report.clips_added += 1
@@ -281,9 +291,6 @@ def _clip(store, path: Path, probe: Probe, report: ImportReport, *, note_tag: st
     camera = camera_from_name(path.name)
     if camera and stored.camera_label != camera and stored.camera_label in (None, "", path.parent.name):
         stored.camera_label = camera
-        changed = True
-    if note_tag and note_tag not in stored.notes:
-        stored.notes = f"{note_tag} {stored.notes}".strip()
         changed = True
     if changed:
         store.update_video(stored)
@@ -297,15 +304,20 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
     campaign = _campaign(store, layout.name, report)
     store.set_default_campaign(campaign.id)
 
+    # Only footage in pass folders is survey footage. Colour charts, context,
+    # tilt checks and tests stay on disk but out of the library, where they
+    # would only be clips nobody can cut a pass from.
+    report.skipped_other = sum(len(c) for f in layout.transects for c in f.other.values()) + sum(
+        len(c) for c in layout.loose.values()
+    )
+    report.removed_other = _forget_unused_role_clips(store, layout)
+
     for folder in layout.transects:
         transect = _transect(store, folder, report)
-        for role, clips in folder.other.items():
-            for path in clips:
-                _clip(store, path, probe, report, note_tag=role_tag(role or transect.name))
         for recording in folder.recordings:
             videos = [_clip(store, path, probe, report) for path in recording.clips]
             if any(v is None for v in videos):
-                continue  # a recording with an unreadable chapter is not a whole swim
+                continue  # an unreadable or duplicated chapter leaves no whole swim to file
             first = videos[0]
             if store.list_passes(video_id=first.id):
                 report.passes_kept += 1
@@ -322,11 +334,40 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
                 surveyed_on=(first.captured_at or "").split("T")[0] or None,
             ))
             report.passes_created += 1
-
-    for role, clips in layout.loose.items():
-        for path in clips:
-            _clip(store, path, probe, report, note_tag=role_tag(role) if role else None)
     return report
+
+
+def _forget_unused_role_clips(store, layout: ExpeditionLayout) -> int:
+    """Take out the non-pass clips an earlier import added, while nothing uses them.
+
+    Earlier builds imported colour charts, context and loose clips with a
+    ``[role]`` tag. A clip is only removed when it is still exactly that: in this
+    expedition's folder, outside any pass folder, with no pass, no run, and no
+    word from a person beyond the tag. Only the library record goes; the file
+    on disk is never touched.
+    """
+    root = str(layout.root.resolve())
+    used = {v for p in store.list_passes() for v in p.video_ids()}
+    removed = 0
+    for video in store.list_videos():
+        path = Path(video.path)
+        if video.id in used or not video.notes.startswith("[") or "]" not in video.notes:
+            continue
+        tag, _, rest = video.notes.partition("]")
+        if rest.strip() or video.camera_label or video.rig_position or video.review != "unreviewed":
+            continue
+        try:
+            inside = str(path.resolve()).startswith(root + "/")
+        except OSError:
+            inside = False
+        if not inside or any(_PASS_DIR.match(part) for part in path.parts):
+            continue
+        try:
+            store.delete_video(video.id)
+        except ValueError:
+            continue  # a run reaches it, so it stays
+        removed += 1
+    return removed
 
 
 # --- placing results -----------------------------------------------------------

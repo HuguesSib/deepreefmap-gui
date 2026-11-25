@@ -415,15 +415,16 @@ class VideoLibraryMixin(MixinBase):
             )
             return
         recordings = sum(len(t.recordings) for t in layout.transects)
+        in_passes = sum(len(r.clips) for t in layout.transects for r in t.recordings)
         lines = [
             f"Expedition: {layout.name}",
             f"Transects: {', '.join(t.name for t in layout.transects) or 'none'}",
             f"Recordings in pass folders: {recordings}",
-            f"Clips in all: {layout.clip_count}",
+            f"Clips outside pass folders (left out): {layout.clip_count - in_passes}",
             "",
             "This folder becomes the output folder: the survey database and every "
             "result are kept inside it, results in each pass's RESULTS folder.",
-            "Reading every clip can take a few minutes.",
+            "Only clips inside pass_… folders are imported. Reading them can take a few minutes.",
         ]
         if layout.warnings:
             lines += ["", "Check:", *layout.warnings[:8]]
@@ -435,7 +436,7 @@ class VideoLibraryMixin(MixinBase):
         if store is None:
             self._status_label.setText("Cannot import: the survey database in that folder will not open.")
             return
-        self._status_label.setText(f"Reading {layout.clip_count} clip(s) from {layout.name}…")
+        self._status_label.setText(f"Reading {in_passes} clip(s) from {layout.name}…")
         self._expedition_open_btn.setEnabled(False)
 
         def worker() -> None:
@@ -459,6 +460,27 @@ class VideoLibraryMixin(MixinBase):
             self._status_label.setText(f"Import of {name} stopped: {error}")
             return
         self._status_label.setText(report.summary())
+        if report.duplicates:
+            from PySide6.QtWidgets import QMessageBox
+
+            root = Path(self._out_root_input.text()).expanduser()
+
+            def short(path: str) -> str:
+                try:
+                    return Path(path).relative_to(root).as_posix()
+                except ValueError:
+                    return path
+
+            lines = [f"{short(copy)}\n    same file as {short(original)}" for copy, original in report.duplicates[:12]]
+            more = len(report.duplicates) - len(lines)
+            QMessageBox.warning(
+                self,
+                "Duplicate files",
+                "These files are byte-for-byte copies of clips already in the library, so they were "
+                "left out. Remove the copy from the folder it does not belong in:\n\n"
+                + "\n".join(lines)
+                + (f"\n\n…and {more} more." if more > 0 else ""),
+            )
         self._refresh_data_manager()
         self._refresh_video_library()
         store = self._try_survey_store()

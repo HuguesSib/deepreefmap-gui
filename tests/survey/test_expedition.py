@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import write_run
+from _factories import make_video, write_run
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.completeness import CLIP, EXPEDITION, PASS, TRANSECT, capture_span, missing_data
@@ -14,7 +14,6 @@ from deepreefmap_gui.survey.expedition import (
     import_expedition,
     is_expedition_root,
     results_dir_for,
-    role_tag,
     scan_expedition,
 )
 from deepreefmap_gui.survey.run_dirs import manifest_paths, run_dir_candidates
@@ -107,8 +106,11 @@ def test_importing_files_the_expedition(tree, store):
     assert store.get_video(named.video_id).camera_label == "Cam2"
     # The folder above a clip is never taken for its camera.
     assert store.get_video(chaptered.video_id).camera_label is None
-    chart = next(v for v in store.list_videos() if v.file_name == "GX010090.MP4")
-    assert role_tag("colour_charts") in chart.notes
+    # Only pass footage enters the library: colour charts and loose clips stay out.
+    names = {v.file_name for v in store.list_videos()}
+    assert "GX010090.MP4" not in names
+    assert "GX010028.MP4" not in names
+    assert report.skipped_other == 2
 
 
 def test_importing_again_changes_nothing_and_keeps_a_trim(tree, store):
@@ -144,7 +146,7 @@ def test_results_go_beside_the_clips(tree, store):
     import_expedition(store, scan_expedition(tree), probe=_probe)
     named = next(v for v in store.list_videos() if v.camera_label == "Cam2")
     raw = next(v for v in store.list_videos() if v.file_name == "GX010100.MP4")
-    loose = next(v for v in store.list_videos() if v.file_name == "GX010028.MP4")
+    loose = make_video("e" * 32, file_name="GX010028.MP4", path=str(tree / "VC_tests_Hugues" / "GX010028.MP4"))
 
     assert results_dir_for(tree, named, 1) == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r01"
     assert results_dir_for(tree, raw, 2) == "VC_6m_01/pass_02_angle/fwd/RESULTS/GX010100__r02"
@@ -216,3 +218,69 @@ def test_the_batch_names_an_expedition_run_after_its_results_folder(tree, store)
 
     assert first == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r01"
     assert second == "VC_6m_01/pass_01_control/bwd/RESULTS/Cam2__r02"
+
+
+def test_non_pass_clips_an_earlier_import_added_are_taken_out_while_unused(tree, store):
+    """Older builds imported colour charts and loose clips with a [role] tag."""
+    chart = store.upsert_video(make_video(
+        "c" * 32, file_name="GX010090.MP4", path=str(tree / "VC_6m_01" / "colour_charts" / "GX010090.MP4"),
+        notes="[colour_charts]",
+    ))
+    loose = store.upsert_video(make_video(
+        "d" * 32, file_name="GX010028.MP4", path=str(tree / "VC_tests_Hugues" / "GX010028.MP4"),
+        notes="[VC_tests_Hugues]",
+    ))
+    # Someone has written about this one, so it is theirs now and stays.
+    kept = store.upsert_video(make_video(
+        "f" * 32, file_name="GX010091.MP4", path=str(tree / "VC_6m_01" / "context" / "GX010091.MP4"),
+        notes="[context] drone shot of the reef edge",
+    ))
+    # Outside this expedition: not the import's to remove.
+    elsewhere = store.upsert_video(make_video(
+        "a1" * 16, file_name="X.MP4", path=str(tree.parent / "other" / "X.MP4"), notes="[context]",
+    ))
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    assert report.removed_other == 2
+    live = {v.id for v in store.list_videos()}
+    assert chart.id not in live and loose.id not in live
+    assert kept.id in live and elsewhere.id in live
+    assert (tree / "VC_6m_01" / "colour_charts" / "GX010090.MP4").exists()  # files untouched
+    assert report.passes_created == 5
+
+
+def test_a_copy_in_a_second_pass_folder_is_named_not_filed(tree, store):
+    original = tree / "VC_6m_01" / "pass_02_angle" / "fwd" / "RAW" / "GX010100.MP4"
+    copy = tree / "VC_12m_01" / "pass_01_control" / "bwd" / "GX010100.MP4"
+    copy.write_bytes(original.read_bytes())
+
+    first = import_expedition(store, scan_expedition(tree), probe=_probe)
+    clip = next(v for v in store.list_videos() if v.file_name == "GX010100.MP4")
+    kept_at = clip.path
+    again = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    # A fresh import cannot know which file is the original: the first one read
+    # is filed and the other named, and from then on the filed one stays put.
+    pair = {str(copy), str(original)}
+    for report in (first, again):
+        assert len(report.duplicates) == 1
+        assert set(report.duplicates[0]) == pair
+        assert report.duplicates[0][1] == kept_at
+        assert report.clips_relinked == 0
+    assert store.get_video(clip.id).path == kept_at
+    assert len(store.list_passes(video_id=clip.id)) == 1
+
+
+def test_a_clip_that_really_moved_is_relinked(tree, store):
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    old = tree / "VC_6m_01" / "pass_02_angle" / "fwd" / "RAW" / "GX010100.MP4"
+    new = tree / "VC_6m_01" / "pass_02_angle" / "fwd" / "GX010100.MP4"
+    old.rename(new)
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    assert report.clips_relinked == 1
+    assert report.duplicates == []
+    clip = next(v for v in store.list_videos() if v.file_name == "GX010100.MP4")
+    assert clip.path == str(new)
