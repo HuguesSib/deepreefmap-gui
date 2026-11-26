@@ -1026,18 +1026,42 @@ def _no_route_forward(version: int) -> str:
 
 
 def stored_clip_path(root: Path, path: str) -> str:
-    """How a clip's path is written: relative, with forward slashes, inside ``root``."""
-    # Only a path absolute here can be placed against root; a Windows path read
-    # on a Mac is left exactly as it came.
-    if not path or not Path(path).is_absolute():
+    """How a clip's path is written: relative, with forward slashes, inside ``root``.
+
+    A full path from another machine (``E:\\EXPE\\T1\\x.MP4`` read on a Mac,
+    ``/Volumes/EXPE/T1/x.MP4`` read on Windows) is placed under ``root`` too
+    when the same file is there: the drive moved, the clip did not.
+    """
+    if not path or not _is_absolute(path):
         return path
-    try:
-        relative = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
-    except ValueError:  # another drive on Windows
-        return path
-    if relative == os.curdir or relative.startswith(os.pardir) or os.path.isabs(relative):
-        return path
-    return PurePath(relative).as_posix()
+    if Path(path).is_absolute():
+        try:
+            relative = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        except ValueError:  # another drive on Windows
+            relative = os.pardir
+        if not (relative == os.curdir or relative.startswith(os.pardir) or os.path.isabs(relative)):
+            return PurePath(relative).as_posix()
+    found = _found_under(root, path)
+    return found if found is not None else path
+
+
+def _found_under(root: Path, path: str) -> str | None:
+    """The tail of a full path that names a file under ``root``, or None.
+
+    The part after the folder's own name is tried first; failing that (the
+    folder was renamed), each shorter tail in turn, so a clip is only re-placed
+    where a file of that name actually is.
+    """
+    windows = PureWindowsPath(path).drive or "\\" in path
+    parts = (PureWindowsPath(path) if windows else PurePosixPath(path)).parts[1:]
+    tails = []
+    if root.name in parts:
+        tails.append(parts[len(parts) - parts[::-1].index(root.name):])
+    tails += [parts[i:] for i in range(len(parts))]
+    for tail in tails:
+        if tail and root.joinpath(*tail).is_file():
+            return PurePosixPath(*tail).as_posix()
+    return None
 
 
 def full_clip_path(root: Path, stored: str) -> str:

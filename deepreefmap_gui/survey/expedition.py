@@ -96,6 +96,8 @@ class ImportReport:
     clips_relinked: int = 0
     passes_created: int = 0
     passes_kept: int = 0
+    # Passes whose clips moved to another pass or direction folder, filed again.
+    passes_refiled: int = 0
     # "old → new": transect folders renamed on disk, their passes moved along.
     transects_renamed: list[str] = field(default_factory=list)
     unreadable: list[str] = field(default_factory=list)
@@ -120,6 +122,8 @@ class ImportReport:
         parts.append(f"{self.passes_created} new pass(es)")
         if self.passes_kept:
             parts.append(f"{self.passes_kept} already filed")
+        if self.passes_refiled:
+            parts.append(f"{self.passes_refiled} moved to the pass their folder names")
         if self.transects_renamed:
             parts.append(f"renamed {', '.join(self.transects_renamed)}")
         if self.unreadable:
@@ -316,13 +320,26 @@ _CARRIED = (
 )
 
 
-def _follow_the_folder(store, kept, transect: Transect, campaign: Campaign, moved: dict) -> None:
-    """File this expedition's passes under the transect their folder now names."""
+def _follow_the_folder(store, kept, transect: Transect, recording, campaign: Campaign, moved: dict) -> int:
+    """File this expedition's passes where their folder now puts them.
+
+    The folders are the record: a clip moved to another transect, pass or
+    direction folder takes its pass with it. Returns how many passes moved.
+    """
+    refiled = 0
     for pass_ in kept:
-        if pass_.campaign_id == campaign.id and pass_.transect_id not in (None, transect.id):
+        if pass_.campaign_id != campaign.id:
+            continue
+        before = (pass_.transect_id, pass_.label, pass_.direction)
+        if pass_.transect_id not in (None, transect.id):
             moved.setdefault(pass_.transect_id, transect.id)
             pass_.transect_id = transect.id
+        pass_.label = recording.pass_dir
+        pass_.direction = recording.direction or pass_.direction
+        if (pass_.transect_id, pass_.label, pass_.direction) != before:
             store.update_pass(pass_)
+            refiled += 1
+    return refiled
 
 
 def _retire_renamed(store, moved: dict, folder_names: set[str], report: ImportReport) -> None:
@@ -420,7 +437,7 @@ def import_expedition(store, layout: ExpeditionLayout, probe: Probe | None = Non
             kept = store.list_passes(video_id=first.id)
             if kept:
                 report.passes_kept += 1
-                _follow_the_folder(store, kept, transect, campaign, moved)
+                report.passes_refiled += _follow_the_folder(store, kept, transect, recording, campaign, moved)
                 continue
             store.add_pass(TransectPass(
                 transect_id=transect.id,

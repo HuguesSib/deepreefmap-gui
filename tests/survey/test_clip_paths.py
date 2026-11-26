@@ -65,3 +65,38 @@ def test_a_windows_path_is_never_taken_for_a_relative_one():
     assert stored_clip_path(root, windows) == windows
     assert full_clip_path(root, windows) == windows
     assert full_clip_path(root, "VC_6m_01/GX010099.MP4") == str(root / "VC_6m_01" / "GX010099.MP4")
+
+
+def test_a_windows_path_to_a_clip_on_this_drive_is_found_here(tmp_path):
+    """The same drive mounted as E: on one laptop and /Volumes/X on the other."""
+    root = tmp_path / "2026_11_JO_EXPE"
+    clip = root / "VC_6m_01" / "RAW" / "GX010099.MP4"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(b"x")
+
+    assert stored_clip_path(root, r"E:\2026_11_JO_EXPE\VC_6m_01\RAW\GX010099.MP4") == "VC_6m_01/RAW/GX010099.MP4"
+    assert stored_clip_path(root, "/Volumes/OTHER/2026_11_JO_EXPE/VC_6m_01/RAW/GX010099.MP4") == (
+        "VC_6m_01/RAW/GX010099.MP4"
+    )
+    # The folder was renamed on the other machine: the shorter tail still finds it.
+    assert stored_clip_path(root, r"F:\renamed\VC_6m_01\RAW\GX010099.MP4") == "VC_6m_01/RAW/GX010099.MP4"
+    # Nothing of that name here: left as it came.
+    assert stored_clip_path(root, r"E:\2026_11_JO_EXPE\VC_6m_01\RAW\GONE.MP4") == (
+        r"E:\2026_11_JO_EXPE\VC_6m_01\RAW\GONE.MP4"
+    )
+
+
+def test_windows_paths_an_older_build_wrote_are_found_at_open(tmp_path):
+    root = tmp_path / "EXPE"
+    store = SurveyStore(root / "survey.db")
+    (root / "T1").mkdir()
+    (root / "T1" / "y.MP4").write_bytes(b"y")
+    video = store.upsert_video(make_video("e" * 32, path=str(root / "T1" / "y.MP4")))
+    with sqlite3.connect(root / "survey.db") as conn:
+        conn.execute("UPDATE video_asset SET path = ? WHERE id = ?", (r"E:\EXPE\T1\y.MP4", str(video.id)))
+    store.close()
+
+    reopened = SurveyStore(root / "survey.db")
+
+    assert _raw_path(root / "survey.db", video.id) == "T1/y.MP4"
+    assert reopened.get_video(video.id).path == str(root / "T1" / "y.MP4")

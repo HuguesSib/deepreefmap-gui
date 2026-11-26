@@ -549,3 +549,21 @@ def test_a_down_clip_is_not_listed_as_to_process():
     assert clip_summary(entry) == "Looks down · not processed"
     video.view = "oblique"
     assert "process" in job_filters(entry)
+
+
+def test_clips_swapped_between_pass_folders_take_their_passes_along(tree, store):
+    """Two swims filed in the wrong pass, put right on disk: the next import follows."""
+    import_expedition(store, scan_expedition(tree), probe=_probe)
+    t6 = tree / "VC_6m_01"
+    a = t6 / "pass_01_control" / "fwd" / "GX010050.MP4"
+    b = t6 / "pass_02_angle" / "fwd" / "RAW" / "GX010100.MP4"
+    a.rename(t6 / "pass_02_angle" / "fwd" / "RAW" / a.name)
+    b.rename(t6 / "pass_01_control" / "fwd" / b.name)
+
+    report = import_expedition(store, scan_expedition(tree), probe=_probe)
+
+    label = {store.get_video(p.video_id).file_name: p.label for p in store.list_passes()}
+    assert label["GX010050.MP4"] == "pass_02_angle"
+    assert label["GX010100.MP4"] == "pass_01_control"
+    assert report.passes_refiled == 2 and report.passes_created == 0
+    assert all(Path(v.path).exists() for v in store.list_videos())
