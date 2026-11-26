@@ -28,6 +28,7 @@ the one route that is exact, and the window takes it without asking.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -265,3 +266,113 @@ def apply_recovery(option: RecoveryOption, health: SurveyDbHealth, out_root: Pat
 def _set_aside_name(health: SurveyDbHealth) -> str:
     label = f"schema-v{health.db_version}" if health.db_version is not None else "unreadable"
     return f"{health.path.name}.{label}"
+
+
+# --- a survey an older build put aside ------------------------------------------
+
+# The tables a person's work lands in; the latest stamp across them is when the
+# survey was last worked on.
+_ACTIVITY_TABLES = ("run_record", "transect_pass", "video_asset", "batch_item", "transect", "campaign")
+_SET_ASIDE = re.compile(r"\.schema-v(\d+)(\.\d{8}T\d{6})?$")
+
+
+@dataclass(frozen=True)
+class SetAsideSurvey:
+    path: Path
+    version: int
+    last_activity: str
+
+
+def _last_activity(path: Path) -> str | None:
+    """The newest created/updated stamp in a survey file, read without touching it."""
+    # A set-aside file carries its moved -wal beside it, so read-only first; an
+    # exFAT volume can refuse the shared-memory file, and immutable reads the
+    # main file alone, which is what is left when the -wal is empty.
+    for mode in ("mode=ro", "immutable=1"):
+        try:
+            conn = sqlite3.connect(f"{path.resolve().as_uri()}?{mode}", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            stamps: list[str] = []
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            for table in _ACTIVITY_TABLES:
+                if table not in tables:
+                    continue
+                columns = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+                for column in ("updated_at", "created_at"):
+                    if column in columns:
+                        value = conn.execute(f'SELECT max("{column}") FROM "{table}"').fetchone()[0]
+                        if value:
+                            stamps.append(str(value))
+            return max(stamps) if stamps else ""
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+    return None
+
+
+def newer_set_aside_survey(db_path: Path) -> SetAsideSurvey | None:
+    """A survey an older build moved aside that holds later work than the one in place.
+
+    An older build that finds a database newer than it reads restores its own
+    pre-upgrade backup and moves the newer file aside as ``survey.db.schema-vN``.
+    Taken to a machine with that build and back, the expedition drive comes home
+    with hours of work out of sight. This finds it, provided this build reads it.
+    """
+    from deepreefmap_gui.survey.store import can_open
+
+    current = _last_activity(db_path) if db_path.exists() else ""
+    if current is None:
+        return None
+    best: SetAsideSurvey | None = None
+    try:
+        siblings = list(db_path.parent.glob(f"{db_path.name}.schema-v*"))
+    except OSError:
+        return None
+    for path in siblings:
+        match = _SET_ASIDE.search(path.name)
+        if match is None or not can_open(int(match.group(1))):
+            continue
+        activity = _last_activity(path)
+        if not activity or activity <= current:
+            continue
+        if best is None or activity > best.last_activity:
+            best = SetAsideSurvey(path, int(match.group(1)), activity)
+    return best
+
+
+def bring_back(found: SetAsideSurvey, db_path: Path) -> str:
+    """Put the set-aside survey back in place; the one it replaces is kept. Never deletes."""
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+    replaced = db_path.with_name(f"{db_path.name}.replaced.{stamp}")
+    if db_path.exists():
+        source = sqlite3.connect(db_path)
+        try:
+            dest = sqlite3.connect(replaced)
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            source.close()
+    # Copied in through sqlite rather than renamed over, so a connection already
+    # open on the live file sees the restored content instead of a deleted inode.
+    source = sqlite3.connect(f"{found.path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        dest = sqlite3.connect(db_path)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+    logger.info("Brought back %s over %s (kept as %s)", found.path.name, db_path.name, replaced.name)
+    return (
+        f"An older version of DeepReefMap had replaced this survey with an earlier backup. "
+        f"The newer survey ({found.path.name}) is back in place; the one it replaced is "
+        f"kept as {replaced.name}."
+    )

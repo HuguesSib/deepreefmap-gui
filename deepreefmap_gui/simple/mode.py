@@ -1205,6 +1205,7 @@ class InterfaceShellMixin(MixinBase):
         """
         health = self._survey_db_health()
         if health.openable:
+            self._bring_back_newer_survey(health.path)
             return
         from deepreefmap_gui.survey.recovery import (
             RecoveryKind,
@@ -1255,6 +1256,24 @@ class InterfaceShellMixin(MixinBase):
             QMessageBox.critical(self, "Survey database", f"That did not work: {exc}")
             return
         self._after_recovery(message)
+
+    def _bring_back_newer_survey(self, db_path: Path) -> None:
+        """Undo an older build's rollback: its set-aside survey holds the later work."""
+        from deepreefmap_gui.survey.recovery import bring_back, newer_set_aside_survey
+
+        try:
+            found = newer_set_aside_survey(db_path)
+            if found is None:
+                return
+            store = self._survey_store_obj
+            if store is not None:
+                store.close()
+            message = bring_back(found, db_path)
+        except Exception:
+            logger.exception("Could not bring back the survey an older version set aside")
+            return
+        self._after_recovery(message)
+        QMessageBox.information(self, "Survey database", message)
 
     def _after_recovery(self, message: str) -> None:
         """Take up the database recovery just put in place, and say what happened.
