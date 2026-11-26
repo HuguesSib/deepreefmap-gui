@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -16,7 +17,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
@@ -1024,6 +1025,33 @@ def _no_route_forward(version: int) -> str:
     )
 
 
+def stored_clip_path(root: Path, path: str) -> str:
+    """How a clip's path is written: relative, with forward slashes, inside ``root``."""
+    # Only a path absolute here can be placed against root; a Windows path read
+    # on a Mac is left exactly as it came.
+    if not path or not Path(path).is_absolute():
+        return path
+    try:
+        relative = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    except ValueError:  # another drive on Windows
+        return path
+    if relative == os.curdir or relative.startswith(os.pardir) or os.path.isabs(relative):
+        return path
+    return PurePath(relative).as_posix()
+
+
+def full_clip_path(root: Path, stored: str) -> str:
+    """Where a stored clip path points from here: joined to ``root`` when relative."""
+    if not stored or _is_absolute(stored):
+        return stored
+    return str(root.joinpath(*PurePosixPath(stored).parts))
+
+
+def _is_absolute(path: str) -> bool:
+    """Absolute on this system or on Windows, so C:\\x read on a Mac is not taken as relative."""
+    return Path(path).is_absolute() or PureWindowsPath(path).is_absolute() or path.startswith(("/", "\\"))
+
+
 def resolved_path(path: str) -> str | None:
     """A path in the one form two records of the same file can be compared in.
 
@@ -1282,6 +1310,7 @@ class SurveyStore:
         self._issued = ""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
+        self.relativise_clip_paths()
         # A store is opened once per output root, on the GUI thread, before any
         # batch touches it, so opening is the one moment where every non-terminal
         # row is certain to be a leftover rather than live work. The count is
@@ -1293,6 +1322,47 @@ class SurveyStore:
     @property
     def path(self) -> Path:
         return self._db_path
+
+    # --- Clip paths ---
+    #
+    # A clip inside the folder this database sits in is stored relative to that
+    # folder, with forward slashes, and handed out joined to wherever the folder
+    # is mounted now. The same expedition drive then reads the same on a Mac
+    # (/Volumes/X/...) and on Windows (E:\\...), and survives a new mount point
+    # or drive letter. A clip elsewhere keeps its full path.
+
+    @property
+    def root(self) -> Path:
+        return self._db_path.parent
+
+    def relativise_clip_paths(self) -> int:
+        """Rewrite full paths of clips inside this folder in the relative form.
+
+        Run at every open, so a database written before this, or by a build that
+        stored full paths, comes into line. The path is device-local and never
+        synced, so no stamp moves.
+        """
+        changed = []
+        for row in self._conn().execute("SELECT id, path FROM video_asset WHERE path != ''"):
+            stored = stored_clip_path(self.root, row["path"])
+            if stored != row["path"]:
+                changed.append((stored, row["id"]))
+        if changed:
+            with self.transaction() as conn:
+                conn.executemany("UPDATE video_asset SET path = ? WHERE id = ?", changed)
+        return len(changed)
+
+    def _model(self, cls: type, row: Any) -> Any:
+        model: Any = from_row(cls, row)
+        if isinstance(model, VideoAsset):
+            model.path = full_clip_path(self.root, model.path)
+        return model
+
+    def _row(self, model: Any) -> dict[str, Any]:
+        row = to_row(model)
+        if isinstance(model, VideoAsset):
+            row["path"] = stored_clip_path(self.root, row["path"])
+        return row
 
     def close(self) -> None:
         """Close the calling thread's connection (worker threads close their own)."""
@@ -1442,7 +1512,7 @@ class SurveyStore:
             return self._issued
 
     def _add(self, table: str, model: Any) -> None:
-        row = to_row(model)
+        row = self._row(model)
         floor = self._watermark_floor() if table in _TOMBSTONED_TABLES else ""
         if floor and str(row["updated_at"]) <= floor:
             # Moved forward, never replaced: a caller that set a stamp on purpose
@@ -1453,7 +1523,7 @@ class SurveyStore:
             conn.execute(_insert_sql(table, row), row)
 
     def _update(self, table: str, model: Any) -> None:
-        row = to_row(model)
+        row = self._row(model)
         with self.transaction() as conn:
             cursor = conn.execute(_update_sql(table, row), row)
         if cursor.rowcount == 0:
@@ -1463,13 +1533,13 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM {table} WHERE id = ? AND {_live(table)}", (str(item_id),)
         ).fetchone()
-        return from_row(cls, row) if row is not None else None
+        return self._model(cls, row) if row is not None else None
 
     def _list(self, table: str, cls: type, order_by: str) -> list[Any]:
         rows = self._conn().execute(
             f"SELECT * FROM {table} WHERE {_live(table)} ORDER BY {order_by}"
         ).fetchall()
-        return [from_row(cls, r) for r in rows]
+        return [self._model(cls, r) for r in rows]
 
     def _tombstone(self, table: str, item_id: uuid.UUID) -> None:
         """Stamp a row deleted and leave it where it is.
@@ -1654,7 +1724,7 @@ class SurveyStore:
             ORDER BY name
             """
         ).fetchall()
-        return [from_row(Transect, row) for row in rows]
+        return [self._model(Transect, row) for row in rows]
 
     def transect_usage_counts(self) -> dict[uuid.UUID, tuple[int, int]]:
         """(passes, runs) per transect, for every transect that has either.
@@ -1731,7 +1801,7 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM video_asset WHERE hash = ?{live}", (content_hash,)
         ).fetchone()
-        return from_row(VideoAsset, row) if row is not None else None
+        return self._model(VideoAsset, row) if row is not None else None
 
     def find_video_by_path(self, path: str) -> VideoAsset | None:
         """The clip recorded at this path, matched on the resolved location.
@@ -1906,7 +1976,7 @@ class SurveyStore:
             """,
             (str(batch_id), str(batch_id)),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def delete_batch(self, batch_id: uuid.UUID) -> None:
         """Forget a session: its cart rows and run records go, everything shared
@@ -1952,7 +2022,7 @@ class SurveyStore:
         ).fetchone()
         if row is None:
             return None
-        batch = from_row(SurveyBatch, row)
+        batch = self._model(SurveyBatch, row)
         return batch if self.batch_run_count(batch.id) == 0 else None
 
     # --- Batch items ---
@@ -1963,7 +2033,7 @@ class SurveyStore:
         A new row lands at the end of the processing order, which is where a
         thing added to a queue belongs until it is dragged somewhere else.
         """
-        row = to_row(item)
+        row = self._row(item)
         with self._conn() as conn:
             last = conn.execute(
                 "SELECT MAX(position) FROM batch_item WHERE batch_id = ?",
@@ -2023,11 +2093,11 @@ class SurveyStore:
             "SELECT * FROM batch_item WHERE batch_id = ? ORDER BY position, rowid",
             (str(batch_id),),
         ).fetchall()
-        return [from_row(BatchItem, r) for r in rows]
+        return [self._model(BatchItem, r) for r in rows]
 
     def list_all_batch_items(self) -> list[BatchItem]:
         rows = self._conn().execute("SELECT * FROM batch_item ORDER BY rowid").fetchall()
-        return [from_row(BatchItem, r) for r in rows]
+        return [self._model(BatchItem, r) for r in rows]
 
     def passes_in_batch(self, batch_id: uuid.UUID) -> list[TransectPass]:
         """The session's worklist, in the order it will be processed."""
@@ -2040,7 +2110,7 @@ class SurveyStore:
             """,
             (str(batch_id),),
         ).fetchall()
-        return [from_row(TransectPass, r) for r in rows]
+        return [self._model(TransectPass, r) for r in rows]
 
     # --- Passes ---
 
@@ -2126,7 +2196,7 @@ class SurveyStore:
         rows = self._conn().execute(
             f"SELECT * FROM transect_pass WHERE {where} ORDER BY created_at, rowid", params
         ).fetchall()
-        return [from_row(TransectPass, r) for r in rows]
+        return [self._model(TransectPass, r) for r in rows]
 
     # --- Runs ---
 
@@ -2194,7 +2264,7 @@ class SurveyStore:
             "SELECT * FROM server_preset WHERE deleted_at IS NULL "
             "ORDER BY LOWER(name), version DESC"
         ).fetchall()
-        return [from_row(ServerPreset, r) for r in rows]
+        return [self._model(ServerPreset, r) for r in rows]
 
     def get_server_preset(self, name: str, version: int) -> ServerPreset | None:
         row = self._conn().execute(
@@ -2202,14 +2272,14 @@ class SurveyStore:
             "AND deleted_at IS NULL",
             (name, int(version)),
         ).fetchone()
-        return from_row(ServerPreset, row) if row is not None else None
+        return self._model(ServerPreset, row) if row is not None else None
 
     def list_camera_profiles(self) -> list[CameraProfile]:
         """The registry's camera profiles, by name."""
         rows = self._conn().execute(
             "SELECT * FROM camera_profile WHERE deleted_at IS NULL ORDER BY LOWER(name)"
         ).fetchall()
-        return [from_row(CameraProfile, r) for r in rows]
+        return [self._model(CameraProfile, r) for r in rows]
 
     def camera_profile_by_name(self, name: str) -> CameraProfile | None:
         """The profile row of this name, tombstoned or not.
@@ -2222,7 +2292,7 @@ class SurveyStore:
             "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
             (name,),
         ).fetchone()
-        return from_row(CameraProfile, row) if row is not None else None
+        return self._model(CameraProfile, row) if row is not None else None
 
     def camera_calibration(self, calibration_id: uuid.UUID) -> CameraCalibration | None:
         """One live measurement by id, whichever version it is."""
@@ -2230,7 +2300,7 @@ class SurveyStore:
             "SELECT * FROM camera_calibration WHERE id = ? AND deleted_at IS NULL",
             (str(calibration_id),),
         ).fetchone()
-        return from_row(CameraCalibration, row) if row is not None else None
+        return self._model(CameraCalibration, row) if row is not None else None
 
     def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
         """The latest measurement of one profile, deployed where none is named."""
@@ -2239,7 +2309,7 @@ class SurveyStore:
             "AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
             (str(profile_id),),
         ).fetchone()
-        return from_row(CameraCalibration, row) if row is not None else None
+        return self._model(CameraCalibration, row) if row is not None else None
 
     def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
         """Copy a finished run's provenance onto its row.
@@ -2263,7 +2333,7 @@ class SurveyStore:
             "ORDER BY created_at DESC LIMIT 1",
             (run_dir_name,),
         ).fetchone()
-        return from_row(RunRecord, row) if row is not None else None
+        return self._model(RunRecord, row) if row is not None else None
 
     def runs_for_pass(self, pass_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
@@ -2271,7 +2341,7 @@ class SurveyStore:
             "ORDER BY created_at, rowid",
             (str(pass_id),),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def runs_for_transect(self, transect_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
@@ -2285,7 +2355,7 @@ class SurveyStore:
             """,
             (str(transect_id),),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def succeeded_pass_ids(self, batch_id: uuid.UUID | None = None) -> set[uuid.UUID]:
         """Passes with at least one successful run, in one query.
@@ -2321,7 +2391,7 @@ class SurveyStore:
         rows = self._conn().execute(
             "SELECT * FROM notification WHERE resolved_at IS NULL ORDER BY created_at"
         ).fetchall()
-        return [from_row(Notification, r) for r in rows]
+        return [self._model(Notification, r) for r in rows]
 
     def list_notifications(
         self, limit: int = 500, severity: str = "", scope: str = ""
@@ -2338,7 +2408,7 @@ class SurveyStore:
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn().execute(sql, params).fetchall()
-        return [from_row(Notification, r) for r in rows]
+        return [self._model(Notification, r) for r in rows]
 
     def resolve_notification(self, note_id: uuid.UUID, at: str) -> None:
         with self._conn() as conn:
@@ -2440,7 +2510,7 @@ class SurveyStore:
             )
             params.extend([since, _section_of(section)])
         rows = self._conn().execute(f"{sql} ORDER BY updated_at, rowid", params).fetchall()
-        return [from_row(_SYNC_MODELS[table], r) for r in rows]
+        return [self._model(_SYNC_MODELS[table], r) for r in rows]
 
     def count_changed_since(self, section: str, since: str | None = None) -> int:
         """How many rows are waiting to push, without loading any of them.
@@ -2512,7 +2582,7 @@ class SurveyStore:
                 # so a row that arrives partial says nothing about the rest.
                 merged = wire if stored is None else {**dict(stored), **wire}
                 try:
-                    row = to_row(from_row(cls, merged))
+                    row = self._row(self._model(cls, merged))
                 except _UNREADABLE_ROW as exc:
                     result.unreadable.append((row_id, str(exc)))
                     continue
@@ -2812,7 +2882,7 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM {table} WHERE id = ?", (str(item_id),)
         ).fetchone()
-        return from_row(_SYNC_MODELS[table], row) if row is not None else None
+        return self._model(_SYNC_MODELS[table], row) if row is not None else None
 
     # --- Documents ---
 
@@ -2848,7 +2918,7 @@ class SurveyStore:
             for section, models in sections.items():
                 table = tables[section]
                 for model in models:
-                    row = to_row(model)
+                    row = self._row(model)
                     conn.execute(_insert_sql(table, row).replace("INSERT", "INSERT OR IGNORE", 1), row)
 
     # --- Rebuild from manifests ---
