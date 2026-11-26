@@ -1,64 +1,97 @@
-"""A survey an older build set aside comes back when it holds the later work."""
+"""A survey an older build set aside is found when it holds work the current one lacks."""
 
 import shutil
-import sqlite3
 
 from _factories import make_transect
 
 from deepreefmap_gui.survey.backup import set_aside
-from deepreefmap_gui.survey.recovery import bring_back, newer_set_aside_survey
+from deepreefmap_gui.survey.recovery import (
+    bring_back,
+    bring_back_question,
+    keep_set_aside,
+    set_aside_survey_with_more,
+)
 from deepreefmap_gui.survey.store import SurveyStore
 
 
-def _survey(path, names, at="2026-11-26T10:00:00+00:00"):
+def _add(path, *names):
     store = SurveyStore(path)
     for name in names:
         store.add_transect(make_transect(name))
     store.close()
-    with sqlite3.connect(path) as conn:  # work is told apart by its stamps
-        conn.executemany("UPDATE transect SET updated_at = ? WHERE name = ?", [(at, n) for n in names])
 
 
 def _names(path):
-    with sqlite3.connect(path) as conn:
-        return sorted(r[0] for r in conn.execute("SELECT name FROM transect"))
+    store = SurveyStore(path)
+    try:
+        return sorted(t.name for t in store.list_transects())
+    finally:
+        store.close()
 
 
-def test_the_later_survey_an_older_build_moved_aside_is_brought_back(tmp_path):
+def _rolled_back(tmp_path):
+    """What an older build leaves: its old backup in place, the newer file aside."""
     db = tmp_path / "survey.db"
-    _survey(db, ["T1"])
+    _add(db, "T1")
     shutil.copy(db, tmp_path / "early.db")
-    _survey(db, ["T2"], at="2098-01-01T00:00:00+00:00")  # later work
-    # What an older build does: the newer file aside, its old backup in place.
-    (tmp_path / "survey.db.schema-v25").write_bytes(b"")  # an earlier one: the stamped name is used
+    _add(db, "T2")
     set_aside(db, 25)
     shutil.copy(tmp_path / "early.db", db)
+    return db
 
-    found = newer_set_aside_survey(db)
-    assert found is not None and found.version == 25
 
-    message = bring_back(found, db)
+def test_the_survey_an_older_build_moved_aside_is_found_and_put_back(tmp_path):
+    db = _rolled_back(tmp_path)
+
+    found = set_aside_survey_with_more(db)
+    assert found is not None and (found.version, found.only_there, found.only_here) == (25, 1, 0)
+    assert "Put it back?" in bring_back_question(found)
+
+    bring_back(found, db)
 
     assert _names(db) == ["T1", "T2"]
-    assert "replaced" in message
     assert list(tmp_path.glob("survey.db.replaced.*"))
-    assert newer_set_aside_survey(db) is None  # nothing to do twice
+    assert set_aside_survey_with_more(db) is None  # nothing to offer twice
 
 
-def test_an_older_set_aside_copy_is_left_alone(tmp_path):
+def test_work_done_after_the_rollback_is_counted_and_kept(tmp_path):
     db = tmp_path / "survey.db"
-    _survey(db, ["T1"])
-    shutil.copy(db, tmp_path / "survey.db.schema-v25")
-    _survey(db, ["T2"], at="2098-01-01T00:00:00+00:00")
+    _add(db, "T1")
+    shutil.copy(db, tmp_path / "early.db")
+    _add(db, "T2", "T4")
+    set_aside(db, 25)
+    shutil.copy(tmp_path / "early.db", db)
+    _add(db, "T3")  # done on the restored copy
 
-    assert newer_set_aside_survey(db) is None
+    found = set_aside_survey_with_more(db)
+    assert (found.only_there, found.only_here) == (2, 1)
+    assert "kept beside it" in bring_back_question(found)
+    bring_back(found, db)
+
+    replaced = next(tmp_path.glob("survey.db.replaced.*"))
+    assert "T3" in _names(replaced)
+
+
+def test_a_set_aside_copy_with_nothing_new_is_left_alone(tmp_path):
+    db = tmp_path / "survey.db"
+    _add(db, "T1")
+    shutil.copy(db, tmp_path / "survey.db.schema-v25")
+    _add(db, "T2")
+
+    assert set_aside_survey_with_more(db) is None
 
 
 def test_a_set_aside_copy_this_build_cannot_read_is_left_alone(tmp_path):
-    db = tmp_path / "survey.db"
-    _survey(db, ["T1"])
-    shutil.copy(db, tmp_path / "survey.db.schema-v999")
-    with sqlite3.connect(tmp_path / "survey.db.schema-v999") as conn:
-        conn.execute("UPDATE transect SET updated_at = '2099-01-01T00:00:00+00:00'")
+    db = _rolled_back(tmp_path)
+    next(tmp_path.glob("survey.db.schema-v25*")).rename(tmp_path / "survey.db.schema-v999")
 
-    assert newer_set_aside_survey(db) is None
+    assert set_aside_survey_with_more(db) is None
+
+
+def test_a_copy_declined_once_is_not_offered_again(tmp_path):
+    db = _rolled_back(tmp_path)
+
+    keep_set_aside(set_aside_survey_with_more(db))
+
+    assert set_aside_survey_with_more(db) is None
+    assert list(tmp_path.glob("survey.db.schema-v25*.kept"))

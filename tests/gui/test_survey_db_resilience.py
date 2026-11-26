@@ -251,7 +251,7 @@ def test_a_rolled_back_database_is_not_re_inspected_on_every_ask(
     assert calls == []
 
 
-def test_a_newer_survey_an_older_build_set_aside_is_put_back_at_open(make_window, out_root, monkeypatch):
+def test_a_survey_an_older_build_set_aside_is_offered_back_at_open(make_window, out_root, monkeypatch):
     """The drive went to a laptop with an older build and came back rolled back."""
     import shutil
 
@@ -273,11 +273,16 @@ def test_a_newer_survey_an_older_build_set_aside_is_put_back_at_open(make_window
         )
     set_aside(db, latest_schema_version())
     shutil.copy(out_root / "early.db", db)
-    told = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: told.append(a))
+    asked = []
+
+    def say_yes(*args, **kwargs):
+        asked.append(args[2])
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", say_yes)
 
     window = _window_on(make_window, out_root, monkeypatch)
     window.check_survey_database()
 
     assert [t.name for t in window._survey_store().list_transects()] == ["LATER"]
-    assert told
+    assert asked and "Put it back?" in asked[0]

@@ -1258,22 +1258,44 @@ class InterfaceShellMixin(MixinBase):
         self._after_recovery(message)
 
     def _bring_back_newer_survey(self, db_path: Path) -> None:
-        """Undo an older build's rollback: its set-aside survey holds the later work."""
-        from deepreefmap_gui.survey.recovery import bring_back, newer_set_aside_survey
+        """Offer to undo an older build's rollback: its set-aside survey holds more work."""
+        from deepreefmap_gui.survey.recovery import (
+            bring_back,
+            bring_back_question,
+            keep_set_aside,
+            set_aside_survey_with_more,
+        )
 
         try:
-            found = newer_set_aside_survey(db_path)
-            if found is None:
-                return
+            found = set_aside_survey_with_more(db_path)
+        except Exception:
+            logger.exception("Could not compare the survey with the copies set aside beside it")
+            return
+        if found is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Survey database",
+            bring_back_question(found),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            try:
+                keep_set_aside(found)
+            except OSError:
+                logger.warning("Could not mark %s as kept", found.path, exc_info=True)
+            return
+        try:
             store = self._survey_store_obj
             if store is not None:
                 store.close()
             message = bring_back(found, db_path)
-        except Exception:
+        except Exception as exc:
             logger.exception("Could not bring back the survey an older version set aside")
+            QMessageBox.warning(self, "Survey database", f"That did not work: {exc}")
             return
         self._after_recovery(message)
-        QMessageBox.information(self, "Survey database", message)
 
     def _after_recovery(self, message: str) -> None:
         """Take up the database recovery just put in place, and say what happened.
