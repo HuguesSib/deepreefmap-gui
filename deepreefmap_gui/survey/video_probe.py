@@ -6,7 +6,8 @@ with the ``GRAV`` stream a GoPro writes into its telemetry track, so whether a
 clip carries one decides how the run comes out, and the user needs to know that
 before processing rather than after. The library reads that stream through
 ``py_gpmf_parser``, which is published for ``linux-x86_64`` only, so asking it
-would answer "no gravity" on the Windows and macOS builds regardless of the file.
+would answer "no gravity" on the Windows and macOS builds regardless of the file
+(runs there read it through :mod:`deepreefmap_gui.io.gpmf_gravity`).
 
 An MP4 says all of it in its own index. Walking the atoms costs a handful of
 seeks and about 7 KB of reads, well under a millisecond on a 2.5 GB clip, needs
@@ -44,9 +45,12 @@ def gravity_telemetry_available() -> bool:
     """Whether GoPro gravity telemetry can be read here.
 
     A spec lookup, never an import. py-gpmf-parser publishes Linux x86_64 wheels
-    only, so this is False on macOS and Windows unless a wheel was built for them.
+    only; everywhere else :mod:`deepreefmap_gui.io.gpmf_gravity` reads the
+    stream itself and stands in for it, so this only says no when the pipeline
+    is not installed at all.
     """
-    return importlib.util.find_spec("py_gpmf_parser") is not None
+    return any(importlib.util.find_spec(name) is not None for name in ("py_gpmf_parser", "deepreefmap"))
+
 
 # Cameras that do not set a creation time write zero, and files that mistake the
 # epoch land decades out. Anything outside this window is not a shooting date.

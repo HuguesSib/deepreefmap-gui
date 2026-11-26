@@ -444,7 +444,10 @@ def instrumented_reconstruction(
 
     from deepreefmap.pipeline.orchestrator import run_reconstruction
 
+    from deepreefmap_gui.io import gpmf_gravity
     from deepreefmap_gui.io.classes_default import resolve_classes_path
+
+    gpmf_gravity.install()
     from deepreefmap_gui.profiling.run_history import record_run_from_manifest
 
     run_started_at = datetime.now(timezone.utc).isoformat()

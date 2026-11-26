@@ -124,6 +124,9 @@ def main() -> None:
     if args:
         from deepreefmap.cli.main import app
 
+        from deepreefmap_gui.io import gpmf_gravity
+
+        gpmf_gravity.install()  # the packaged CLI reads gravity where py-gpmf-parser has no wheel
         app(args)
         return
 
